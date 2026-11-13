@@ -410,8 +410,8 @@ def main() -> None:
         if hcu_store_mode not in {"auto", "grouped", "smem", "wide", "cyclic"}:
             parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped, smem, wide or cyclic")
         hcu_transpose_mode = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto")
-        if hcu_transpose_mode not in {"auto", "packed"}:
-            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_MODE must be auto or packed")
+        if hcu_transpose_mode not in {"auto", "packed", "flat"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_MODE must be auto, packed or flat")
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
         fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto")

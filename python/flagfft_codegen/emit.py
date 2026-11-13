@@ -1136,6 +1136,16 @@ def _emit_tiled_transpose3d_jit_kernel(
             tile_traversal=maca_traversal,
         )
     elif (_hcu_backend_active()
+          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "flat"
+          and order in {"201", "120"}):
+        # Rotating an outer axis is a single matrix transpose after merging
+        # the two adjacent axes. Keep tiles contiguous across slice boundaries.
+        rows, cols = ((n0 * n1, n2) if order == "201" else (n0, n1 * n2))
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            1, rows, cols, "021", dtype,
+            tile=32 if dtype == "complex64" else 16,
+        )
+    elif (_hcu_backend_active()
           and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "packed"):
         tile_setting = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
         tile = 32 if tile_setting == "auto" else int(tile_setting)
