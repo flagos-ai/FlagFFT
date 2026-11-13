@@ -12,8 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 #include "flagfft/core.hpp"
 
@@ -98,6 +100,12 @@ void JitKernel::compile() {
                     static_cast<unsigned int>(num_warps),
                     static_cast<unsigned int>(num_stages),
                     triton_jit::DefaultBackend::get_device_index());
+#if defined(BACKEND_HCU)
+  triton_jit::CompileOptions options;
+  options.num_warps = static_cast<int>(num_warps);
+  options.num_stages = static_cast<int>(num_stages);
+  direct_launch = function->prepare_direct_launch(signature, options);
+#endif
 #endif
 #endif
 }
@@ -113,6 +121,28 @@ void JitKernel::launch(adaptor::StreamHandle stream,
   adaptor::DevicePtr profile_scratch = 0;
 #endif
   std::vector<void *> args;
+#if defined(BACKEND_HCU)
+  std::array<void *, 32> inline_args;
+  const std::size_t argument_count = kernel_args.size() + 2;
+  if (argument_count > inline_args.size()) args.resize(argument_count);
+  void **launch_args = argument_count <= inline_args.size() ? inline_args.data() : args.data();
+  std::size_t argument_index = 0;
+  for (const JitKernelArg &arg : kernel_args) {
+    switch (arg.kind) {
+      case JitArgKind::DevicePtr:
+        launch_args[argument_index++] = const_cast<adaptor::DevicePtr *>(&arg.device_ptr);
+        break;
+      case JitArgKind::Int32:
+        launch_args[argument_index++] = const_cast<int32_t *>(&arg.int32_value);
+        break;
+      case JitArgKind::Int64:
+        launch_args[argument_index++] = const_cast<int64_t *>(&arg.int64_value);
+        break;
+    }
+  }
+  launch_args[argument_index++] = &global_scratch;
+  launch_args[argument_index++] = &profile_scratch;
+#else
 #if defined(BACKEND_NPU)
   args.reserve(kernel_args.size());
 #else
@@ -134,6 +164,9 @@ void JitKernel::launch(adaptor::StreamHandle stream,
 #if !defined(BACKEND_NPU)
   args.push_back(&global_scratch);
   args.push_back(&profile_scratch);
+#endif
+  void **launch_args = args.data();
+  const std::size_t argument_count = args.size();
 #endif
 #if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
@@ -160,7 +193,7 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                  static_cast<unsigned int>(grid_x),
                  static_cast<unsigned int>(grid_y),
                  static_cast<unsigned int>(grid_z),
-                 args.data());
+                 launch_args);
 #elif defined(BACKEND_MACA)
   auto *kernel = static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
   kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
@@ -168,9 +201,27 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                 static_cast<unsigned int>(grid_z),
                                 num_warps,
                                 reinterpret_cast<triton_jit::DefaultStreamType>(stream),
-                                args.data(),
+                                launch_args,
                                 signature,
-                                args.size());
+                                argument_count);
+#elif defined(BACKEND_HCU)
+  const char *prepared_setting = std::getenv("FLAGFFT_HCU_PREPARED_LAUNCH");
+  const bool prepared_enabled = prepared_setting == nullptr || std::strcmp(prepared_setting, "1") == 0;
+  // Explicit streams and the compiled module identify the launch device.
+  // Preserve the generic launcher when hooks are installed or the caller
+  // uses a default stream, whose device can change independently.
+  if (prepared_enabled && direct_launch != nullptr && stream != nullptr &&
+      !triton_jit::detail::get_launch_hooks_snapshot()) {
+    const auto &prepared = *static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
+    prepared.launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+        static_cast<unsigned int>(grid_x), static_cast<unsigned int>(grid_y),
+        static_cast<unsigned int>(grid_z), static_cast<unsigned int>(num_warps), launch_args);
+  } else {
+    function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+        static_cast<unsigned int>(grid_x), static_cast<unsigned int>(grid_y),
+        static_cast<unsigned int>(grid_z), static_cast<unsigned int>(num_warps),
+        static_cast<unsigned int>(num_stages), signature, launch_args, argument_count);
+  }
 #else
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),
@@ -179,8 +230,8 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                  static_cast<unsigned int>(num_warps),
                                  static_cast<unsigned int>(num_stages),
                                  signature,
-                                 args.data(),
-                                 args.size());
+                                 launch_args,
+                                 argument_count);
 #endif
   if (timer) {
     timer->stop(stream);
