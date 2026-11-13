@@ -974,9 +974,12 @@ namespace {
 
 
 
-  void mark_ix_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
-    if (request.device_type == "ix" && request.device_arch == "71" && span > 0 &&
-        flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false)) {
+  void mark_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
+    const bool ix_static = request.device_type == "ix" && request.device_arch == "71" &&
+                           flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false);
+    const bool hcu_static = request.device_type == "hcu" && request.origin_rank == 3 &&
+                            flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE", false);
+    if (span > 0 && (ix_static || hcu_static)) {
       key.permutation_span = span;
     }
   }
@@ -4977,7 +4980,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
     key.cuda_permute_span = perm_span;
     key.cuda_permute_batch = request.batch;
   }
-  mark_ix_static_permutation_span(key, request, perm_span);
+  mark_static_permutation_span(key, request, perm_span);
   mark_ix_warp_fft(key, request, perm_span);
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
@@ -6754,7 +6757,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     key.perm_form = request.device_type == "hcu"
         ? hcu_3d_axis_perm_form(request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer")
         : "outer";
-    mark_ix_static_permutation_span(key, request, n1);
+    mark_static_permutation_span(key, request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
@@ -7056,7 +7059,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     // write its compact rows directly in that transposed layout.
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
-    mark_ix_static_permutation_span(key, request, n1);
+    mark_static_permutation_span(key, request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
