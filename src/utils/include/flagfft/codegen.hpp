@@ -21,21 +21,23 @@
 
 #include "adaptor/adaptor.h"
 #include "flagfft/plan.hpp"
+#include "flagfft/npu_defaults.hpp"
 
 namespace flagfft {
 
 // The host coefficient order must match the portable vector exchange order.
 inline bool npu_portable_leaf_enabled(const FFTRequest &request) {
+  const NpuPerformanceScope policy(request.device_type, request.device_arch, request.input_dtype);
   const auto enabled = [](const char *name) {
-    const char *value = std::getenv(name);
+    const char *value = npu_performance_env(name);
     return value != nullptr && std::string(value) == "1";
   };
-  const char *leaf3d = std::getenv("FLAGFFT_NPU_3D_LEAF");
+  const char *leaf3d = npu_performance_env("FLAGFFT_NPU_3D_LEAF");
   return request.device_type == "npu" &&
       (request.origin_rank == 2 ||
        (request.origin_rank == 3 && (leaf3d == nullptr || std::string(leaf3d) == "1")) ||
        enabled("FLAGFFT_NPU_FOURSTEP_LEAF") ||
-       std::getenv("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
+       npu_performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
 }
 
 // The 2D real-row path is intentionally a narrow MACA policy.  Keep

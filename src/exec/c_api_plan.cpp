@@ -93,6 +93,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
   }
 
   try {
+    const NpuPerformanceScope npu_policy(adaptor::backend_name(), desc.device_arch, "complex64");
     auto plan = std::make_unique<FlagFFTPlan>();
     plan->desc = std::move(desc);
 
@@ -420,7 +421,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
       }
     }
-    const char *npu_graph = std::getenv("FLAGFFT_NPU_GRAPH");
+    const char *npu_graph = npu_performance_env("FLAGFFT_NPU_GRAPH");
     if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
         (std::string(npu_graph) == "1" || std::string(npu_graph) == "auto") &&
         std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {

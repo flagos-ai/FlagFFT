@@ -27,6 +27,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          origin_real_transform_kind == other.origin_real_transform_kind &&
          device_type == other.device_type && device_index == other.device_index &&
          device_arch == other.device_arch &&
+         npu_performance == other.npu_performance &&
          musa_1d_fourstep_split == other.musa_1d_fourstep_split && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
          batch == other.batch &&
@@ -38,6 +39,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
 }
 
 PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &request) const {
+  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
   RequestContext context;
   context.input_dtype = request.input_dtype;
   context.output_dtype = request.output_dtype;
@@ -46,6 +48,8 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;
+  if (npu_performance_qualified(request.device_type, request.device_arch, request.input_dtype))
+    context.npu_performance = npu_performance_identity();
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
     if (split != nullptr) context.musa_1d_fourstep_split = split;
@@ -82,6 +86,7 @@ const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
 }
 
 PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
+  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
@@ -283,7 +288,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   // An opt-in split lets Ascend qualify the existing generic FourStep path
   // with Stockham/Bluestein children before changing its automatic policy.
   // Scope the override to the requested 1D root, never a convolution child.
-  const char *npu_split = std::getenv("FLAGFFT_NPU_FOURSTEP_SPLIT");
+  const char *npu_split = npu_performance_env("FLAGFFT_NPU_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 1 && npu_split != nullptr && *npu_split != '\0') {
     const std::string spec(npu_split);
     const auto separator = spec.find(':');
@@ -305,7 +310,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
         const auto row_factors = select_leaf_factors(n1);
         const auto col_factors = select_leaf_factors(n2);
@@ -323,7 +328,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   // Let 2D axis plans reuse the existing FourStep plan and fused-leaf
   // execution for long axes. Keep this opt-in so the current 2D policy stays
   // unchanged while splits are screened on Ascend.
-  const char *npu_2d_split = std::getenv("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
+  const char *npu_2d_split = npu_performance_env("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 2 && request.raw_dim == 1 &&
       request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_2d_split != nullptr && *npu_2d_split != '\0') {
@@ -347,7 +352,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
         const auto row_factors = select_leaf_factors(n1);
         const auto col_factors = select_leaf_factors(n2);
@@ -367,7 +372,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n2, false));
     }
   }
-  const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
+  const char *npu_3d_aiv64 = npu_performance_env("FLAGFFT_NPU_3D_AIV64");
   const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
                                 request.raw_dim == 1 && request.input_dtype == "complex64" &&
                                 request.output_dtype == "complex64" && npu_3d_aiv64 != nullptr &&
@@ -376,7 +381,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     const auto factors = select_leaf_factors(n);
     if (should_use_leaf(n, factors)) return make_leaf_plan(n, factors);
   }
-  const char *npu_3d_split = std::getenv("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
+  const char *npu_3d_split = npu_performance_env("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 3 && request.raw_dim == 1 &&
       request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_3d_split != nullptr && *npu_3d_split != '\0') {
@@ -400,7 +405,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       auto build_3d_child = [&](int64_t length) -> PlanNodePtr {
         if (use_npu_3d_aiv64 && length == 64) {
           const auto factors = select_leaf_factors(length);
@@ -468,6 +473,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
 }
 
 double PlanBuilder::cost_for(int64_t n, const FFTRequest &request) {
+  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
   set_request_context(request);
   return cost_for(n);
 }
