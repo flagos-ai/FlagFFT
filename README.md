@@ -242,32 +242,83 @@ On IX arch `71`, contiguous FP32 1D single requests select scoped policies:
 |---|---|---|
 | 1024 | `[16,8,8]`, tensor exchange, two physical warps | Same leaf with real input/output |
 | 2048 | Tensor exchange, two physical warps | R2C packs even/odd samples into a 1024-point complex leaf and reconstructs the half spectrum in one kernel; C2R keeps the real-boundary leaf |
-| 16384 | Tensor exchange, inner pack 4, two physical warps | Same Four-Step with real input/output |
+| 16384 | TLE exchange, 16 FFTs per row/column tile, four physical warps | Full-length real-boundary Four-Step with warp FFTs |
 | 328050, 340200 | Interleaved shared exchange and twiddle recurrence | Half-length complex FFT plus pre/postprocess |
-| 663000 | Unchanged | Half-length complex FFT plus pre/postprocess |
-| 1048576 | Interleaved/swizzled exchange, inner pack 8, four physical warps | Half-length complex FFT plus pre/postprocess |
+| 663000 | Grouped TLE exchange, four FFTs per tile | Half-length complex FFT with grouped exchange and packed pre/postprocess |
+| 1048576 | Resource-bounded dense Four-Step tiles | Half-length complex FFT plus pre/postprocess |
 
-For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024, 2048,
-or 16384 use tensor exchange and four physical warps. The 1024-point leaf uses
+Single real transforms of length 16 use one physical warp; disable this with
+`FLAGFFT_IX_SMALL_REAL=0`. Single complex transforms of length 16/210/1024/2048
+and single real boundaries of length 210/1024/2048 use packed complex I/O.
+The 1024/2048 leaves specialize single-batch indexing where eligible; disable
+this with `FLAGFFT_IX_STATIC_SINGLE=0`, or use `FLAGFFT_IX_VEC_IO=0` for scalar I/O. The
+16384 single real path can be rolled back with `FLAGFFT_IX_SHORT_REAL=0`.
+
+For IX arch `71`, contiguous FP32 1D batch-64 requests at length 1024 or 2048
+use tensor exchange and four physical warps. The 1024-point leaf uses
 `[8,8,4,4]`; the 2048-point C2C/C2R leaf uses its measured factor order.
 The 2048-point R2C path uses the fused 1024-point `[16,8,8]` leaf with two
-physical warps. The same exchange policy covers the 8191-point batch-64
-Bluestein plan, whose convolution uses a 16384-point Four-Step child.
+physical warps.
+The 16384-point batch-64 C2C plan uses one TLE CTA per transform, with
+`[16,16,16,4]`, sixteen physical warps, and 128 KiB of shared memory. Its
+shared-memory permutation and disjoint-write scheduling keep the transform
+inside the block. `FLAGFFT_IX_FOURSTEP_CTA=0` restores the earlier path.
+The 8191/16381 batch-64 Bluestein plans use their qualified TLE presets:
+respectively 32/16 FFTs per tile, four physical warps, and narrowly scoped
+removal of redundant shared-memory write/write fences. Read/write fences and
+explicit barriers remain. The 8191 preset also reorders row-stage registers
+for contiguous output. The 663000-point single/batch plans use four FFTs per
+tile, with the same dependence checks on statically unrolled mixed-radix
+stages. `FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS=0` restores the earlier Four-Step and
+prime policies; `FLAGFFT_IX_CT_SINGLE=0` or `FLAGFFT_IX_CT_BATCH=0` disables
+the corresponding single or batched presets.
 For 23-point batch-64 R2C/C2R, a direct real DFT folds the two conversion
 kernels into the transform; `FLAGFFT_IX_REAL_DIRECT_DFT=0` restores the prior path.
-At length 16384, batch-64 R2C/C2R use a packed 8192-point complex child;
+At length 16384, batch-64 R2C/C2R use a fused, packed 8192-point complex
+child: R2C uses `[32,16,16]` with eight physical warps; C2R uses
+`[8,8,8,16]` with sixteen. Both use one transform per CTA.
+`FLAGFFT_IX_FOURSTEP_CTA=0` restores the earlier multi-kernel child;
 `FLAGFFT_PACKED_REAL=0` disables this real-transform path.
 At lengths 185640, 340200, 524288, and 663000, batch-64 R2C/C2R also use
 the packed half-length complex Four-Step child. These cases keep the full-length
 path when `FLAGFFT_IX_CT_BATCH=0` or `FLAGFFT_PACKED_REAL=0`.
 Set `FLAGFFT_IX_FUSED_R2C=0` before starting the process to
-restore the prior full-length R2C leaf. Set `FLAGFFT_IX_CT_BATCH=0` to
+disable fused packed R2C reconstruction. Set `FLAGFFT_IX_CT_BATCH=0` to
 compare with the previous batch path.
 
+For dense FP32 batch-64 CT requests at N=1024, request preset 11 selects radices 16-by-8-by-8, two physical warps, one FFT per
+CTA, and portable recurrence exchange for C2C, R2C, and C2R. All twelve scoped
+NumPy checks across three input amplitudes passed; minimum speedups were
+0.7804x for C2C, 0.8695x for C2R, and 0.8521x for R2C. At N=16, C2C and R2C pack four FFTs into one physical warp; C2R uses
+one FFT per warp after its three-amplitude qualification reached 0.9884x; `FLAGFFT_IX_SMALL_CT_BATCH_WARP=0` disables that route.
+At N=210, C2C and C2R retain the 7-by-6-by-5 geometry and eight FFTs per
+CTA, with recurrence twiddles selected by request preset 12. Their three-amplitude
+checks passed with minimum speedups of 1.1764x and 0.8776x respectively.
+The N=210 R2C request uses preset 13: sixteen FFTs per CTA, sixteen physical
+warps, and recurrence twiddles. Its intermediate shared stores are permutations
+of independent FFT-slot/frequency addresses. The existing CoreX postpass removes
+only adjacent write-only fences; read/write dependencies and explicit stage
+barriers remain. Three-amplitude scoped checks passed at warmup 10 / iterations
+100 with a 1.0380x speedup. `FLAGFFT_IX_TLE_REAL_DISJOINT=0` retains the original
+compiler fences. Other launch widths or batch tiles retain their fences.
+The N=2048 batch-64 fused R2C leaf also loads adjacent even/odd FP32 input
+samples as aligned pairs; `FLAGFFT_IX_PACKED_R2C_INPUT=0` restores scalar loads.
+`FLAGFFT_IX_CT_BATCH_PACKED_IO=0` disables the short-CT request presets.
+
+The dense FP32 C2C request at N=340200 and batch=64 uses packed complex I/O,
+recurrence twiddles, interleaved shared FFT slots, and eight axis FFTs per CTA tile.
+Request preset 10 transports these settings while retaining the 504-by-675
+Four-Step geometry. Both directions passed scoped NumPy checks at input scales
+2^-20, 1, and 2^20 with warmup 10 / iterations 100; the scoped minimum speedup
+was 0.7623x. The complete frozen 30-operator run remains the acceptance gate.
+`FLAGFFT_IX_CT_BATCH=0` or `FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS=0` rolls back this policy.
+
 Other lengths, batch sizes, ranks, architectures and FP64 retain their existing
-paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to compare
-against the original single implementation. `FLAGFFT_PACKED_REAL=0` can separately
-disable the half-length real path. The policies select matching stage-twiddle
+paths. Set `FLAGFFT_IX_CT_SINGLE=0` **before starting the process** to disable
+the single CT policy and request-level Four-Step presets; use the per-path
+switches above for other comparisons. Use `FLAGFFT_PACKED_REAL=0` together with `FLAGFFT_IX_FUSED_R2C=0`
+to compare R2C with the full-length real path; the fused reconstruction
+has its own switch. The policies select matching stage-twiddle
 tables and have separate in-process and filesystem kernel cache entries.
 
 Use `tools/ix_ct_single_sweep.py --binary <build>/flagfft-cli --batches 1,64 --output-dir
@@ -555,6 +606,34 @@ The current IX acceptance policy disables FP64. The runner omits
 `torch.float64` cases from the manifest's expanded case list on IX and does
 not count them as skipped or completed work; every logical operator still runs
 for FP32.
+
+IX acceptance must set `FLAGFFT_NUMPY_CAPTURE_FULL_BATCH=1`. The capture's
+historical 128 MiB transfer chunk also changes the execution plan's batch;
+without this setting, a large batch case can validate smaller independent
+plans and miss a batch-layout error. The runner records the requested and
+executed batches and rejects a missing or mismatched full-batch report.
+Memory-limited chunked checks remain useful diagnostics, but do not certify
+the requested batch plan.
+
+For a complete IX qualification, use one committed source/build and an idle
+GPU, with tuning disabled and diagnostic kernel overrides cleared:
+
+```bash
+FLAGFFT_EXECUTION_POLICY=balanced FLAGFFT_TUNE_DISABLE=1 \
+FLAGFFT_NUMPY_CAPTURE_FULL_BATCH=1 \
+python tools/run_tests.py --build-dir /absolute/path/to/build \
+  --gpus 2 --combination full --scales all --warmup 10 --iters 100 \
+  --timeout 600 --output-dir /absolute/path/to/results/YYYYMMDD_HHMMSS_ix_30op
+```
+
+This expands to 600 FP32 accuracy cases (three amplitudes) and 200 performance
+cases across 30 operators. Acceptance requires each operator's geometric
+mean speedup, computed from its own cases, to reach `0.85`, and every case to
+reach `0.65x`. A successful runner exit checks execution and numerical status;
+it does not enforce these performance thresholds. Keep incorrect reference
+timings visible and report their raw ratios separately from statistics over
+valid references. A collection of faster targeted runs is screening evidence;
+the complete final-source run is the acceptance result.
 
 On NPU, Ascend 910B does not support FP64, so the runner omits those cases
 before launch and aggregation. The FP32 cases run FlagFFT against NumPy. SiP

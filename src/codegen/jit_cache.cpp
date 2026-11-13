@@ -246,6 +246,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 std::to_string(ix_ct_single_tle_policy_) + ";ix-ct-batch=" +
                                 (ix_ct_batch_policy_ ? "1" : "0") + ";ix-real-single-pack=" +
                                 (ix_real_single_pack_ ? "1" : "0") +
+                                ";ix-prime-3d=" + (ix_prime_3d_policy_ ? "1" : "0") +
+                                ";ix-fourstep-preset=" + std::to_string(ix_fourstep_preset_) +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (musa_1d_batch_policy_) {
@@ -704,6 +706,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_ct_single_policy_) jit_command << " --ix-ct-single";
   if (ix_ct_batch_policy_) jit_command << " --ix-ct-batch";
   if (ix_real_single_pack_) jit_command << " --ix-real-single-pack";
+  if (ix_prime_3d_policy_) jit_command << " --ix-prime-3d";
+  if (ix_fourstep_preset_) jit_command << " --ix-fourstep-preset " << ix_fourstep_preset_;
+  if (key.ix_warp_fft_pack > 0) jit_command << " --ix-warp-fft-pack " << key.ix_warp_fft_pack;
   if (ix_ct_single_tle_policy_) jit_command << " --ix-ct-single-tle " << ix_ct_single_tle_policy_;
   if (musa_1d_batch_policy_) jit_command << " --musa-1d-batch";
 #if defined(BACKEND_MACA)
@@ -755,6 +760,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
+    if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
   }
   if (key.hcu_full_smem) jit_command << " --hcu-3d-full-smem";
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
@@ -1107,6 +1113,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::CompactToHermitianFull || key.kind == KernelKind::ComplexToReal) {
     kernel->rows_per_block = json_int_field(artifact_json, "rows_per_block");
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    if (key.kind==KernelKind::R2CPackedPostprocess || key.kind==KernelKind::C2RPackedPreprocess) {
+      kernel->column_block=json_int_field(artifact_json,"block");
+      if (kernel->column_block<=0) throw std::runtime_error("invalid packed-real column block");
+    }
   }
   if (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepRowStrided ||
       key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepHermitianRow ||

@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #include <cstdlib>
+#include <charconv>
 #include <sstream>
 
 namespace flagfft {
@@ -133,6 +134,61 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       context.input_dtype == "complex64" && cuda_wide && std::string(cuda_wide) == "1") {
     if (n == 4096) return {16, 16, 16};
     if (n == 8192) return {16, 16, 32};
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64") {
+    if (const char *value = std::getenv("FLAGFFT_IX_LEAF_FACTORS")) {
+      const std::string text(value);
+      const auto fail = []() -> void {
+        throw std::runtime_error("FLAGFFT_IX_LEAF_FACTORS requires <length>:<supported radices separated by x>");
+      };
+      const auto parse = [&](const std::string &token) {
+        int64_t parsed=0;
+        const auto result=std::from_chars(token.data(),token.data()+token.size(),parsed);
+        if (result.ec!=std::errc{} || result.ptr!=token.data()+token.size()) fail();
+        return parsed;
+      };
+      const auto colon=text.find(':');
+      if (colon==std::string::npos || text.find(':',colon+1)!=std::string::npos) fail();
+      const int64_t length=parse(text.substr(0,colon));
+      if (length<2 || length>4096) fail();
+      std::vector<int64_t> factors;
+      int64_t product=1;
+      std::size_t start=colon+1;
+      while (start<=text.size()) {
+        auto end=text.find('x',start);
+        if (end==std::string::npos) end=text.size();
+        const auto radix=parse(text.substr(start,end-start));
+        if (!contains(kSupportedRadices,radix) || product>length/radix) fail();
+        product*=radix; factors.push_back(radix);
+        if (end==text.size()) break;
+        start=end+1;
+      }
+      if (product!=length) fail();
+      if (length==n) return factors;
+    }
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
+    const char *small_radix = std::getenv("FLAGFFT_IX_RADIX8");
+    if (small_radix && std::string(small_radix) != "0" && std::string(small_radix) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_RADIX8 must be 0 or 1");
+    }
+    if (small_radix && std::string(small_radix) == "1") {
+      // Smaller register butterflies give each FFT more cooperating lanes.
+      // Keep a radix-2/4 tail rather than putting a large codelet in one lane.
+      std::vector<int64_t> factors;
+      int64_t remaining = n;
+      while (remaining >= 8) { factors.push_back(8); remaining /= 8; }
+      if (remaining > 1) factors.push_back(remaining);
+      return factors;
+    }
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      context.ix_fourstep_preset == 11 && n == 1024 && context.requested_n == n) {
+    return {16, 8, 8};
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
     const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
@@ -311,6 +367,34 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     // Two radix-32 stages underuse BW1000's 64-lane wavefront for batch=64.
     return {16, 8, 8};
   }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
+    const char *setting = std::getenv("FLAGFFT_IX_BALANCED_RADICES");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_BALANCED_RADICES must be 0 or 1");
+    }
+    if (setting ? std::string(setting) == "1"
+                : (context.ix_fourstep_preset > 0 && context.ix_fourstep_preset < 9)) {
+      // Screen smaller codelets without a radix-2 tail that greatly widens
+      // cooperative stages. Existing explicitly qualified policies above
+      // retain precedence; the ordinary cost model orders the remaining
+      // radix-8/16 factorizations across leaf lengths and axis roles.
+      std::vector<int64_t> best;
+      std::vector<int64_t> best_score;
+      for (const auto &candidate : enumerate_supported_factorizations(n)) {
+        if (!std::all_of(candidate.begin(), candidate.end(), [](int64_t radix) {
+              return radix == 8 || radix == 16;
+            })) continue;
+        auto score = score_leaf_factorization(n, candidate);
+        if (best.empty() || score > best_score) {
+          best = candidate;
+          best_score = std::move(score);
+        }
+      }
+      if (!best.empty()) return best;
+    }
+  }
   auto it = best_leaf_factors_cache_.find(n);
   if (it != best_leaf_factors_cache_.end()) {
     return it->second;
@@ -410,6 +494,14 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
         "inputs");
   }
   int64_t lanes = choose_lanes(n, factors);
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && n >= 64 && n <= 4096 &&
+      std::getenv("FLAGFFT_IX_RADIX8") && std::string(std::getenv("FLAGFFT_IX_RADIX8")) == "1" &&
+      !factors.empty() && std::all_of(factors.begin(), factors.end(), [](int64_t r) {
+        return r == 2 || r == 4 || r == 8;
+      })) {
+    lanes = n / *std::max_element(factors.begin(), factors.end());
+  }
   int64_t execution_lanes = lanes;
   if (context.device_type == "maca") {
     for (int64_t radix : factors) {

@@ -367,13 +367,18 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
   return adaptor::Memory::from_floats(interleaved);
 }
 
-std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request) {
+std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
+                                                   bool portable_default) {
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;
   const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
+  // The full TLE CTA uses fixed-width groups. Its final stage's table shape
+  // differs from the portable layout that evaluates every codelet at once.
   const bool portable_ix = adaptor::backend_name() == "ix" &&
       (portable_setting ? std::string(portable_setting) == "1"
-                        : (ix_ct_single_policy_enabled(request) || ix_ct_batch_policy_enabled(request)));
+                        : (request.ix_fourstep_preset!=4 &&
+                           (portable_default || ix_ct_single_policy_enabled(request) ||
+                            ix_ct_batch_policy_enabled(request))));
   const char *cuda_portable = std::getenv("FLAGFFT_CUDA_PORTABLE_LEAF");
   const bool portable_cuda = adaptor::backend_name() == "cuda" && cuda_portable &&
                               std::string(cuda_portable) == "1";

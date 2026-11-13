@@ -190,6 +190,8 @@ def main() -> None:
                         help="Use the replacement body for an eligible native NPU 2D transpose")
     parser.add_argument("--npu-table-transpose3d", action="store_true",
                         help="Replace a native NPU 3D tile with the same permutation table")
+    parser.add_argument("--permutation-span", type=int, default=0)
+    parser.add_argument("--ix-warp-fft-pack", type=int, choices=(0,1,2,4,8,16,32), default=0)
     parser.add_argument(
         "--perm-form",
         choices=(
@@ -246,6 +248,10 @@ def main() -> None:
                         help="enable the scoped IX FP32 batch-64 CT leaf policy")
     parser.add_argument("--ix-real-single-pack", action="store_true",
                         help="use one transform per block for IX N=210 real single")
+    parser.add_argument("--ix-prime-3d", action="store_true",
+                        help="enable parent-qualified IX prime-axis 3D defaults")
+    parser.add_argument("--ix-fourstep-preset", type=int, choices=range(14), default=0,
+                        help="public-request IX performance preset transported by the native planner")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
     parser.add_argument("--maca-tail-mode",
@@ -294,8 +300,14 @@ def main() -> None:
     from .target import (set_ix_ct_single_default, set_ix_ct_batch_default,
                          set_ix_ct_single_tle_default, set_ix_real_single_pack)
     set_ix_ct_single_default(args.ix_ct_single)
+    from .target import set_ix_warp_fft_pack
+    set_ix_warp_fft_pack(args.ix_warp_fft_pack)
     set_ix_ct_batch_default(args.ix_ct_batch)
     set_ix_real_single_pack(args.ix_real_single_pack)
+    from .target import set_ix_prime_3d
+    set_ix_prime_3d(args.ix_prime_3d)
+    from .target import set_ix_fourstep_preset
+    set_ix_fourstep_preset(args.ix_fourstep_preset)
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
@@ -320,6 +332,11 @@ def main() -> None:
         source_fingerprint=source_hash.hexdigest(),
     )
     set_profile(profile)
+    from .kernels_common import _ix_large_fourstep_default_for
+    from .target import set_ix_large_fourstep_default
+    ix_large_fourstep = _ix_large_fourstep_default_for(
+        args.kernel,args.four_step_n1,args.four_step_n2,args.dtype)
+    set_ix_large_fourstep_default(ix_large_fourstep)
     profile_dir = profile.fingerprint
     if profile.backend == "ix":
         overrides = {k: v for k, v in os.environ.items() if k.startswith("FLAGFFT_IX_")}
@@ -329,8 +346,16 @@ def main() -> None:
             profile_dir += "-ct-batch"
         if args.ix_real_single_pack:
             profile_dir += "-real-single-pack"
+        if args.ix_prime_3d:
+            profile_dir += "-prime3d"
+        if args.ix_fourstep_preset:
+            profile_dir += f"-fourstep{args.ix_fourstep_preset}"
         if args.ix_ct_single_tle:
             profile_dir += f"-tle{args.ix_ct_single_tle}"
+        if ix_large_fourstep:
+            profile_dir += "-large-fourstep"
+        if args.ix_warp_fft_pack:
+            profile_dir += f"-warpfft{args.ix_warp_fft_pack}"
     if profile.backend == "maca":
         # Keep default-on and explicit opt-out artifacts separate.  The native
         # compiler also includes this bit in its in-process cache key, but the
@@ -722,6 +747,7 @@ def main() -> None:
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
+            permutation_span=args.permutation_span,
             hcu_full_smem=args.hcu_3d_full_smem,
             out_dir=args.out_dir,
         )
@@ -771,6 +797,8 @@ def main() -> None:
             "maca_1d_single_default": args.maca_1d_single,
             "ix_ct_single_default": args.ix_ct_single,
             "ix_ct_batch_default": args.ix_ct_batch,
+            "ix_fourstep_preset": args.ix_fourstep_preset,
+            "ix_large_fourstep_default": ix_large_fourstep,
             "ix_real_single_pack": args.ix_real_single_pack,
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "maca_tail_mode": args.maca_tail_mode,

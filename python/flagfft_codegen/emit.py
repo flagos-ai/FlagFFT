@@ -639,6 +639,11 @@ def _emit_r2c_pointwise_jit_kernel(
             and os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "0") == "1"):
         grid_columns = n // 4 + 1 - int(_npu_packed_boundary_direct_midpoint(n, True, elements_per_program))
         elements_per_program *= _npu_packed_boundary_groups(n, True)
+    column_block=256
+    if kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
+        from .kernels_real import packed_real_boundary_block, _packed_layout
+        width=n//2 + (1 if kernel=="r2c_packed_postprocess" else 0)
+        column_block,_=_packed_layout(width,packed_real_boundary_block(n,dtype))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -652,7 +657,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "length": int(n),
         # Keep the historical block ABI; the explicit column grid also
         # supports wider NPU tiles. Row grouping belongs to grid.y.
-        "block": 256,
+        "block": column_block,
         "grid_x_override": (
             (grid_columns + elements_per_program - 1) // elements_per_program
             if kernel in {"real_to_complex", "r2c_half_pack",
@@ -693,6 +698,7 @@ def emit_jit_kernel(
     four_step_n1: int,
     four_step_n2: int,
     perm_form: str = "outer",
+    permutation_span: int = 0,
     hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
@@ -736,6 +742,7 @@ def emit_jit_kernel(
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
             perm_form=perm_form,
+            permutation_span=permutation_span,
             hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
@@ -795,6 +802,11 @@ def emit_jit_kernel(
     if spec.family == STOCKHAM:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
+    if kernel_name.startswith("ix_warp256_"):
+        from .target import ix_warp_fft_pack
+        module_name += f"_warp{ix_warp_fft_pack()}"
+    if permutation_span:
+        module_name += f"_s{permutation_span}"
     module_name += variant_suffix()
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -831,6 +843,8 @@ def emit_jit_kernel(
         dtype=dtype,
         hcu_full_smem=hcu_full_smem,
     )
+    if permutation_span:
+        metadata["permutation_span"] = permutation_span
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
@@ -869,7 +883,7 @@ def _emit_tiled_transpose_jit_kernel(
         )
     elif (
         cuda_mode == "packed"
-        or (_maca_backend_active()
+        or ((_maca_backend_active() or _ix_backend_active())
             and dtype == "complex64"
             and _maca_knob("2D_TRANSPOSE") == "packed")
     ):

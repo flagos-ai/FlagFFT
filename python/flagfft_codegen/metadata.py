@@ -113,6 +113,13 @@ def _module_source(kernel_source: str, radices: tuple[int, ...] = ()) -> str:
         # Portable MACA kernels do not use TLE. Keep their modules independent
         # of the backend-specific TLE extensions during isolated compilation.
         source = source.replace("import triton.experimental.tle.language as tle\n", "")
+    if "_ixdisjoint_" in kernel_source:
+        import re
+        names=re.findall(r"def (\w+_ixdisjoint_[0-9a-f]{12})\(",kernel_source)
+        if len(names)!=1:
+            raise ValueError("Expected one generated IX disjoint-stage entry")
+        source += ("\nfrom flagfft_codegen.ix_disjoint_stage import register_kernel as _register_ix_stage\n"
+                   + f"_register_ix_stage({names[0]})\n")
     return source
 
 
@@ -282,7 +289,9 @@ def _metadata(
         # portable exchange code but validates its own warp override below.
         num_warps = max(2, num_warps)
         warp_override = _maca_knob("WARPS")
-        if warp_override:
+        # IX validates its override against the IX hardware profile below;
+        # the portable path must not impose MetaX's two-warp minimum there.
+        if warp_override and not _ix_backend_active():
             try:
                 requested_warps = int(warp_override)
             except ValueError:
@@ -298,7 +307,22 @@ def _metadata(
     if _ix_backend_active() and _maca_knob("WARPS"):
         num_warps = int(_maca_knob("WARPS"))
         profile.validate(num_warps)
-    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c"
+    if _ix_backend_active():
+        resource_warps = _maca_knob("RESOURCE_WARPS", "0")
+        if resource_warps not in {"0", "1"}:
+            raise ValueError("FLAGFFT_IX_RESOURCE_WARPS must be 0 or 1")
+        if (resource_warps == "1" and maca_backend
+                and kernel_type in INNER_PACK_ROW_KERNELS | INNER_PACK_COL_KERNELS
+                and kernel_type not in STRIDED_FOUR_STEP_KERNELS
+                and os.environ.get("FLAGFFT_IX_WARPS") is None):
+            # Bound per-thread live data before codelet temporaries. For P8,
+            # the 512-point row can use two warps while the 1024-point column
+            # needs four to avoid the spills observed with narrower launches.
+            threads = (plan.length * inner_pack + 31) // 32
+            num_warps = max(2, profile.warps_for(threads))
+            profile.validate(num_warps)
+    from .target import ix_fourstep_preset
+    if (_ix_backend_active() and kernel_type == "leaf_packed_r2c" and ix_fourstep_preset() not in {7,8}
             and os.environ.get("FLAGFFT_IX_WARPS") is None):
         # The half-length reconstruction has twice the register work of a
         # normal leaf. Four warps caused a large batch-64 regression on V150;
@@ -330,6 +354,26 @@ def _metadata(
                     "FLAGFFT_HCU_3D_FUSED_WARPS, FINAL_WARPS and MIDDLE_WARPS must be 1, 2, 4 or 8"
                 ) from exc
             profile.validate(num_warps)
+    warp_pack = 0
+    if kernel_name.startswith("ix_warp"):
+        from .target import ix_warp_fft_pack
+        warp_pack = ix_warp_fft_pack()
+        physical_warps=max(1,(warp_pack*min(plan.length,64)+63)//64)
+        profile.validate(physical_warps)
+        exchange_points=plan.length
+        if "_chunk" in kernel_name:
+            exchange_points=64*int(kernel_name.split("_chunk",1)[1].split("_",1)[0])
+        element_bytes=4 if "_c2r_" in kernel_name and "_packed_c2r_" not in kernel_name else 8
+        if warp_pack * exchange_points * element_bytes > profile.max_dynamic_shared_memory:
+            raise ValueError("IX warp FFT output tile exceeds shared-memory capacity")
+        num_warps = physical_warps
+        batch_per_block = warp_pack
+        inner_pack = 1
+        if kernel_type in {'four_step_row','four_step_col','four_step_real_row',
+                           'four_step_hermitian_row','four_step_r2c_col','four_step_c2r_col'}:
+            batch_per_block=1
+            inner_pack=warp_pack
+            tle_fused_twiddle=True
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -347,6 +391,7 @@ def _metadata(
         "n2": int(n2),
         "inner_pack": inner_pack,
         "tle_fused_twiddle": tle_fused_twiddle,
+        "ix_warp_fft_pack": warp_pack,
     }
 
 

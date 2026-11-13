@@ -20,6 +20,8 @@ import os
 from textwrap import dedent
 
 from .kernels_common import (
+    _ix_backend_active,
+    _maca_knob,
     _dtype_suffix,
     _maca_backend_active,
     _next_power_of_two,
@@ -540,6 +542,30 @@ def {name}(in_ptr,twiddle_ptr,out_ptr,{distance},nbatch):
         tl.store(out_ptr+batch*{dst_stride}+{packed+1},{-factor}*midpoint_imag,batch<nbatch)
 '''
     return name,source,['in_ptr','twiddle_ptr','out_ptr',distance,'nbatch'],1
+def packed_real_boundary_block(n: int, dtype: str) -> int:
+    if not (_ix_backend_active() and dtype=="complex64" and n in {16384,663000}): return 256
+    value=_maca_knob("REAL_BOUNDARY_BLOCK","256")
+    if value not in {"256","512","1024","2048"}:
+        raise ValueError("FLAGFFT_IX_REAL_BOUNDARY_BLOCK must be 256, 512, 1024 or 2048")
+    return int(value)
+
+
+def _ix_boundary_pair_io(source: str, pairs: tuple, real: str, imag: str) -> str:
+    for ptr,r,i,negate in pairs:
+        old=(f"    {r} = tl.load({ptr}, mask=mask, other=0.0)\n"
+             f"    {i} = {'-' if negate else ''}tl.load({ptr} + 1, mask=mask, other=0.0)")
+        new=(f"    pair = tl.load(tl.cast({ptr},tl.pointer_type(tl.uint64)),mask=mask,other=0)\n"
+             f"    {r} = tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)\n"
+             f"    {i} = {'-' if negate else ''}tl.cast(tl.cast(pair >> 32,tl.uint32),tl.float32,bitcast=True)")
+        if old not in source: raise ValueError("missing packed-real pair load")
+        source=source.replace(old,new,1)
+    old=(f"    tl.store(dst, {real}, mask=mask)\n"
+         f"    tl.store(dst + 1, {imag}, mask=mask)")
+    new=(f"    pair = tl.cast(tl.cast({real},tl.uint32,bitcast=True),tl.uint64) | "
+         f"(tl.cast(tl.cast({imag},tl.uint32,bitcast=True),tl.uint64) << 32)\n"
+         "    tl.store(tl.cast(dst,tl.pointer_type(tl.uint64)),pair,mask=mask)")
+    if old not in source: raise ValueError("missing packed-real pair store")
+    return source.replace(old,new,1)
 
 
 def _build_r2c_packed_postprocess_kernel_source(
@@ -551,11 +577,16 @@ def _build_r2c_packed_postprocess_kernel_source(
         return _build_npu_packed_boundary(n,False,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")),os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY","0")=="1")
     packed = n // 2
     half = packed + 1
-    block = 256
+    block = packed_real_boundary_block(n,dtype)
     block_cols, rows_per_block = _packed_layout(half, block)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_r2c_packed_postprocess_kernel_n{n}_{suffix}"
+    packed_io = (_ix_backend_active() and dtype=="complex64"
+                 and (n==16384 or (n==663000 and bool(_maca_knob("REAL_BOUNDARY_BLOCK"))))
+                 and _maca_knob("VEC_IO","0")=="packed")
+    if block!=256: kernel_name+=f"_b{block}"
+    if packed_io: kernel_name+="_u64"
     source = dedent(
         f"""
         @triton.jit
@@ -596,6 +627,9 @@ def _build_r2c_packed_postprocess_kernel_source(
             tl.store(dst + 1, out_i, mask=mask)
         """
     )
+    if packed_io:
+        source=_ix_boundary_pair_io(source,(("a_ptr","ar","ai",False),("b_ptr","br","bi",True),
+            ("twiddle_ptr + k * 2","wr","wi",False)),"out_r","out_i")
     return (
         kernel_name,
         source,
@@ -612,11 +646,16 @@ def _build_c2r_packed_preprocess_kernel_source(
     if current_profile().backend=="npu" and dtype=="complex64" and n>=512:
         return _build_npu_packed_boundary(n,True,int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE","256")),os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY","0")=="1")
     packed = n // 2
-    block = 256
+    block = packed_real_boundary_block(n,dtype)
     block_cols, rows_per_block = _packed_layout(packed, block)
     zero = _zero_other(dtype)
     suffix = _dtype_suffix(dtype)
     kernel_name = f"_c2r_packed_preprocess_kernel_n{n}_{suffix}"
+    packed_io = (_ix_backend_active() and dtype=="complex64"
+                 and (n==16384 or (n==663000 and bool(_maca_knob("REAL_BOUNDARY_BLOCK"))))
+                 and _maca_knob("VEC_IO","0")=="packed")
+    if block!=256: kernel_name+=f"_b{block}"
+    if packed_io: kernel_name+="_u64"
     source = dedent(
         f"""
         @triton.jit
@@ -659,6 +698,12 @@ def _build_c2r_packed_preprocess_kernel_source(
             tl.store(dst + 1, packed_i, mask=mask)
         """
     )
+    if packed_io:
+        source=_ix_boundary_pair_io(source,(("x_ptr","xr","xi",False),("q_ptr","qr","qi",True),
+            ("twiddle_ptr + k * 2","wr","wi",False)),"packed_r","packed_i")
+    if _ix_backend_active() and dtype=="complex64":
+        # The imaginary endpoints do not participate in a real inverse FFT.
+        source=source.replace("    sum_r = xr + qr", "    xi = tl.where(k == 0,0.0,xi)\n    qi = tl.where(k == 0,0.0,qi)\n    sum_r = xr + qr",1)
     return (
         kernel_name,
         source,

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #pragma once
+#include <atomic>
 #include <cstdlib>
 #include <functional>
 
@@ -120,6 +121,7 @@ struct JitKernel {
   int64_t batch_per_block = 1;
   int64_t inner_pack = 1;
   int64_t rows_per_block = 1;
+  int64_t column_block = 256;
   int64_t butterflies_per_block = 128;
   int64_t grid_x_override = 0;
   int64_t grid_y_override = 0;
@@ -132,6 +134,7 @@ struct JitKernel {
   bool npu_single_buffer = false;
   void *jit_function = nullptr;
   std::shared_ptr<void> direct_launch;
+  std::atomic<bool> compiled{false};
   std::mutex mutex;
 };
 
@@ -168,6 +171,20 @@ struct CompiledRawNode {
                                 const RawExecutionContext &context) const = 0;
   virtual std::string describe() const = 0;
   virtual bool is_single_kernel() const { return false; }
+};
+
+// A fused axis permutation is defined within one ND transform. Reuse its
+// scratch and kernels serially rather than folding independent transforms
+// into the permutation's row index.
+struct CompiledRawPerBatchNode final : CompiledRawNode {
+  CompiledRawPerBatchNode(std::shared_ptr<CompiledRawNode> inner,
+                         int64_t input_elements, int64_t output_elements,
+                         int64_t input_element_bytes, int64_t output_element_bytes);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  std::shared_ptr<CompiledRawNode> inner;
+  int64_t input_elements, output_elements, input_element_bytes, output_element_bytes;
 };
 
 struct CompiledRawGraphNode final : CompiledRawNode {
@@ -1858,6 +1875,8 @@ class TritonCompiler {
   bool ix_ct_single_policy_ = false;
   bool ix_ct_batch_policy_ = false;
   bool ix_real_single_pack_ = false;
+  bool ix_prime_3d_policy_ = false;
+  int ix_fourstep_preset_ = 0;
   int ix_ct_single_tle_policy_ = 0;
   std::string maca_tail_policy_ = "off";
   // The Bluestein convolution FFT has a row/column layout the TLE AIV stage
@@ -1997,11 +2016,20 @@ DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx);
 DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              int64_t n,
                                              const std::vector<int64_t> &idx);
-std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request);
+std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
+                                                   bool portable_default = false);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
+bool ix_real_single_pack_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);
+int ix_fourstep_default_preset(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);
+int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
+                                int64_t n0, int64_t n1, int64_t n2 = 0);
+bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
+                                 int64_t n0, int64_t n1, int64_t n2);
+bool ix_small_real_warp_default_enabled(const FFTRequest &request);
+bool ix_short_real_warp_default_enabled(const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);
 std::vector<DeviceAllocation> build_raw_cube_dft_tables(int64_t n, const FFTRequest &request);
 

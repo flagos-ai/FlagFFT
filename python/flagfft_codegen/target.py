@@ -22,11 +22,29 @@ _MACA_1D_BATCH_DEFAULT = ContextVar("flagfft_maca_1d_batch_default", default=Fal
 _MUSA_1D_BATCH_DEFAULT = ContextVar("flagfft_musa_1d_batch_default", default=False)
 _IX_CT_SINGLE_DEFAULT = ContextVar("flagfft_ix_ct_single_default", default=False)
 _IX_CT_BATCH_DEFAULT = ContextVar("flagfft_ix_ct_batch_default", default=False)
+_IX_LARGE_FOURSTEP_DEFAULT = ContextVar("flagfft_ix_large_fourstep_default", default=False)
+_IX_WARP_FFT_PACK = ContextVar("flagfft_ix_warp_fft_pack", default=0)
 _IX_REAL_SINGLE_PACK = ContextVar("flagfft_ix_real_single_pack", default=False)
+_IX_PRIME_3D = ContextVar("flagfft_ix_prime_3d", default=False)
+_IX_FOURSTEP_PRESET = ContextVar("flagfft_ix_fourstep_preset", default=0)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
 _MACA_3D_DEFAULT = ContextVar("flagfft_maca_3d_default", default=False)
 _MACA_3D_C2C32_SINGLE_CUBE = ContextVar("flagfft_maca_3d_c2c32_single_cube", default=False)
+
+
+def set_ix_warp_fft_pack(pack: int):
+    if pack not in {0,1,2,4,8,16,32}:
+        raise ValueError("IX warp FFT pack must be 0, 1, 2, 4, 8, 16 or 32")
+    return _IX_WARP_FFT_PACK.set(pack)
+
+
+def reset_ix_warp_fft_pack(token):
+    _IX_WARP_FFT_PACK.reset(token)
+
+
+def ix_warp_fft_pack() -> int:
+    return _IX_WARP_FFT_PACK.get()
 
 
 def set_ix_ct_single_tle_default(policy: int):
@@ -67,12 +85,46 @@ def ix_ct_batch_default_enabled() -> bool:
     return _IX_CT_BATCH_DEFAULT.get()
 
 
+def set_ix_large_fourstep_default(enabled: bool):
+    return _IX_LARGE_FOURSTEP_DEFAULT.set(bool(enabled))
+
+
+def reset_ix_large_fourstep_default(token):
+    _IX_LARGE_FOURSTEP_DEFAULT.reset(token)
+
+
+def ix_large_fourstep_default_enabled() -> bool:
+    return _IX_LARGE_FOURSTEP_DEFAULT.get()
+
+
 def set_ix_real_single_pack(enabled: bool):
     return _IX_REAL_SINGLE_PACK.set(bool(enabled))
 
 
 def ix_real_single_pack_enabled() -> bool:
     return _IX_REAL_SINGLE_PACK.get()
+
+
+def set_ix_prime_3d(enabled: bool):
+    return _IX_PRIME_3D.set(bool(enabled))
+
+
+def ix_prime_3d_enabled() -> bool:
+    return _IX_PRIME_3D.get()
+
+
+def set_ix_fourstep_preset(preset: int):
+    if preset not in range(14):
+        raise ValueError("IX request preset must be in [0, 13]")
+    return _IX_FOURSTEP_PRESET.set(preset)
+
+
+def reset_ix_fourstep_preset(token):
+    _IX_FOURSTEP_PRESET.reset(token)
+
+
+def ix_fourstep_preset() -> int:
+    return _IX_FOURSTEP_PRESET.get()
 
 
 def set_codegen_target(target: str) -> None:

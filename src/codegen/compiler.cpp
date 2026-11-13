@@ -32,6 +32,15 @@
 namespace flagfft {
 namespace {
 
+  struct ScopedBool {
+    bool &value;
+    const bool previous;
+    ScopedBool(bool &value, bool enabled) : value(value), previous(value) { value=enabled; }
+    ~ScopedBool() { value=previous; }
+    ScopedBool(const ScopedBool &)=delete;
+    ScopedBool &operator=(const ScopedBool &)=delete;
+  };
+
   bool flag_or_default(const char *name, bool default_value) {
     const char *value = std::getenv(name);
     return value == nullptr ? default_value : std::string(value) == "1";
@@ -964,6 +973,104 @@ namespace {
   }
 
 
+
+  void mark_ix_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
+    if (request.device_type == "ix" && request.device_arch == "71" && span > 0 &&
+        flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false)) {
+      key.permutation_span = span;
+    }
+  }
+
+  int64_t qualified_ix_nd_pack(const FFTRequest &request, int64_t batch,
+                               int64_t n0, int64_t n1, int64_t n2 = 0) {
+    const auto pack=ix_nd_warp_default_pack(request,batch,n0,n1,n2);
+    return pack>0 && adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024 ? pack : 0;
+  }
+
+  void mark_ix_warp_fft(KernelKey &key, const FFTRequest &request, int64_t span = 0) {
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        key.dtype != "complex64") return;
+    const bool small_batch=request.ix_fourstep_preset==9 && key.length==16 &&
+        request.batch==64 && flag_or_default("FLAGFFT_IX_SMALL_CT_BATCH_WARP",true);
+    const bool family_default=request.ix_warp_fft_pack_default>0 || small_batch ||
+                              ix_small_real_warp_default_enabled(request);
+    const bool family=flag_or_default("FLAGFFT_IX_WARP_FFT",family_default);
+    const bool small_real=key.length==16 && family && request.origin_rank<=1 &&
+        request.raw_dim==1 && (small_batch || (request.batch==1 &&
+        (key.kind==KernelKind::LeafR2C || key.kind==KernelKind::LeafC2R)));
+    const bool narrow = key.length == 256 && flag_or_default("FLAGFFT_IX_WARP256", family);
+    const bool wide = (key.length == 64 || key.length == 128 || key.length == 256 || key.length == 512 ||
+                       key.length == 1024 || key.length == 2048) &&
+                      family && key.length!=256;
+    if (!narrow && !wide && !small_real) return;
+    const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
+                          key.kind == KernelKind::LeafR2CPermutedStore;
+    if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
+        key.kind != KernelKind::LeafR2C && key.kind != KernelKind::LeafPackedR2C &&
+        key.kind != KernelKind::LeafPackedC2R) return;
+    int64_t pack = small_batch ? (request.real_transform_kind=="c2r" ? 1 : 4) :
+                     request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
+                     (small_real ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
+    if (const char *value = std::getenv(key.length == 256
+                                         ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
+      const std::string text(value);
+      if (text != "1" && text != "2" && text != "4" && text != "8" && text != "16" && text != "32") {
+        throw std::runtime_error("IX warp FFT pack must be 1, 2, 4, 8, 16 or 32");
+      }
+      pack = std::stoll(text);
+    }
+    if (permuted) {
+      if (span <= 0) return;
+      const bool inner = key.perm_form == "inner";
+      // These conditions justify a contiguous, aligned output FFT-slot tile.
+      if (inner ? request.batch % span != 0 || (request.batch / span) % pack != 0
+                : key.kind == KernelKind::LeafR2CPermutedStore && span % pack != 0) return;
+      key.permutation_span = span;
+    }
+    key.ix_warp_fft_pack = pack;
+  }
+
+  bool ix_warp_fourstep_axes(int64_t n1, int64_t n2) {
+    const auto supported=[](int64_t n) { return n==64 || n==128 || n==256; };
+    return supported(n1) && supported(n2);
+  }
+
+  bool qualified_ix_short_real_warp(const FFTRequest &request) {
+    return ix_short_real_warp_default_enabled(request) &&
+           adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  }
+
+  void mark_ix_warp_fourstep(KernelKey &key, const FFTRequest &request) {
+    if (request.device_type!="ix" || request.device_arch!="71" || key.dtype!="complex64" ||
+        !flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",qualified_ix_short_real_warp(request)) ||
+        !ix_warp_fourstep_axes(key.four_step_n1,key.four_step_n2)) return;
+    int64_t pack=16;
+    if (const char *value=std::getenv("FLAGFFT_IX_WARP_FFT_PACK")) {
+      const std::string text(value);
+      if (text!="4" && text!="8" && text!="16")
+        throw std::runtime_error("IX FourStep warp pack must be 4, 8 or 16");
+      pack=std::stoll(text);
+    }
+    key.ix_warp_fft_pack=pack;
+  }
+
+  // Match the Python dense FourStep policy when constructing stage tables.
+  // Other leaf families, including strided FourStep, retain their own layout.
+  bool ix_large_fourstep_portable_default(const FFTRequest &request, int64_t n1, int64_t n2) {
+    const auto eligible_axis = [](int64_t n) {
+      return n >= 512 && n <= 1024 && (n & (n - 1)) == 0;
+    };
+    const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.input_dtype != "complex64" || !eligible_axis(n1) || !eligible_axis(n2) ||
+        (policy && std::string(policy) != "balanced") ||
+        adaptor::max_dynamic_smem_bytes(request.device_index) < 131072) return false;
+    const char *setting = std::getenv("FLAGFFT_IX_LARGE_FOURSTEP");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_LARGE_FOURSTEP must be 0 or 1");
+    }
+    return !setting || std::string(setting) == "1";
+  }
 
   bool npu_2d_table_transpose_supported(const FFTRequest &request,
                                       int64_t rows,
@@ -2555,6 +2662,27 @@ namespace {
     return row && col && row->length < 512 && col->length < 512;
   }
 
+  bool ix_fused_c2r_leaf_enabled(const FFTRequest &request, int64_t batch) {
+    const int64_t n = request.requested_n;
+    const bool packed_cta = n==16384 && batch==64 &&
+                           flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==7);
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.raw_dim != 1 || request.origin_rank > 1 || batch <= 0 ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        request.real_transform_kind != "c2r" || request.fft_length != n ||
+        n < 32 || (n > 4096 && !packed_cta) || (n & (n - 1)) != 0 ||
+        request.input_strides.empty() || request.input_strides.back() != 1) {
+      return false;
+    }
+    const char *setting = std::getenv("FLAGFFT_IX_FUSED_C2R");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_FUSED_C2R must be 0 or 1");
+    }
+    // Screen the existing half-length inverse leaf without changing the
+    // qualified default until IX correctness and paired timings are available.
+    return setting ? std::string(setting) == "1" : request.ix_fourstep_preset==7;
+  }
+
   struct PackedRealChild {
     FFTRequest request;
     PlanNodePtr plan;
@@ -2570,12 +2698,16 @@ namespace {
         request.origin_rank <= 1 && request.raw_dim == 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
+                       (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
     const bool disable = setting != nullptr && std::string(setting) == "0";
     if (disable || (request.input_dtype != "complex128" && request.input_dtype != "complex64") || n <= 0 ||
         n % 2 != 0) {
       return std::nullopt;
     }
+    // The qualified single 16K real path folds its boundary into two full
+    // FourStep passes. Preserve an explicit packed-real override.
+    if (!force && qualified_ix_short_real_warp(request)) return std::nullopt;
     const bool is_a100_fp64_target = request.device_type == "cuda" && request.device_arch == "sm_80";
     // Resource bounds remain target-local; batching itself is implemented
     // by the shared packed-real kernels with a distance-aware fallback.
@@ -2878,6 +3010,82 @@ namespace {
            std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan) != nullptr;
   }
 
+  std::shared_ptr<LeafPlanNode> ix_fourstep_cta_leaf(const FFTRequest &request,
+                                                   int64_t n, int64_t batch) {
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.origin_rank > 1 || request.raw_dim != 1 || batch < 2 ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        n < 8192 || n > 16384 || (n & (n - 1)) != 0 ||
+        request.input_strides.empty() || request.input_strides.back() != 1) return nullptr;
+    const bool qualified=request.ix_fourstep_preset==4 || request.ix_fourstep_preset==7 ||
+                         request.ix_fourstep_preset==8;
+    const char *setting = std::getenv("FLAGFFT_IX_FOURSTEP_CTA");
+    if (!flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",qualified)) return nullptr;
+    if (setting && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA must be 0 or 1");
+    }
+    // Public presets transport the launch width and tile together. Other
+    // experiments must still provide the complete launch configuration.
+    const char *warps = std::getenv("FLAGFFT_IX_WARPS");
+    const std::string warp_arg=warps ? warps : (qualified ? (request.ix_fourstep_preset==8 ? "8" : "16") : "");
+    if (warp_arg!="4" && warp_arg!="8" && warp_arg!="16") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_WARPS=4, 8 or 16");
+    }
+    const char *batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
+    const std::string batch_arg=batch_pack ? batch_pack : (qualified ? "1" : "");
+    if (batch_arg!="1" && batch_arg!="2") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires FLAGFFT_IX_BATCH_PACK=1 or 2");
+    }
+    const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
+    const std::string portable_arg=portable_setting ? portable_setting
+        : (qualified ? (request.ix_fourstep_preset==4 ? "0" : "1") : "");
+    if (portable_arg!="0" && portable_arg!="1") {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_CTA requires explicit FLAGFFT_IX_PORTABLE_LEAF=0 or 1");
+    }
+    const bool portable = portable_arg == "1";
+    const int64_t cta_batch_pack=std::stoll(batch_arg);
+    if (cta_batch_pack==2 && (!portable || n!=8192 || warp_arg!="16"))
+      throw std::runtime_error("paired IX FourStep CTA requires portable 8192-point FFTs and 16 warps");
+    int exponent = 0;
+    for (int64_t value = n; value > 1; value >>= 1) ++exponent;
+    std::vector<int64_t> factors;
+    for (int i = 0; i < 3; ++i) {
+      factors.push_back(int64_t{1} << (exponent / 3 + (i < exponent % 3 ? 1 : 0)));
+    }
+    const char *small = std::getenv("FLAGFFT_IX_CTA_SMALL_RADICES");
+    if (small && std::string(small)!="0" && std::string(small)!="1")
+      throw std::runtime_error("FLAGFFT_IX_CTA_SMALL_RADICES must be 0 or 1");
+    if (flag_or_default("FLAGFFT_IX_CTA_SMALL_RADICES",request.ix_fourstep_preset==7)) {
+      if (!portable)
+        throw std::runtime_error("small-radix IX FourStep CTA requires portable exchange");
+      factors = n==8192 ? std::vector<int64_t>{8,8,8,16}
+                        : std::vector<int64_t>{8,8,16,16};
+    }
+    if (flag_or_default("FLAGFFT_IX_CTA_TLE_RADIX16",request.ix_fourstep_preset==4)) {
+      if (portable || n!=16384 || cta_batch_pack!=1)
+        throw std::runtime_error("radix-16 IX CTA requires one nonportable 16384-point FFT");
+      factors = {16,16,16,4};
+    }
+    if (const char *order = std::getenv("FLAGFFT_IX_CTA_RADIX_ORDER")) {
+      if (std::string(order) != "0" && std::string(order) != "1" && std::string(order) != "2")
+        throw std::runtime_error("FLAGFFT_IX_CTA_RADIX_ORDER must be 0, 1 or 2");
+      std::rotate(factors.begin(),factors.begin() + (*order-'0'),factors.end());
+    }
+    const int64_t max_radix=*std::max_element(factors.begin(),factors.end());
+    const bool single_tle=std::all_of(factors.begin(),factors.end()-1,
+                                    [&](int64_t radix) { return radix==max_radix; });
+    // Rotated factor orders can need several groups. Only complete
+    // intermediate stages may reuse the TLE shared buffer.
+    const int64_t joined_bytes = portable
+        ? (factors.size()>3 ? n*2 : (n / factors.back()) * factors.front()) *
+              static_cast<int64_t>(sizeof(float))
+        : n * (single_tle ? 2 : 4) * static_cast<int64_t>(sizeof(float));
+    if (joined_bytes * cta_batch_pack > adaptor::max_dynamic_smem_bytes(request.device_index)) return nullptr;
+    const int64_t lanes = portable ? 128 : n / max_radix;
+    return std::make_shared<LeafPlanNode>(n, std::move(factors), 1, lanes, 16,
+                                           std::vector<int64_t>{}, n);
+  }
+
 }  // namespace
 
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -2946,14 +3154,9 @@ void TritonCompiler::configure_single_transform_policies(const FFTRequest &reque
                                       request.maca_3d_c2c32_single_cube;
   ix_ct_single_policy_ = ix_ct_single_policy_enabled(request);
   ix_ct_batch_policy_ = ix_ct_batch_policy_enabled(request);
-  ix_real_single_pack_ = request.device_type == "ix" && request.device_arch == "71" &&
-                         request.raw_dim == 1 && request.origin_rank <= 1 &&
-                         request.batch == 1 && request.requested_n == 210 &&
-                         request.fft_length == 210 && request.input_dtype == "complex64" &&
-                         request.output_dtype == "complex64" &&
-                         (request.real_transform_kind == "r2c" ||
-                          request.real_transform_kind == "c2r") &&
-                         !request.input_strides.empty() && request.input_strides.back() == 1;
+  ix_prime_3d_policy_ = request.ix_prime_3d_default;
+  ix_fourstep_preset_ = request.ix_fourstep_preset;
+  ix_real_single_pack_ = ix_real_single_pack_policy_enabled(request);
   ix_ct_single_tle_policy_ = ix_ct_single_tle_policy(request);
   maca_tail_policy_ = maca_tail_codegen_root(request);
   maca_1d_batch_policy_ = request.device_type == "maca" && request.device_arch == "102" &&
@@ -3861,6 +4064,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
             adaptor::Memory(static_cast<std::size_t>(batch*four_step->length*sizeof(float)*2)));
       }
     }
+    if (auto fused = ix_fourstep_cta_leaf(request, four_step->length, batch)) {
+      // Fuse the complete FFT into one block. The logical plan remains a
+      // FourStep node; the execution description exposes the larger leaf.
+      return compile_raw_leaf(*fused, request);
+    }
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
@@ -3873,9 +4081,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           four_step->n1,
           four_step->n2,
           compile_four_step_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*row_leaf, request),
+          build_raw_leaf_tables(*row_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*col_leaf, request),
+          build_raw_leaf_tables(*col_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(stage1));
     }
@@ -3967,12 +4177,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         ((batch == 1 &&
           maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_LEAF_FUSION", maca_1d_single_policy_)) ||
          use_maca_3d_boundary);
-    const char *ix_3d_boundary = std::getenv("FLAGFFT_IX_3D_BLUESTEIN_BOUNDARY");
     const bool use_ix_3d_boundary_leaf =
         request.device_type == "ix" && request.device_arch == "71" &&
         request.origin_rank == 3 && request.input_dtype == "complex64" &&
-        bluestein->length == 997 && leaf != nullptr && ix_3d_boundary != nullptr &&
-        std::string(ix_3d_boundary) == "1";
+        bluestein->length == 997 && leaf != nullptr &&
+        flag_or_default("FLAGFFT_IX_3D_BLUESTEIN_BOUNDARY",request.ix_prime_3d_default);
     const bool use_cuda_boundary_leaf =
         request.device_type == "cuda" && request.device_arch == "sm_80" &&
         leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
@@ -4004,7 +4213,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
         (flag_or_default("FLAGFFT_CUDA_BLUESTEIN_FOURSTEP", false) || !real_kind.empty());
-    const bool use_four_step = use_default_four_step || use_maca_four_step || use_cuda_four_step;
+    // The experimental dense stages fuse twiddles into the row pass. Keep
+    // specialized real Bluestein boundaries together; complex convolutions
+    // can instead exercise the complete pair of dense warp stages.
+    const bool use_ix_dense_warp = request.device_type=="ix" && real_kind.empty() &&
+        four_step && ix_warp_fourstep_axes(four_step->n1,four_step->n2) &&
+        flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",false);
+    const bool use_four_step = (use_default_four_step || use_maca_four_step || use_cuda_four_step) && !use_ix_dense_warp;
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
@@ -4130,11 +4345,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           four_step->n2,
           std::move(fft),
           compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPrepareRow, true),
-          compile_four_step_col_kernel(boundary_col, child_request, four_step->n1, four_step->n2),
+          compile_boundary_kernel(boundary_col, KernelKind::FourStepCol, false),
           compile_boundary_kernel(boundary_row, KernelKind::BluesteinFourStepPointwiseRow, true),
           compile_boundary_kernel(boundary_col, KernelKind::BluesteinFourStepFinishCol, false),
-          build_raw_leaf_tables(boundary_row, child_request),
-          build_raw_leaf_tables(boundary_col, child_request),
+          build_raw_leaf_tables(boundary_row, child_request,
+              ix_large_fourstep_portable_default(child_request, four_step->n1, four_step->n2)),
+          build_raw_leaf_tables(boundary_col, child_request,
+              ix_large_fourstep_portable_default(child_request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(chirp),
           std::move(b_time),
@@ -4315,10 +4532,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       std::string(fused_setting) != "1") {
     throw std::runtime_error("FLAGFFT_IX_FUSED_R2C must be 0 or 1");
   }
+  const bool packed_cta = n==16384 && batch==64 &&
+      (fused_setting ? std::string(fused_setting)=="1" : request.ix_fourstep_preset==8) &&
+      flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==8);
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      n == 2048 &&
+      (n == 2048 || packed_cta || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
+                     n > 0 && n <= 2048 && n % 2 == 0)) &&
       (batch == 1 || batch == 64) &&
       (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
@@ -4334,20 +4555,35 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     child_request.input_shape = {batch, n / 2};
     child_request.input_strides = {n / 2, 1};
     PlanBuilder child_builder;
-    child_builder.build(n / 2, child_request);
-    const std::vector<int64_t> factors {16, 8, 8};
-    const int64_t lanes = child_builder.choose_lanes(n / 2, factors);
-    LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
-                             child_builder.choose_num_warps(lanes), {}, n / 2);
-    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
-                                         request.direction, request.input_dtype,
-                                         packed_leaf.length, packed_leaf.factors,
-                                         packed_leaf.lanes, packed_leaf.num_warps,
-                                         packed_leaf.generic_radices, packed_leaf.smem_size);
-    key.kind = KernelKind::LeafPackedR2C;
-    return std::make_shared<CompiledRawR2CLeafNode>(
-        n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
-        build_raw_packed_real_twiddle(request, n));
+    auto child_plan = child_builder.build(n / 2, child_request);
+    auto child_leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan);
+    if (!child_leaf && packed_cta && std::dynamic_pointer_cast<FourStepPlanNode>(child_plan))
+      child_leaf=ix_fourstep_cta_leaf(child_request,n/2,batch);
+    if (n == 2048 || child_leaf) {
+      // Preserve the measured default, while honoring the already validated
+      // half-length factor override when screening packed R2C leaves.
+      const char *factor_override = std::getenv("FLAGFFT_IX_LEAF_FACTORS");
+      char *factor_end = nullptr;
+      const bool explicit_child_factors = child_leaf && factor_override &&
+          std::strtoll(factor_override, &factor_end, 10) == n / 2 &&
+          factor_end && *factor_end == ':';
+      const std::vector<int64_t> factors = n == 2048 && !explicit_child_factors
+          ? std::vector<int64_t>{16, 8, 8}
+          : child_leaf->factors;
+      const int64_t lanes = packed_cta ? child_leaf->lanes : child_builder.choose_lanes(n / 2, factors);
+      LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
+                               packed_cta ? child_leaf->num_warps : child_builder.choose_num_warps(lanes), {}, n / 2);
+      KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
+                                           request.direction, request.input_dtype,
+                                           packed_leaf.length, packed_leaf.factors,
+                                           packed_leaf.lanes, packed_leaf.num_warps,
+                                           packed_leaf.generic_radices, packed_leaf.smem_size);
+      key.kind = KernelKind::LeafPackedR2C;
+      mark_ix_warp_fft(key,request);
+      return std::make_shared<CompiledRawR2CLeafNode>(
+          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
+          build_raw_packed_real_twiddle(request, n));
+    }
   }
   // The 3D real boundary has many contiguous rows.  Screen the existing
   // one-launch even/odd leaf there to halve its FFT length without adding a
@@ -4378,6 +4614,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                          packed_leaf.lanes, packed_leaf.num_warps,
                                          packed_leaf.generic_radices, packed_leaf.smem_size);
     key.kind = KernelKind::LeafPackedR2C;
+    mark_ix_warp_fft(key,request);
     return std::make_shared<CompiledRawR2CLeafNode>(
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
@@ -4433,9 +4670,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           four_step->n1,
           four_step->n2,
           compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*row_leaf, request),
+          build_raw_leaf_tables(*row_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*col_leaf, request),
+          build_raw_leaf_tables(*col_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(stage1));
     }
@@ -4570,9 +4809,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool use_packed_fused_leaf = cuda_fused_leaf || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
-                                       batch == 256 * 256 && packed_fuse_enabled);
+                                       batch == 256 * 256 && packed_fuse_enabled) ||
+                                      ix_fused_c2r_leaf_enabled(request, batch);
     if (use_packed_fused_leaf) {
-      if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+      auto leaf=std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan);
+      if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
+        leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
+      if (leaf) {
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),
             packed_child->request.direction,
@@ -4584,11 +4827,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             leaf->generic_radices,
             leaf->smem_size);
         key.kind = KernelKind::LeafPackedC2R;
+        mark_ix_warp_fft(key,request);
         return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
             n,
             compile_kernel(key),
             build_raw_packed_real_twiddle(request, n),
-            build_raw_leaf_tables(*leaf, packed_child->request),
+            build_raw_leaf_tables(*leaf, packed_child->request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
             [node, request, batch]() {
               TritonCompiler compiler;
               return compiler.compile_raw_c2r_node(node, request, batch, false);
@@ -4629,9 +4873,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
           four_step->n1,
           four_step->n2,
           compile_four_step_hermitian_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*row_leaf, request),
+          build_raw_leaf_tables(*row_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_c2r_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
-          build_raw_leaf_tables(*col_leaf, request),
+          build_raw_leaf_tables(*col_leaf, request,
+              ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
           std::move(stage1));
     }
@@ -4668,6 +4914,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   num_warps,
                                   leaf.generic_radices,
                                   leaf.smem_size);
+  mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
@@ -4730,6 +4977,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
     key.cuda_permute_span = perm_span;
     key.cuda_permute_batch = request.batch;
   }
+  mark_ix_static_permutation_span(key, request, perm_span);
+  mark_ix_warp_fft(key, request, perm_span);
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
   // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
@@ -4871,6 +5120,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
@@ -4903,6 +5153,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
 }
@@ -4931,6 +5182,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                            leaf.generic_radices,
                                            leaf.smem_size);
   mark_npu_portable_leaf(key, request);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -4971,6 +5223,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(con
                                                 leaf.generic_radices,
                                                 leaf.smem_size);
   mark_npu_portable_leaf(key, request);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -4991,6 +5244,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_hermitian_row_kerne
                                                      leaf.generic_radices,
                                                      leaf.smem_size);
   mark_npu_portable_leaf(key, request);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -5011,6 +5265,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                            leaf.generic_radices,
                                            leaf.smem_size);
   mark_npu_portable_leaf(key, request);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -5051,6 +5306,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(cons
                                                leaf.generic_radices,
                                                leaf.smem_size);
   mark_npu_portable_leaf(key, request);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -5071,6 +5327,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(cons
                                                leaf.generic_radices,
                                                leaf.smem_size);
   mark_npu_portable_leaf(key, request);
+  mark_ix_warp_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -5369,6 +5626,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   n0_request.input_strides = {n0, 1};
   n0_request.requested_n = n0;
   n0_request.batch = batch * n1 * n2;
+
+  const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1,n2);
+  const bool ix_prime_3d=ix_prime_3d_default_enabled(request,batch,n0,n1,n2) &&
+      adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  ScopedBool prime_scope(ix_prime_3d_policy_,ix_prime_3d);
+  n2_request.ix_prime_3d_default=n1_request.ix_prime_3d_default=
+      n0_request.ix_prime_3d_default=ix_prime_3d;
+  n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
+      n0_request.ix_warp_fft_pack_default=ix_nd_pack;
 
   // Strided fast path: when both non-contiguous axes are plain leaves, run
   // them directly on the natural layout with their own stride and skip the
@@ -5845,7 +6111,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       (musa_hybrid_override == nullptr || std::string(musa_hybrid_override) != "0");
   const bool ix_hybrid = request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", true) &&
+      (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", ix_nd_pack==0) &&
       batch * n0 * n1 * n2 > kStridedMaxElements;
   const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
   const bool hcu_hybrid = request.device_type == "hcu" &&
@@ -5915,7 +6181,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // The inner-store chain is currently validated only for cubes on CUDA.
   // Elongated shapes use the hybrid chain above with an explicit transpose.
   const bool cuda_fused_shape = request.device_type != "cuda" || (n0 == n1 && n1 == n2);
-  if (n2_leaf && n1_leaf && n0_leaf && cuda_fused_shape && fused_3d_store_enabled() &&
+  if (n2_leaf && n1_leaf && n0_leaf && cuda_fused_shape && (fused_3d_store_enabled() || ix_nd_pack>0) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
     const bool last_transpose_default = request.device_type == "hcu" &&
@@ -5929,16 +6195,25 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer");
     const std::string n1_perm_form = hcu_3d_axis_perm_form(
         request, "FLAGFFT_HCU_3D_MIDDLE_PACK", "inner_middle", "inner");
+    // Keep the inner permutation inside one cube, including when the
+    // public descriptor batches several independent cubes.
+    const bool ix_per_cube = request.device_type == "ix" && batch > 1;
+    auto n2_cube_request = n2_request, n1_cube_request = n1_request, n0_cube_request = n0_request;
+    if (ix_per_cube) {
+      n2_cube_request.batch = n0 * n1;
+      n1_cube_request.batch = n0 * n2;
+      n0_cube_request.batch = n1 * n2;
+    }
     std::shared_ptr<CompiledRawNode> n2_fft =
-        compile_raw_permuted_store_leaf(*n2_leaf, n2_request, /*perm_span=*/n1, n2_perm_form);
+        compile_raw_permuted_store_leaf(*n2_leaf, n2_cube_request, /*perm_span=*/n1, n2_perm_form);
     std::shared_ptr<CompiledRawNode> n1_fft =
-        compile_raw_permuted_store_leaf(*n1_leaf, n1_request, /*perm_span=*/n2, n1_perm_form,
-                                        false, batch > 1 ? n0 * n2 : 0);
+        compile_raw_permuted_store_leaf(*n1_leaf, n1_cube_request, /*perm_span=*/n2, n1_perm_form,
+                                        false, !ix_per_cube && batch > 1 ? n0 * n2 : 0);
     const std::string n0_perm_form = hcu_3d_final_axis_perm_form(request);
     std::shared_ptr<CompiledRawNode> n0_fft =
         last_transpose ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
                        : compile_raw_permuted_store_leaf(*n0_leaf,
-                                                         n0_request,
+                                                         n0_cube_request,
                                                          /*perm_span=*/n1 * n2,
                                                          n0_perm_form);
 
@@ -5952,7 +6227,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
           std::shared_ptr<JitKernel>{}, std::move(temp1), std::move(temp2),
           std::shared_ptr<JitKernel>{}, std::move(perm_201));
     }
-    return std::make_shared<CompiledRaw3DStridedNode>(n0,
+    auto fused = std::make_shared<CompiledRaw3DStridedNode>(n0,
                                                       n1,
                                                       n2,
                                                       std::move(n2_fft),
@@ -5960,6 +6235,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                       std::move(n0_fft),
                                                       std::move(temp1),
                                                       std::move(temp2));
+    if (ix_per_cube) {
+      return std::make_shared<CompiledRawPerBatchNode>(fused,n0*n1*n2,n0*n1*n2,
+                                                       element_bytes,element_bytes);
+    }
+    return fused;
   }
 
   if (n1_leaf && n0_leaf && batch * n0 * n1 * n2 <= kStridedMaxElements) {
@@ -6474,6 +6754,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     key.perm_form = request.device_type == "hcu"
         ? hcu_3d_axis_perm_form(request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer")
         : "outer";
+    mark_ix_static_permutation_span(key, request, n1);
+    mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);
@@ -6624,6 +6906,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const int64_t n2 = node->n2;
   const int64_t half = n2 / 2 + 1;
   const int64_t packed = batch * n0 * n1 * half;
+  const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1,n2);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
@@ -6656,7 +6939,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const bool fused_middle = !inverse && screen_hybrid && n1_leaf &&
       packed > 64 * 64 * 64 &&
       flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_MIDDLE",
-                      batch == 1 && n0 == 256 && n1 == 256 && n2 == 256);
+                      ix_nd_pack>0 || (batch == 1 && n0 == 256 && n1 == 256 && n2 == 256));
   const bool fused_first = ix_real_screen && !npu_real_native && !inverse && n2_leaf &&
       (n2 == 64 || n2 == 256) &&
       packed > 64 * 64 * 64 && flag_or_default("FLAGFFT_IX_3D_R2C_FUSED_FIRST", true);
@@ -6720,6 +7003,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   }
 #endif
 
+  const bool ix_prime_3d=ix_prime_3d_default_enabled(request,batch,n0,n1,n2) &&
+      adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  ScopedBool prime_scope(ix_prime_3d_policy_,ix_prime_3d);
+  n2_request.ix_prime_3d_default=n1_request.ix_prime_3d_default=
+      n0_request.ix_prime_3d_default=ix_prime_3d;
+  n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
+      n0_request.ix_warp_fft_pack_default=ix_nd_pack;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   std::vector<DeviceAllocation> npu_transpose_indices;
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -6766,6 +7056,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     // write its compact rows directly in that transposed layout.
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
+    mark_ix_static_permutation_span(key, request, n1);
+    mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);
@@ -6774,10 +7066,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
         ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
         : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
   }
+  auto n1_cube_request = n1_request;
+  if (ix_real_screen && fused_middle && batch > 1) n1_cube_request.batch = n0 * half;
   auto n1_fft = npu_fused_outer_stores
       ? compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, true)
       : (fused_middle
-             ? compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "inner")
+             ? compile_raw_permuted_store_leaf(*n1_leaf, n1_cube_request, half, "inner")
              : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
   std::shared_ptr<CompiledRawNode> n0_fft;
   if (npu_fused_outer_stores) {
@@ -6847,7 +7141,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(packed * element_bytes));
-  return std::make_shared<CompiledRaw3DRealRTRTNode>(n0,
+  auto fused = std::make_shared<CompiledRaw3DRealRTRTNode>(n0,
                                                      n1,
                                                      n2,
                                                      inverse,
@@ -6862,6 +7156,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
                                                      std::move(npu_transpose_indices),
                                                      npu_fused_outer_stores,
                                                      npu_fused_small_final_store);
+  if (ix_real_screen && fused_middle && batch > 1) {
+    const int64_t real_elements = n0*n1*n2, compact_elements = n0*n1*half;
+    return std::make_shared<CompiledRawPerBatchNode>(fused,
+        inverse ? compact_elements : real_elements, inverse ? real_elements : compact_elements,
+        inverse ? element_bytes : element_bytes/2, inverse ? element_bytes/2 : element_bytes);
+  }
+  return fused;
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
@@ -7075,6 +7376,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n0 = node->n0;
   const int64_t n1 = node->n1;
+  const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1);
   const bool rc_eligible = n0 <= 256;
   // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
   // about 0.1 ms versus direct launches (both RC and transpose paths).
@@ -7134,6 +7436,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   col_request.requested_n = n0;
   col_request.batch = batch * n1;
 
+  row_request.ix_warp_fft_pack_default=col_request.ix_warp_fft_pack_default=ix_nd_pack;
   if (n1 == 1) {
     col_request.batch = batch;
     col_request.input_shape = {batch, n0};
@@ -7280,6 +7583,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       n0 <= 128 && n1 <= 128 && npu_2d_transpose_store != nullptr &&
       std::string(npu_2d_transpose_store) == "1";
+  const bool use_ix_2d_transpose_store =
+      request.device_type == "ix" && request.device_arch == "71" && request.origin_rank == 2 &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 >= 512 && n0 <= 4096 && n1 >= 512 && n1 <= 4096 &&
+      flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0);
   const bool use_cuda_2d_transpose_store = request.device_type == "cuda" &&
       request.device_arch == "sm_80" && flag_or_default("FLAGFFT_CUDA_2D_FUSED_STORE", false);
   // Large S5000 2D transforms spend a substantial fraction of their time in
@@ -7291,7 +7599,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       flag_or_default("FLAGFFT_MUSA_2D_FUSED_STORE", n0 == 2048 && n1 == 2048);
   auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-  if ((use_npu_2d_transpose_store || use_cuda_2d_transpose_store || use_musa_2d_transpose_store) &&
+  if ((use_npu_2d_transpose_store || use_cuda_2d_transpose_store || use_musa_2d_transpose_store || use_ix_2d_transpose_store) &&
       row_leaf && col_leaf) {
     std::shared_ptr<CompiledRawNode> row_fft =
         compile_raw_permuted_store_leaf(*row_leaf, row_request, n0, "outer");
@@ -7402,6 +7710,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       request.origin_rank == 2 && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && (n1 % 2) == 0 &&
       flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048);
+  const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1);
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -7412,11 +7721,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   row_request.batch = batch * n0;
 
   // Degenerate real 2D: a unit axis reduces to a batched 1D R2C.
+  row_request.ix_warp_fft_pack_default=ix_nd_pack;
   if (n0 == 1) {
     row_request.batch = batch;
     row_request.input_shape = {batch, n1};
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_r2c_node(node->row_plan, row_request, batch),
                                                    batch);
+  }
+
+  const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
+      ix_row_leaf && ix_col_leaf && flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) {
+    // Keep the compact spectrum transposed between two FFT passes. Each
+    // outer store stays inside its own matrix, including the odd half width.
+    auto key = KernelKey::leaf_r2c_permuted_store(
+        triton_target_for_request(row_request), row_request.direction, row_request.input_dtype,
+        ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
+        ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
+    mark_ix_warp_fft(key, row_request, n0);
+    auto row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
+        n1, compile_kernel(key), build_raw_leaf_tables(*ix_row_leaf, row_request), DeviceAllocation{}, n0);
+    FFTRequest col_request = request;
+    col_request.fft_length = col_request.requested_n = n0;
+    col_request.input_shape = {batch * half_n1, n0};
+    col_request.input_strides = {n0, 1};
+    col_request.batch = batch * half_n1;
+    col_request.ix_warp_fft_pack_default=ix_nd_pack;
+    auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer");
+    return std::make_shared<CompiledRaw2DR2CRowNode>(
+        n0, n1, std::move(row_r2c), std::move(col_fft), nullptr, nullptr,
+        adaptor::Memory(static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes)), DeviceAllocation{});
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -7509,7 +7846,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "musa" &&
-          flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)));
+          flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)) ||
+         (request.device_type == "ix" && request.device_arch == "71" &&
+          request.origin_rank == 2 && request.input_dtype == "complex64" &&
+          request.output_dtype == "complex64" &&
+          flag_or_default("FLAGFFT_IX_2D_REAL_ROW",
+                          n0 >= 16 && n0 <= 256 && n1 >= 16 && n1 <= 256)));
     if (use_compact_real_row) {
       // The strided column path already accepts the compact row-major half
       // spectrum. Let the existing 1D real boundary write that layout
@@ -7625,6 +7967,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
       request.origin_rank == 2 && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && (n1 % 2) == 0 &&
       flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048);
+  const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1);
 
   // C2R is the reverse of R2C:
   // 1. Transpose (n0, half_n1) -> (half_n1, n0)
@@ -7651,11 +7994,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   row_request.batch = batch * n0;
 
   // Degenerate inverse real 2D: a unit axis reduces to a batched 1D C2R.
+  row_request.ix_warp_fft_pack_default=col_request.ix_warp_fft_pack_default=ix_nd_pack;
   if (n0 == 1) {
     row_request.batch = batch;
     row_request.input_shape = {batch, n1};
     return std::make_shared<CompiledRaw1DAs2DNode>(compile_raw_c2r_node(node->row_plan, row_request, batch),
                                                    batch);
+  }
+
+  const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
+      ix_row_leaf && ix_col_leaf && flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) {
+    auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer");
+    auto row_c2r = compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+    auto transpose = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    const auto bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
+    return std::make_shared<CompiledRaw2DC2RRowNode>(
+        n0, n1, std::move(col_fft), std::move(row_c2r), std::move(transpose), nullptr,
+        adaptor::Memory(bytes), adaptor::Memory(bytes));
   }
 
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -7747,7 +8106,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "musa" &&
-          flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)));
+          flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)) ||
+         (request.device_type == "ix" && request.device_arch == "71" &&
+          request.origin_rank == 2 && request.input_dtype == "complex64" &&
+          request.output_dtype == "complex64" &&
+          flag_or_default("FLAGFFT_IX_2D_REAL_ROW",
+                          n0 >= 16 && n0 <= 256 && n1 >= 16 && n1 <= 256)));
     if (use_compact_real_row) {
       // After the inverse column transform, each compact row is already a
       // valid 1D C2R input. Consume it directly and avoid Hermitian expansion

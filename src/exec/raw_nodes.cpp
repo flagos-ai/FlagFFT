@@ -47,6 +47,30 @@ struct RawCaptureScope {
   RawCaptureScope &operator=(const RawCaptureScope &) = delete;
 };
 }  // namespace
+CompiledRawPerBatchNode::CompiledRawPerBatchNode(
+    std::shared_ptr<CompiledRawNode> inner, int64_t input_elements, int64_t output_elements,
+    int64_t input_element_bytes, int64_t output_element_bytes)
+    : inner(std::move(inner)), input_elements(input_elements), output_elements(output_elements),
+      input_element_bytes(input_element_bytes), output_element_bytes(output_element_bytes) {}
+
+std::string CompiledRawPerBatchNode::describe() const {
+  return "CompiledRawPerBatch(inner=" + inner->describe() + ")";
+}
+
+flagfftResult CompiledRawPerBatchNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                              const RawExecutionContext &context) const {
+  const int64_t input_stride = (context.input_distance > 0 ? context.input_distance : input_elements)
+                                  * input_element_bytes;
+  const int64_t output_stride = (context.output_distance > 0 ? context.output_distance : output_elements)
+                                   * output_element_bytes;
+  RawExecutionContext single {context.request, context.stream, 1};
+  for (int64_t batch = 0; batch < context.batch; ++batch) {
+    const auto result = inner->execute(input + batch * input_stride,
+                                       output + batch * output_stride, single);
+    if (result != FLAGFFT_SUCCESS) return result;
+  }
+  return FLAGFFT_SUCCESS;
+}
 
 CompiledRawGraphNode::CompiledRawGraphNode(std::shared_ptr<CompiledRawNode> inner)
     : inner(std::move(inner)) {}
@@ -60,7 +84,7 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
                                             const RawExecutionContext &context) const {
   try {
     if (raw_capture_active(context.stream) ||
-        (context.request.device_type == "npu" && input == output))
+        input == output)
       return inner->execute(input, output, context);
     const bool same_npu_context = context.request.device_type != "npu" ||
         (graph_stream == context.stream && graph_batch == context.batch &&
@@ -213,7 +237,7 @@ namespace {
   }
 
   int64_t real_grid_x(const std::shared_ptr<JitKernel> &kernel, int64_t columns) {
-    return kernel->grid_x_override > 0 ? kernel->grid_x_override : ceil_div(columns, 256);
+    return kernel->grid_x_override > 0 ? kernel->grid_x_override : ceil_div(columns, kernel->column_block);
   }
 
   // Row-oriented kernels describe their work as `rows` rows of `rows_per_block`
@@ -587,7 +611,12 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
       args.push_back(JitKernelArg::i64(rows_per_transform));
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
-    kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+    int64_t blocks = ceil_div(context.batch, kernel->batch_per_block);
+    if (kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+        kernel->kernel_name.find("_outer_") != std::string::npos) {
+      blocks = ceil_div(context.batch, outer_stride) * ceil_div(outer_stride, kernel->batch_per_block);
+    }
+    kernel->launch(context.stream, args, blocks, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedLeaf execute failed: %s\n", e.what());
@@ -1952,7 +1981,6 @@ flagfftResult CompiledRawPackedR2CNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t output_distance = context.output_distance > 0 ? context.output_distance : half;
@@ -2335,7 +2363,6 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    constexpr int64_t block = 256;
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
@@ -2833,6 +2860,10 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
+    if (!transpose_fwd && !transpose_inv) {
+      RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
+      return col_fft->execute(temp1.get(), output, col_context);
+    }
 
     std::vector<JitKernelArg> transpose_fwd_args = {
         JitKernelArg::device(temp1.get()),
@@ -2927,6 +2958,10 @@ flagfftResult CompiledRaw2DC2RRowNode::execute(adaptor::DevicePtr input,
     flagfftResult result = col_fft->execute(temp1.get(), temp2.get(), col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
+    }
+    if (!transpose_inv) {
+      RawExecutionContext row_context {context.request, context.stream, batch * n0, half_n1, n1};
+      return row_c2r->execute(temp2.get(), output, row_context);
     }
 
     if (!col_permuted_store) {

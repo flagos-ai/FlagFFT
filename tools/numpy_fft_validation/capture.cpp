@@ -446,6 +446,13 @@ void release_file_cache(const fs::path& path, std::size_t offset, std::size_t by
 }
 
 int chunk_batch_size(const Spec& spec, const Layout& full_layout) {
+  if (const char* setting = std::getenv("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH")) {
+    const std::string value(setting);
+    if (value != "0" && value != "1") {
+      throw std::runtime_error("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH must be 0 or 1");
+    }
+    if (value == "1") return spec.batch;
+  }
   return flagfft::validation::capture_batch_chunk(
       spec.batch, full_layout.input_bytes, full_layout.output_bytes, spec.preserve_batch);
 }
@@ -642,6 +649,7 @@ void run_implementation(const Spec& spec, Implementation implementation,
     validate_file_size(spec.input, full_layout.input_bytes);
   }
   const int batch_chunk = chunk_batch_size(spec, full_layout);
+  std::cerr << "[capture-batch] requested=" << spec.batch << " execution=" << batch_chunk << '\n';
   const fs::path output_path =
       spec.output_dir / (implementation == Implementation::kFlagFFT ? "flagfft.bin" : "platform.bin");
 

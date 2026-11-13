@@ -72,6 +72,9 @@ implementation = args["implementation"]
 api, direction = args["api"], args["direction"]
 shape = tuple(int(n) for n in args["shape"].split(","))
 batch = int(args["batch"])
+if os.environ.get("FAKE_CAPTURE_BATCH_REPORT", "1") == "1":
+    execution_batch = int(os.environ.get("FAKE_CAPTURE_EXECUTION_BATCH", str(batch)))
+    print(f"[capture-batch] requested={{batch}} execution={{execution_batch}}", file=sys.stderr)
 mode = os.environ.get("FAKE_CAPTURE_PLATFORM_MODE", "ok")
 if implementation == "platform" and mode == "error":
     print("platform capture failed", file=sys.stderr)
@@ -449,6 +452,9 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
 ):
     # A CPU-only capture fixture exercises the real CLI/worker/signal path.
     capture = fake_capture(tmp_path)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=CUDA\n")
     size = min(matrix[operators[0]["sizes"]])
     cases = RUN_TESTS.expand_test_cases(
         [operators[0]], matrix, shapes={(size,)}, scales="1"
@@ -469,6 +475,8 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             "1",
             "--capture-bin",
             str(capture),
+            "--build-dir",
+            str(build_dir),
             "--output-dir",
             str(output),
         ],
@@ -504,7 +512,7 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             (output / operators[0]["id"] / "accuracy_result.json").read_text()
         )
         assert accuracy["status"] == "Incomplete"
-        assert accuracy["passed"] == 1 and accuracy["missing"] == 3
+        assert accuracy["passed"] == 1 and accuracy["missing"] == len(cases) - 1
         with pytest.raises(ProcessLookupError):
             os.kill(native_pid, 0)
         assert (output / "manifest.json").is_file()
@@ -1341,3 +1349,18 @@ def test_fourstep_capture_preserves_compile_failure_and_timeout(tmp_path, operat
     assert result["status"] == ("Timeout" if timeout else "Error")
     assert "compiler diagnostic before plan creation" in result["error"]
     assert "without a FourStep node" not in result["error"]
+@pytest.mark.parametrize("execution_batch,report,expected", [(4,"1","Passed"),(1,"1","Failed"),(4,"0","Failed")])
+def test_full_batch_accuracy_requires_matching_execution_plan(monkeypatch,tmp_path,operators,matrix,
+                                                              execution_batch,report,expected):
+    monkeypatch.setenv("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH","1")
+    monkeypatch.setenv("FAKE_CAPTURE_EXECUTION_BATCH",str(execution_batch))
+    monkeypatch.setenv("FAKE_CAPTURE_BATCH_REPORT",report)
+    case = dict(RUN_TESTS.expand_all_test_cases(operators,matrix)[0])
+    case["batch"] = 4
+    case["case_id"] = RUN_TESTS.case_name(case)
+    record=RUN_TESTS.run_accuracy_case(case,fake_capture(tmp_path),tmp_path/"out",0,30,tmp_path/"scratch")
+    assert record["accuracy"]["status"]==expected
+    if expected=="Passed":
+        assert record["accuracy"]["capture_batch"]=={"requested":4,"execution":4}
+    else:
+        assert "requested full batch" in record["accuracy"]["error"]
