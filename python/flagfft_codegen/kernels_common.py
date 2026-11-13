@@ -664,7 +664,8 @@ def _hcu_wide_permuted_store(plan: LeafPlan) -> bool:
 
 
 def permuted_store_batch_pack_for(
-    plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None
+    plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None,
+    permutation_span: int = 0, permutation_batch: int = 0, inner: bool = False,
 ) -> int:
     """Batch slots per block for the fused permuted store.
 
@@ -684,6 +685,13 @@ def permuted_store_batch_pack_for(
             target = int(setting)
         if pack_override is not None:
             target = pack_override
+        if inner and permutation_span > 0 and permutation_batch > 0:
+            outer_rows = permutation_batch // permutation_span
+            # The inner-store grid groups rows across the permuted dimension.
+            # A partial group needs a padded grid; choose a divisor instead so
+            # the existing compact launch covers every row exactly once.
+            while target > 1 and outer_rows % target:
+                target //= 2
         thread_limit = min(profile.max_threads_per_block,
                            profile.warp_size * _cooperative_warp_cap())
         lanes = lane_block_for(max(cooperative_stage_lanes_for(plan)))

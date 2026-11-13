@@ -846,6 +846,8 @@ def emit_jit_kernel(
         n2=n2,
         dtype=dtype,
         hcu_full_smem=hcu_full_smem,
+        permutation_span=permutation_span,
+        permutation_batch=permutation_batch,
     )
     if permutation_span:
         metadata["permutation_span"] = permutation_span

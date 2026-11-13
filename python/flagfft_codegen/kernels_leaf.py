@@ -3551,7 +3551,9 @@ def _build_leaf_kernel_source_for_io(
             elif _hcu_backend_active() and perm_form == "inner_middle_c2r_cube":
                 final_pack = 8
         batch_pack = permuted_store_batch_pack_for(
-            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack,
+            permutation_span=permutation_span, permutation_batch=permutation_batch,
+            inner=inner_perm_form,
         )
     elif io_mode in contiguous_modes:
         real_transform = (

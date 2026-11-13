@@ -124,6 +124,34 @@ def test_direct_store_keeps_compact_boundary_on_original_mapping(monkeypatch):
     assert emit("complex64", mode="permuted_store_r2c") == original
 
 
+@pytest.mark.parametrize("outer_rows", [1, 3, 6, 8, 20, 32])
+def test_inner_store_pack_covers_small_and_partial_outer_axes(monkeypatch, tmp_path, outer_rows):
+    from flagfft_codegen.emit import emit_jit_kernel
+    from flagfft_codegen.kernels_common import permuted_store_batch_pack_for
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
+    span = 64
+    rows = outer_rows * span
+    plan = LeafPlan(256, (16, 16), 1, 16, 1, (), 256, dtype="complex64")
+    pack = permuted_store_batch_pack_for(
+        plan, permutation_span=span, permutation_batch=rows, inner=True,
+    )
+    assert outer_rows % pack == 0
+    visited = [
+        (pid // span) * pack * span + pid % span + slot * span
+        for pid in range(rows // pack) for slot in range(pack)
+    ]
+    assert sorted(visited) == list(range(rows))
+    metadata = emit_jit_kernel(
+        kernel="leaf_permuted_store", length=256, factors=(16, 16), lanes=16,
+        num_warps=1, generic_radices=(), smem_size=256, direction="forward",
+        dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0,
+        perm_form="inner", permutation_span=span, permutation_batch=rows,
+        out_dir=tmp_path,
+    )
+    assert metadata["batch_per_block"] == pack
+    assert f"batch_id = pid * {pack}" in Path(metadata["module_path"]).read_text()
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("variant", ["wide", "cyclic"])
 @pytest.mark.parametrize("n,factors,lanes", [

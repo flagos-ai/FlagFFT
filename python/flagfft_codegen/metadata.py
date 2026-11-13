@@ -157,6 +157,8 @@ def _metadata(
     n2: int,
     dtype: str,
     hcu_full_smem: bool = False,
+    permutation_span: int = 0,
+    permutation_batch: int = 0,
 ) -> dict[str, Any]:
     if (
         current_profile().backend == "hcu"
@@ -181,7 +183,9 @@ def _metadata(
         ):
             final_pack = 8
         batch_per_block = permuted_store_batch_pack_for(
-            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack,
+            permutation_span=permutation_span, permutation_batch=permutation_batch,
+            inner=kernel_name.startswith("permuted_store_inner"),
         )
     elif (kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
           or (current_profile().backend == "cuda" and kernel_type == "leaf_r2c"
