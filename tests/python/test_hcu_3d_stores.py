@@ -168,7 +168,8 @@ def test_wave_store_retains_leaf_signature_and_bounds_output_tiles(monkeypatch, 
     source = Path(metadata["module_path"]).read_text()
     compile(source, "<hcu-wave-fft>", "exec")
     assert metadata["kernel_name"].startswith("hcu_warp")
-    assert metadata["num_warps"] == metadata["batch_per_block"] <= 8
+    assert metadata["num_warps"] == min(8, metadata["batch_per_block"])
+    assert n * metadata["batch_per_block"] * 2 <= metadata["num_warps"] * 64 * 64
     assert "perm_span" in metadata["arg_names"] and "nbatch" in metadata["arg_names"]
     assert "nbatch=tl.full((),16384,tl.int64)" in source
     assert "fast_cosf" not in source

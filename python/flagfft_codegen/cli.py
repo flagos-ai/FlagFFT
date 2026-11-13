@@ -517,7 +517,7 @@ def main() -> None:
     if profile.backend == "hcu" and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1":
         args.out_dir = args.out_dir / "direct-store"
     if profile.backend == "hcu" and os.getenv("FLAGFFT_HCU_3D_WARP_FFT", "0") == "1":
-        args.out_dir = args.out_dir / "wave-fft"
+        args.out_dir = args.out_dir / ("wave-fft-" + os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto"))
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
     if variant_suffix(root=True):

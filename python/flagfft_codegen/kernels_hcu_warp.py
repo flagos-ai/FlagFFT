@@ -18,7 +18,14 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
             or span <= 0 or batch <= 0):
         return 0
     inner = perm_form.startswith("inner")
-    pack = 4 if plan.length > 1024 else 8
+    target = os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
+    if target not in {"auto", "1", "2", "4", "8", "16", "32"}:
+        raise ValueError("FLAGFFT_HCU_3D_WARP_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+    pack = 32 if target == "auto" else int(target)
+    # Limit the live input/output payload to 64 FP32 registers per thread.
+    # Logical FFT rows can share a wave; the physical block stays <= 512 lanes.
+    while pack > 1 and plan.length * pack * 2 > min(pack, 8) * 64 * 64:
+        pack //= 2
     while pack > 1 and (batch % span or (batch // span) % pack
                        if inner else span % pack):
         pack //= 2
@@ -33,6 +40,9 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
     mode = "inner" if perm_form.startswith("inner") else "outer"
     radix = plan.length // 64
     chunk = min(radix, 8)
+    shared_limit = min(current_profile().max_dynamic_shared_memory // 2, 32768)
+    while chunk > 1 and pack * 64 * chunk * 8 > shared_limit:
+        chunk //= 2
     name, source = build_ix_warp_source(
         plan.length, pack, mode, plan.direction == "inverse",
         output_radix_chunk=chunk if chunk < radix else 0,
