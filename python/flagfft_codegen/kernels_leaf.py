@@ -3461,6 +3461,15 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("a static permutation span requires a permuted-store leaf")
     if permutation_batch < 0 or (permutation_batch and not permutation_span):
         raise ValueError("a static permutation batch requires a positive span")
+    from .kernels_hcu_warp import hcu_warp_store_pack, build_hcu_warp_store
+    hcu_warp_pack = hcu_warp_store_pack(
+        plan, io_mode, kernel_perm_form, permutation_span, permutation_batch,
+    )
+    if hcu_warp_pack:
+        return build_hcu_warp_store(
+            plan, perm_form, _leaf_kernel_params_for_io(plan, io_mode=io_mode),
+            hcu_warp_pack, permutation_span, permutation_batch,
+        )
     bluestein_real_kind = ""
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]

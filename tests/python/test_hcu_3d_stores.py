@@ -152,6 +152,41 @@ def test_inner_store_pack_covers_small_and_partial_outer_axes(monkeypatch, tmp_p
     assert f"batch_id = pid * {pack}" in Path(metadata["module_path"]).read_text()
 
 
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("form", ["inner", "outer"])
+def test_wave_store_retains_leaf_signature_and_bounds_output_tiles(monkeypatch, tmp_path, n, form):
+    from flagfft_codegen.emit import emit_jit_kernel
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "1")
+    factors = (16, n // 16)
+    metadata = emit_jit_kernel(
+        kernel="leaf_permuted_store", length=n, factors=factors, lanes=16,
+        num_warps=2, generic_radices=(), smem_size=n, direction="forward",
+        dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0,
+        perm_form=form, permutation_span=128, permutation_batch=16384,
+        out_dir=tmp_path,
+    )
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, "<hcu-wave-fft>", "exec")
+    assert metadata["kernel_name"].startswith("hcu_warp")
+    assert metadata["num_warps"] == metadata["batch_per_block"] <= 8
+    assert "perm_span" in metadata["arg_names"] and "nbatch" in metadata["arg_names"]
+    assert "nbatch=tl.full((),16384,tl.int64)" in source
+    assert "fast_cosf" not in source
+
+
+@pytest.mark.parametrize("dtype,mode,form", [
+    ("complex128", "permuted_store", "outer"),
+    ("complex64", "strided_permuted_store", "inner"),
+    ("complex64", "permuted_store", "inner_batched"),
+    ("complex64", "permuted_store_r2c", "outer"),
+])
+def test_wave_store_preserves_unsupported_layout_fallbacks(monkeypatch, dtype, mode, form):
+    from flagfft_codegen.kernels_hcu_warp import hcu_warp_store_pack
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "1")
+    plan = LeafPlan(256, (16, 16), 1, 16, 1, (), 256, dtype=dtype)
+    assert hcu_warp_store_pack(plan, mode, form, 128, 16384) == 0
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("variant", ["wide", "cyclic"])
 @pytest.mark.parametrize("n,factors,lanes", [
