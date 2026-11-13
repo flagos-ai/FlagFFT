@@ -1129,6 +1129,15 @@ def _emit_tiled_transpose3d_jit_kernel(
             row_group=2,
             tile_traversal=maca_traversal,
         )
+    elif (_hcu_backend_active()
+          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "packed"):
+        tile_setting = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+        tile = 32 if tile_setting == "auto" else int(tile_setting)
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=tile,
+            packed_complex=dtype == "complex64",
+            component_pair=dtype == "complex128",
+        )
     elif cuda_fp64_mode != "v1":
         # CUDA's FP64 fallback gathers strided source values. Screen the
         # portable tile that coalesces both sides, independently of FP32 PTX.

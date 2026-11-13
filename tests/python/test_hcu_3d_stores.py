@@ -65,3 +65,53 @@ def test_grouped_store_preserves_fp64_and_compact_spectrum_fallbacks(monkeypatch
     assert "perm_group_pair_out = tl.trans" in source
     assert "perm_group_mask" in source
     assert "tl.pointer_type(tl.uint64)" in source
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("n,factors,lanes", [
+    (64, (4, 4, 4), 16), (128, (8, 4, 4), 16),
+    (256, (16, 16), 16), (2048, (16, 16, 8), 128),
+    (2048, (8, 16, 16), 128),
+])
+def test_wide_store_bounds_the_rounded_allocation_and_complete_stages(monkeypatch, dtype, n, factors, lanes):
+    from flagfft_codegen.kernels_common import (
+        cooperative_stage_lanes_for, lane_block_for, permuted_store_batch_pack_for,
+    )
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "wide")
+    plan = LeafPlan(n, factors, 1, lanes, 1, (), n, dtype=dtype)
+    pack = permuted_store_batch_pack_for(plan)
+    scalar_bytes = 8 if dtype == "complex128" else 4
+    padded = n + int(pack >= 4)
+    assert 2 * lane_block_for(padded * pack) * scalar_bytes <= 65536
+    assert lane_block_for(max(cooperative_stage_lanes_for(plan))) * pack <= 512
+    _, source = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
+    compile(source, "<hcu-wide-store>", "exec")
+    assert "smem_a_r = tle.gpu.alloc" not in source
+    assert "smem_b_r = tle.gpu.alloc" in source
+    assert "tail_flat" not in source
+
+
+def test_wide_store_rejects_an_overwriting_stage_with_multiple_groups(monkeypatch):
+    from flagfft_codegen.kernels_common import _use_single_smem_buffer
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "wide")
+    plan = LeafPlan(2048, (8, 8, 32), 1, 64, 2, (), 2048, dtype="complex128")
+    assert not _use_single_smem_buffer(plan, io_mode="permuted_store")
+
+
+@pytest.mark.parametrize("order", ["021", "210", "201", "120"])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_packed_transpose_preserves_component_axis_and_partial_tile_masks(monkeypatch, tmp_path, order, dtype):
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "packed")
+    metadata = _emit_tiled_transpose3d_jit_kernel(
+        n0=9, n1=33, n2=65, order=order, dtype=dtype, out_dir=tmp_path,
+    )
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, "<hcu-paired-transpose>", "exec")
+    assert "safe_rows = tl.minimum" in source
+    assert "safe_cols = tl.minimum" in source
+    if dtype == "complex128":
+        assert "tl.permute(values, (1, 0, 2))" in source
+        assert "component = tl.arange(0, 2)" in source
+    else:
+        assert "tl.pointer_type(tl.uint64)" in source

@@ -375,6 +375,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
     pair: bool = False,
     vec_store: bool = False,
     tile_traversal: str = "col",
+    component_pair: bool = False,
 ) -> tuple[str, str, list[str], int]:
     """Portable register-tile 3D axis permutation.
 
@@ -473,6 +474,7 @@ def _build_tiled_transpose3d_tile_kernel_source(
         + ("_pair" if pair or pair_store else "")
         + ("_vec" if vec_store else "")
         + ("_rmajor" if tile_traversal == "row" else "")
+        + ("_components" if component_pair else "")
     )
     if pair:
         store_lines = (
@@ -490,7 +492,28 @@ def _build_tiled_transpose3d_tile_kernel_source(
             "tl.store(out_ptr + dst_base, dst_r, mask=store_mask)\n"
             "            tl.store(out_ptr + dst_base + 1, dst_i, mask=store_mask)"
         )
-    if packed_complex:
+    if component_pair:
+        load_store = f"""
+            component = tl.arange(0, 2)
+            src_base = (
+                pid_batch * {total_float}
+                + slice_idx * {src_slice_stride} * 2
+                + safe_cols[:, None] * {src_col_stride} * 2
+                + safe_rows[None, :] * 2
+            )
+            values = tl.load(in_ptr + src_base[:, :, None] + component[None, None, :],
+                             mask=load_mask[:, :, None], other={zero})
+            dst_base = (
+                pid_batch * {total_float}
+                + slice_idx * {dst_slice_stride} * 2
+                + safe_rows[:, None] * {dst_row_stride} * 2
+                + safe_cols[None, :] * 2
+            )
+            store_mask = row_mask[:, None] & col_mask[None, :]
+            tl.store(out_ptr + dst_base[:, :, None] + component[None, None, :],
+                     tl.permute(values, (1, 0, 2)), mask=store_mask[:, :, None])
+        """
+    elif packed_complex:
         load_store = f"""
             src = in_ptr.to(tl.pointer_type(tl.uint64))
             dst = out_ptr.to(tl.pointer_type(tl.uint64))

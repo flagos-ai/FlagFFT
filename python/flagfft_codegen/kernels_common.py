@@ -650,6 +650,19 @@ def _ix_permuted_single_smem(plan: LeafPlan) -> bool:
                for i in range(len(plan.factors) - 1))
 
 
+def _hcu_wide_permuted_store(plan: LeafPlan) -> bool:
+    if (not _hcu_backend_active()
+            or os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") != "wide"
+            or plan.length <= 0 or plan.length & (plan.length - 1)
+            or len(plan.factors) < 2):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    # Stage zero reads global memory, and the last stage writes global
+    # memory. Only intermediate stages overwrite their own shared input.
+    return all(plan.length == lanes[i] * plan.factors[i]
+               for i in range(1, len(plan.factors) - 1))
+
+
 def permuted_store_batch_pack_for(
     plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None
 ) -> int:
@@ -660,6 +673,27 @@ def permuted_store_batch_pack_for(
     two. Shared memory still caps the selected pack for large leaves.
     """
     profile = current_profile()
+    if _hcu_wide_permuted_store(plan):
+        # Aim for a cache-line-sized contiguous output run, bounded by the
+        # actual rounded allocation for one real/imaginary shared buffer.
+        target = 128 // (2 * _real_element_bytes(plan.dtype))
+        setting = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
+        if setting != "auto":
+            if setting not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_HCU_3D_PACK must be 1, 2, 4, 8, 16 or 32")
+            target = int(setting)
+        if pack_override is not None:
+            target = pack_override
+        thread_limit = min(profile.max_threads_per_block,
+                           profile.warp_size * _cooperative_warp_cap())
+        lanes = lane_block_for(max(cooperative_stage_lanes_for(plan)))
+        shared_limit = profile.max_dynamic_shared_memory or 48 * 1024
+        for pack in (32, 16, 8, 4, 2, 1):
+            padded = plan.smem_size + (1 if pack >= 4 else 0)
+            shared = 2 * lane_block_for(padded * pack) * _real_element_bytes(plan.dtype)
+            if pack <= target and lanes * pack <= thread_limit and shared <= shared_limit:
+                return pack
+        return 1
     single_smem = _ix_permuted_single_smem(plan)
     buffer_count = 2 if single_smem else 4
     bytes_per_fft = buffer_count * (plan.smem_size + (0 if single_smem else 1)) * _real_element_bytes(plan.dtype)
@@ -1296,6 +1330,10 @@ def _use_single_smem_buffer(
     four_step_n2: int = 0,
 ) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if (_hcu_wide_permuted_store(plan) and io_mode in {
+            "permuted_store", "strided_permuted_store", "permuted_r2c",
+            "permuted_store_r2c"}):
+        return True
     if (current_profile().backend == "cuda" and
             os.getenv("FLAGFFT_CUDA_LEAF_SINGLE_BUFFER") == "1"):
         allowed_modes = {
