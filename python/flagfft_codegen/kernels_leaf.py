@@ -645,6 +645,15 @@ def _emit_permuted_store(
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
             f"mask={mask})",
         ]
+    if (_hcu_backend_active() and len(factors) > 1 and compact_length is None
+            and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1"):
+        address = f"(output_base + {offset}) * perm_k_stride + perm_gbase_vector"
+        return [
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}perm_pair{digit} = tl.join(r{digit}, i{digit})",
+            f"{indent}perm_pair_addr{digit} = perm_addr{digit}[:, None] * 2 + tl.arange(0, 2)[None, :]",
+            f"{indent}tl.store(out_ptr + perm_pair_addr{digit}, perm_pair{digit}, mask=lane_mask[:, None])",
+        ]
     if _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
         # Keep the register tile in its original (batch, lane) layout.  This
         # screens whether IX's lowering of tl.trans costs more than scalar
@@ -1270,6 +1279,7 @@ def _emit_stage_block(
     bluestein_real_kind: str = "",
     permuted_smem_store: bool = False,
     perm_inner: bool = False,
+    perm_batched: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1411,6 +1421,28 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
+    if (_hcu_backend_active() and is_last and len(factors) > 1 and smem_pack > 1
+            and io_mode in {"permuted_store", "strided_permuted_store"}
+            and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1"):
+        # Change the thread-to-FFT mapping at the shared-memory boundary.
+        # Adjacent lanes now own adjacent FFT slots, so the final butterflies
+        # write coalesced output directly without a register-tile transpose.
+        lines.extend([
+            f"    batch_slot = lane_vec % {smem_pack}",
+            f"    lane = lane_vec // {smem_pack}",
+            "    current_batch = " + ("perm_base + batch_slot * perm_span" if perm_inner else "batch_id + batch_slot"),
+            f"    smem_offset = batch_slot * {exchange_slot_stride}",
+            f"    base_lane_mask = (lane < {current_lanes}) & (current_batch < nbatch)",
+            "    perm_i0_vector = current_batch // perm_span",
+            "    perm_i1_vector = current_batch - perm_i0_vector * perm_span",
+        ])
+        if perm_inner:
+            if perm_batched:
+                lines.append(f"    perm_gbase_vector = (perm_i0_vector // perm_outer) * ({n} * rows_per_transform) + perm_i1_vector * perm_outer + perm_i0_vector % perm_outer")
+            else:
+                lines.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
+        else:
+            lines.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
     if compact_npu_stage:
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
@@ -4010,6 +4042,7 @@ def _build_leaf_kernel_source_for_io(
                 bluestein_real_kind=bluestein_real_kind,
                 permuted_smem_store=permuted_smem_store,
                 perm_inner=inner_perm_form,
+                perm_batched=batched_permutation,
             )
         )
 

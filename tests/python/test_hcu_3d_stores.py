@@ -103,6 +103,28 @@ def test_grouped_store_preserves_fp64_and_compact_spectrum_fallbacks(monkeypatch
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("mode", ["permuted_store", "strided_permuted_store"])
+@pytest.mark.parametrize("form", ["outer", "inner", "inner_batched"])
+def test_direct_store_switches_mapping_before_reading_last_stage(monkeypatch, dtype, mode, form):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_DIRECT_STORE", "1")
+    source = emit(dtype, mode=mode, form=form)
+    switch = source.index("batch_slot = lane_vec %")
+    assert source.index("for group_0") < switch < source.index("for group_1")
+    assert "perm_pair_addr0 = perm_addr0[:, None] * 2" in source
+    assert "zr0 = tl.trans" not in source
+    if form.endswith("_batched"):
+        assert "perm_gbase_vector = (perm_i0_vector // perm_outer)" in source
+
+
+def test_direct_store_keeps_compact_boundary_on_original_mapping(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
+    original = emit("complex64", mode="permuted_store_r2c")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_DIRECT_STORE", "1")
+    assert emit("complex64", mode="permuted_store_r2c") == original
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("variant", ["wide", "cyclic"])
 @pytest.mark.parametrize("n,factors,lanes", [
     (64, (4, 4, 4), 16), (128, (8, 4, 4), 16),

@@ -514,6 +514,8 @@ def main() -> None:
         args.out_dir = args.out_dir / ("store-" + hcu_store_mode)
     if profile.backend == "hcu" and hcu_transpose_mode != "auto":
         args.out_dir = args.out_dir / ("transpose-" + hcu_transpose_mode)
+    if profile.backend == "hcu" and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1":
+        args.out_dir = args.out_dir / "direct-store"
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
     if variant_suffix(root=True):
