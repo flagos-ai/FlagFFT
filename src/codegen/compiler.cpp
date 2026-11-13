@@ -981,6 +981,9 @@ namespace {
                             flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE", false);
     if (span > 0 && (ix_static || hcu_static)) {
       key.permutation_span = span;
+      if (hcu_static && flag_or_default("FLAGFFT_HCU_3D_STATIC_BATCH", false)) {
+        key.permutation_batch = request.batch;
+      }
     }
   }
 
@@ -6757,7 +6760,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     key.perm_form = request.device_type == "hcu"
         ? hcu_3d_axis_perm_form(request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer")
         : "outer";
-    mark_static_permutation_span(key, request, n1);
+    mark_static_permutation_span(key, n2_request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
@@ -7059,7 +7062,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     // write its compact rows directly in that transposed layout.
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
-    mark_static_permutation_span(key, request, n1);
+    mark_static_permutation_span(key, n2_request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),

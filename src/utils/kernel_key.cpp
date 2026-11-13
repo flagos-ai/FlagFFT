@@ -785,6 +785,7 @@ bool KernelKey::operator==(const KernelKey &other) const {
          fused_plane_n0 == other.fused_plane_n0 && fused_plane_n1 == other.fused_plane_n1 &&
          fused_plane_middle == other.fused_plane_middle &&
          perm_form == other.perm_form && permutation_span == other.permutation_span &&
+         permutation_batch == other.permutation_batch &&
          ix_warp_fft_pack == other.ix_warp_fft_pack &&
          npu_portable_leaf == other.npu_portable_leaf &&
          npu_batch_pack == other.npu_batch_pack &&
@@ -817,6 +818,7 @@ std::string KernelKey::repr() const {
       << ";hcu_3d_middle_batch_pack=" << hcu_3d_middle_batch_pack
       << ";cuda_permute_span=" << cuda_permute_span << ";cuda_permute_batch=" << cuda_permute_batch;
   if (permutation_span > 0) out << ";permutation_span=" << permutation_span;
+  if (permutation_batch > 0) out << ";permutation_batch=" << permutation_batch;
   if (ix_warp_fft_pack > 0) out << ";ix_warp_fft_pack=" << ix_warp_fft_pack;
   return out.str();
 }
@@ -850,6 +852,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.transpose3d_order);
   hash_value(seed, key.perm_form);
   hash_value(seed, key.permutation_span);
+  hash_value(seed, key.permutation_batch);
   hash_value(seed, key.ix_warp_fft_pack);
   hash_value(seed, key.npu_portable_leaf);
   hash_value(seed, key.npu_batch_pack);

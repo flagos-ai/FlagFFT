@@ -699,6 +699,7 @@ def emit_jit_kernel(
     four_step_n2: int,
     perm_form: str = "outer",
     permutation_span: int = 0,
+    permutation_batch: int = 0,
     hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
@@ -743,6 +744,7 @@ def emit_jit_kernel(
             four_step_n2=four_step_n2,
             perm_form=perm_form,
             permutation_span=permutation_span,
+            permutation_batch=permutation_batch,
             hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
@@ -807,6 +809,8 @@ def emit_jit_kernel(
         module_name += f"_warp{ix_warp_fft_pack()}"
     if permutation_span:
         module_name += f"_s{permutation_span}"
+    if permutation_batch:
+        module_name += f"_nb{permutation_batch}"
     module_name += variant_suffix()
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -845,6 +849,8 @@ def emit_jit_kernel(
     )
     if permutation_span:
         metadata["permutation_span"] = permutation_span
+    if permutation_batch:
+        metadata["permutation_batch"] = permutation_batch
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:

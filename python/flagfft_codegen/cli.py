@@ -191,6 +191,7 @@ def main() -> None:
     parser.add_argument("--npu-table-transpose3d", action="store_true",
                         help="Replace a native NPU 3D tile with the same permutation table")
     parser.add_argument("--permutation-span", type=int, default=0)
+    parser.add_argument("--permutation-batch", type=int, default=0)
     parser.add_argument("--ix-warp-fft-pack", type=int, choices=(0,1,2,4,8,16,32), default=0)
     parser.add_argument(
         "--perm-form",
@@ -760,6 +761,7 @@ def main() -> None:
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
             permutation_span=args.permutation_span,
+            permutation_batch=args.permutation_batch,
             hcu_full_smem=args.hcu_3d_full_smem,
             out_dir=args.out_dir,
         )

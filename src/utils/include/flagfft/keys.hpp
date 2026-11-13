@@ -98,6 +98,7 @@ struct KernelKey {
   std::string transpose3d_order;
   std::string perm_form = "outer";
   int64_t permutation_span = 0;
+  int64_t permutation_batch = 0;
   int64_t ix_warp_fft_pack = 0;
   bool npu_portable_leaf = false;
   int64_t npu_batch_pack = 0;

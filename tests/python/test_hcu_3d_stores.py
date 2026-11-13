@@ -30,6 +30,41 @@ def emit(dtype, mode="permuted_store", form="outer"):
     return source
 
 
+@pytest.mark.parametrize("form,span,rows", [
+    ("outer", 256, 65536), ("inner", 256, 65536),
+    ("outer", 129, 33024), ("inner", 129, 33024),
+    ("inner_batched", 256, 262144),
+])
+def test_static_geometry_hints_only_proven_aligned_tiles(monkeypatch, form, span, rows):
+    from flagfft_codegen.kernels_common import permuted_store_batch_pack_for
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
+    plan = LeafPlan(256, (16, 16), 1, 16, 1, (), 256, dtype="complex64")
+    pack = permuted_store_batch_pack_for(plan)
+    _, source = _build_leaf_kernel_source_for_io(
+        plan, io_mode="permuted_store", perm_form=form,
+        permutation_span=span, permutation_batch=rows,
+    )
+    compile(source, "<hcu-static-permutation>", "exec")
+    assert f"nbatch = tl.full((), {rows}, tl.int64)" in source
+    hinted = "tl.max_contiguous(tl.multiple_of(perm_gbase," in source
+    if form.endswith("_batched"):
+        assert not hinted
+    elif hinted:
+        for pid in range((rows + pack - 1) // pack):
+            batch = ((pid // span) * pack * span + pid % span
+                     if form == "inner" else pid * pack)
+            bases = []
+            for slot in range(pack):
+                current = batch + (slot * span if form == "inner" else slot)
+                i0, i1 = divmod(current, span)
+                bases.append(i1 * (rows // span) + i0 if form == "inner"
+                             else i0 * (plan.length * span) + i1)
+            assert bases == list(range(bases[0], bases[0] + pack))
+            assert bases[0] % pack == 0
+    else:
+        assert form == "outer" and span % pack != 0
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("mode", ["permuted_store", "strided_permuted_store"])
 @pytest.mark.parametrize("form", ["outer", "inner"])

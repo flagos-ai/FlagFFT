@@ -761,6 +761,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::LeafR2CPermutedStore) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
+    if (key.permutation_batch > 0) jit_command << " --permutation-batch " << key.permutation_batch;
   }
   if (key.hcu_full_smem) jit_command << " --hcu-3d-full-smem";
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||

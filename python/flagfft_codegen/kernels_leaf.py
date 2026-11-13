@@ -3413,6 +3413,7 @@ def _build_leaf_kernel_source_for_io(
     four_step_n2: int = 0,
     perm_form: str = "outer",
     permutation_span: int = 0,
+    permutation_batch: int = 0,
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     kernel_perm_form = perm_form
@@ -3426,6 +3427,8 @@ def _build_leaf_kernel_source_for_io(
         "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
     }):
         raise ValueError("a static permutation span requires a permuted-store leaf")
+    if permutation_batch < 0 or (permutation_batch and not permutation_span):
+        raise ValueError("a static permutation batch requires a positive span")
     bluestein_real_kind = ""
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]
@@ -3713,6 +3716,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_smstore"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
+    if permutation_batch:
+        kernel_name += f"_nb{permutation_batch}"
     cta_disjoint = (n==16384 and factors==(16,16,16,4) and batch_pack==1
         and io_mode=="contiguous"
         and math.prod(factors)==n
@@ -3757,6 +3762,8 @@ def _build_leaf_kernel_source_for_io(
             body.extend([f"    perm_span = {span}", f"    nbatch = {batch}"])
     if permutation_span:
         body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
+    if permutation_batch:
+        body.append(f"    nbatch = tl.full((), {permutation_batch}, tl.int64)")
     if _portable_complex_vector_io():
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     from .target import ix_ct_single_default_enabled
@@ -3864,6 +3871,17 @@ def _build_leaf_kernel_source_for_io(
                 )
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
+            contiguous_slots = (
+                permutation_span > 0 and permutation_batch > 0
+                and not batched_permutation and batch_pack > 1
+                and (permutation_batch % permutation_span == 0
+                     and (permutation_batch // permutation_span) % batch_pack == 0
+                     if inner_perm_form else permutation_span % batch_pack == 0)
+            )
+            if contiguous_slots:
+                # The plan proves that no tile crosses an output row.  Each
+                # tile starts on a pack boundary and its FFT slots are adjacent.
+                body.append(f"    perm_gbase = tl.max_contiguous(tl.multiple_of(perm_gbase, {batch_pack}), {batch_pack})")
             if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
                 body.append("    perm_i0_vector = current_batch // perm_span")
                 body.append("    perm_i1_vector = current_batch - perm_i0_vector * perm_span")
