@@ -532,14 +532,14 @@ def _emit_lane_output_base(
     return lines
 
 
-def _emit_grouped_maca_fp32_permuted_store(
+def _emit_grouped_fp32_permuted_store(
     indent: str,
     factors: tuple[int, ...],
     radix: int,
     pack: int,
     lane_block: int,
 ) -> list[str]:
-    """Transpose a full final radix group once for the MACA FP32 cube path."""
+    """Transpose a full final radix group once before writing complex pairs."""
     lines: list[str] = []
     pairs = []
     for digit in range(radix):
@@ -2197,9 +2197,20 @@ def _emit_stage_block(
         and radix in {2, 4, 8, 16, 32}
         and smem_pack > 1
     )
-    if grouped_maca_cube_store:
+    grouped_hcu_store = (
+        _hcu_backend_active()
+        and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "grouped"
+        and is_last
+        and io_mode in {"permuted_store", "strided_permuted_store"}
+        and dtype == "complex64"
+        and radix in {2, 4, 8, 16, 32}
+        and smem_pack > 1
+        and n == current_lanes * radix
+    )
+    grouped_store = grouped_maca_cube_store or grouped_hcu_store
+    if grouped_store:
         lines.extend(
-            _emit_grouped_maca_fp32_permuted_store(
+            _emit_grouped_fp32_permuted_store(
                 indent, factors, radix, smem_pack, lane_block
             )
         )
@@ -2212,7 +2223,7 @@ def _emit_stage_block(
                 # constructing an empty masked vector in the CANN lowering.
                 continue
             if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
-                if grouped_maca_cube_store:
+                if grouped_store:
                     continue
                 compact_length = (
                     n // 2 + 1
@@ -3584,6 +3595,21 @@ def _build_leaf_kernel_source_for_io(
         and n == stage_lanes[-1] * factors[-1]
         and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
     )
+    # Reuse the final stage's input allocation after every input has been
+    # consumed. One batch-contiguous exchange replaces per-digit layout
+    # conversions; incomplete register groups and per-cube batching retain
+    # the ordinary store until their lifetime/addressing can be guaranteed.
+    hcu_smem_store = (
+        _hcu_backend_active()
+        and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "smem"
+        and not portable_exchange
+        and not batched_permutation
+        and n > 0 and n & (n - 1) == 0
+        and len(factors) >= 2 and batch_pack > 1
+        and n == stage_lanes[-1] * factors[-1]
+        and io_mode in {"permuted_store", "strided_permuted_store"}
+    )
+    permuted_smem_store = permuted_smem_store or hcu_smem_store
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,

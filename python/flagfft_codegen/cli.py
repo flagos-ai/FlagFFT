@@ -405,6 +405,9 @@ def main() -> None:
                 f"-row-pack-{fourstep_row_pack}-col-pack-{fourstep_col_pack}"
             )
     if profile.backend == "hcu":
+        hcu_store_mode = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto")
+        if hcu_store_mode not in {"auto", "grouped", "smem"}:
+            parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped or smem")
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
         fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto")
@@ -501,6 +504,10 @@ def main() -> None:
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
     args.out_dir = args.out_dir / profile_dir
+    if profile.backend == "hcu" and hcu_store_mode != "auto":
+        # A separate component also keeps long, existing HCU profile names
+        # below the filesystem's single-component length limit.
+        args.out_dir = args.out_dir / ("store-" + hcu_store_mode)
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
     if variant_suffix(root=True):
