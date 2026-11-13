@@ -406,8 +406,8 @@ def main() -> None:
             )
     if profile.backend == "hcu":
         hcu_store_mode = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto")
-        if hcu_store_mode not in {"auto", "grouped", "smem", "wide"}:
-            parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped, smem or wide")
+        if hcu_store_mode not in {"auto", "grouped", "smem", "wide", "cyclic"}:
+            parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped, smem, wide or cyclic")
         hcu_transpose_mode = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto")
         if hcu_transpose_mode not in {"auto", "packed"}:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_MODE must be auto or packed")

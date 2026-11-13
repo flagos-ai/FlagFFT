@@ -68,20 +68,21 @@ def test_grouped_store_preserves_fp64_and_compact_spectrum_fallbacks(monkeypatch
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("variant", ["wide", "cyclic"])
 @pytest.mark.parametrize("n,factors,lanes", [
     (64, (4, 4, 4), 16), (128, (8, 4, 4), 16),
     (256, (16, 16), 16), (2048, (16, 16, 8), 128),
     (2048, (8, 16, 16), 128),
 ])
-def test_wide_store_bounds_the_rounded_allocation_and_complete_stages(monkeypatch, dtype, n, factors, lanes):
+def test_wide_store_bounds_the_rounded_allocation_and_complete_stages(monkeypatch, dtype, variant, n, factors, lanes):
     from flagfft_codegen.kernels_common import (
         cooperative_stage_lanes_for, lane_block_for, permuted_store_batch_pack_for,
     )
-    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "wide")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", variant)
     plan = LeafPlan(n, factors, 1, lanes, 1, (), n, dtype=dtype)
     pack = permuted_store_batch_pack_for(plan)
     scalar_bytes = 8 if dtype == "complex128" else 4
-    padded = n + int(pack >= 4)
+    padded = n + int(pack >= 4 and variant != "cyclic")
     assert 2 * lane_block_for(padded * pack) * scalar_bytes <= 65536
     assert lane_block_for(max(cooperative_stage_lanes_for(plan))) * pack <= 512
     _, source = _build_leaf_kernel_source_for_io(plan, io_mode="permuted_store")
@@ -89,6 +90,22 @@ def test_wide_store_bounds_the_rounded_allocation_and_complete_stages(monkeypatc
     assert "smem_a_r = tle.gpu.alloc" not in source
     assert "smem_b_r = tle.gpu.alloc" in source
     assert "tail_flat" not in source
+    if variant == "cyclic" and pack > 1:
+        assert f"smem_offset = batch_slot * {n}" in source
+        assert "phys0 = ((logical_phys0 + batch_slot)" in source
+        assert ("smem_dst0 = ((smem_dst0 + batch_slot)" if dtype == "complex128"
+                else "smem_dst0 = ((dst0 + batch_slot)") in source
+
+
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 2048])
+@pytest.mark.parametrize("pack", [2, 8, 16])
+def test_cyclic_shared_indices_are_bijective_without_padding(n, pack):
+    for shift in (None, 5):
+        addresses = {
+            slot * n + (((index if shift is None else index ^ (index >> shift)) + slot) & (n - 1))
+            for slot in range(pack) for index in range(n)
+        }
+        assert addresses == set(range(n * pack))
 
 
 def test_wide_store_rejects_an_overwriting_stage_with_multiple_groups(monkeypatch):

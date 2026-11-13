@@ -652,7 +652,7 @@ def _ix_permuted_single_smem(plan: LeafPlan) -> bool:
 
 def _hcu_wide_permuted_store(plan: LeafPlan) -> bool:
     if (not _hcu_backend_active()
-            or os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") != "wide"
+            or os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") not in {"wide", "cyclic"}
             or plan.length <= 0 or plan.length & (plan.length - 1)
             or len(plan.factors) < 2):
         return False
@@ -689,7 +689,8 @@ def permuted_store_batch_pack_for(
         lanes = lane_block_for(max(cooperative_stage_lanes_for(plan)))
         shared_limit = profile.max_dynamic_shared_memory or 48 * 1024
         for pack in (32, 16, 8, 4, 2, 1):
-            padded = plan.smem_size + (1 if pack >= 4 else 0)
+            cyclic = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
+            padded = plan.smem_size + (1 if pack >= 4 and not cyclic else 0)
             shared = 2 * lane_block_for(padded * pack) * _real_element_bytes(plan.dtype)
             if pack <= target and lanes * pack <= thread_limit and shared <= shared_limit:
                 return pack
