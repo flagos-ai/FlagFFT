@@ -58,3 +58,54 @@ def test_real_matrix_embedding(tmp_path,n,batch,mode,direction,snapshot):
     assert torch.equal(src,saved)
     assert (rows[:,outs:]==31415.25).all()
     assert (out[:64]==31415.25).all() and (out[-64:]==31415.25).all()
+
+
+@pytest.mark.parametrize('n', [210, 256])
+@pytest.mark.parametrize('direction', ['forward', 'inverse'])
+def test_long_dot_preserves_small_signal_beside_large_impulse(tmp_path, n, direction):
+    """A serial FP32 reduction loses the tail; independent partials retain it."""
+    _, ins, kin, outs, columns, bm, bn = matrix_layout(n, 0)
+    pack, cube, source = build_matrix_source(n, 0, direction)
+    path = tmp_path/'matrix_dynamic_range.py'
+    path.write_text(source)
+    ns, pid = execute_module(path)
+
+    def serial_ieee_dot(a, b, input_precision):
+        assert input_precision == 'ieee'
+        assert a.dtype == b.dtype == torch.float32
+        value = torch.zeros((a.shape[0], b.shape[1]), dtype=torch.float32)
+        for index in range(a.shape[1]):
+            value = torch.addcmul(value, a[:, index, None], b[index, None, :])
+        return value
+
+    ns['tl'].dot = serial_ieee_dot
+    batch = 3
+    data = torch.zeros(batch, n, 2)
+    data[:, 0, 0] = 1e8
+    data[:, n//2:, 0] = 1.
+    saved = data.clone()
+    value = torch.view_as_complex(data).cdouble()
+    reference = torch.fft.fft(value) if direction == 'forward' else torch.fft.ifft(value)*n
+    sign = 1 if direction == 'inverse' else -1
+    angle = sign*2*math.pi*torch.arange(n, dtype=torch.float64)[:, None]*torch.arange(n)[None, :]/n
+    cosine, sine = angle.cos().float(), angle.sin().float()
+    weights = torch.zeros(kin, columns)
+    weights[:2*n:2, :2*n:2] = cosine
+    weights[:2*n:2, 1:2*n:2] = sine
+    weights[1:2*n:2, :2*n:2] = -sine
+    weights[1:2*n:2, 1:2*n:2] = cosine
+    work = torch.empty(batch, kin)
+    guarded = torch.full((batch*outs+128,), 31415.25)
+    for block in range((batch+1)//2):
+        pid[0] = block
+        ns[pack](Pointer(data), Pointer(work), ins, batch)
+    for block in range((batch+bm-1)//bm):
+        pid[0] = block
+        for column in range((columns+bn-1)//bn):
+            pid[1] = column
+            ns[cube](Pointer(work), Pointer(weights), Pointer(guarded, 64), kin, outs, batch)
+    actual = torch.view_as_complex(guarded[64:-64].reshape(batch, n, 2)).cdouble()
+    assert torch.linalg.vector_norm(actual-reference)/torch.linalg.vector_norm(reference) < 5e-7
+    assert (actual-reference).abs().max()/reference.abs().max() < 5e-7
+    assert torch.equal(data, saved)
+    assert (guarded[:64] == 31415.25).all() and (guarded[-64:] == 31415.25).all()

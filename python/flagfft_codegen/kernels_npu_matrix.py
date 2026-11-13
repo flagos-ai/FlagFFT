@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from .artifacts import write_text_atomic
 from .metadata import _module_source
+from .npu_ieee_matmul import ieee_matmul
 
 
 def matrix_layout(n, mode):
@@ -38,11 +39,12 @@ def {pack_name}(X,P,input_distance,NB):
     body+=f'''@triton.jit
 def {cube_name}(P,W,Y,input_distance,output_distance,NB):
     b=tl.program_id(0).to(tl.int64)*{bm}+tl.arange(0,{bm})
-    j=tl.arange(0,{kin})
     k=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    x=tl.load(P+b[:,None]*input_distance+j[None,:],(b[:,None]<NB)&(j[None,:]<{ins}),0.)
-    w=tl.load(W+j[:,None]*{op}+k[None,:])
-    y=tl.dot(x,w,input_precision="ieee")
+'''
+    body+=ieee_matmul(kin,bm,bn,
+        f'P+b[:,None]*input_distance+j[None,:],(b[:,None]<NB)&(j[None,:]<{ins}),0.',
+        f'W+j[:,None]*{op}+k[None,:]',index='j')
+    body+=f'''
     tl.store(Y+b[:,None]*output_distance+k[None,:],y,(b[:,None]<NB)&(k[None,:]<{outs}))
 '''
     return pack_name,cube_name,_module_source(body)

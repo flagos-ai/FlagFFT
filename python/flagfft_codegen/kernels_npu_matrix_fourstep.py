@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from .artifacts import write_text_atomic
 from .metadata import _module_source
+from .npu_ieee_matmul import ieee_matmul
 
 
 def build_matrix_fourstep(a, b, wide=False):
@@ -43,11 +44,8 @@ def pack{stage}(X,P,T):
             body+=f'''@triton.jit
 def cube{stage}(P,W,Y,NB):
     r=tl.program_id(0)*{bm}+tl.arange(0,{bm})
-    j=tl.arange(0,{kin})
     c=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    x=tl.load(P+r[:,None]*{kin}+j[None,:],r[:,None]<NB*{width},0.)
-    w=tl.load(W+j[:,None]*{op}+c[None,:],c[None,:]<{op},0.)
-    y=tl.dot(x,w,input_precision="ieee")
+{ieee_matmul(kin,bm,bn,f'P+r[:,None]*{kin}+j[None,:],r[:,None]<NB*{width},0.',f'W+j[:,None]*{op}+c[None,:],c[None,:]<{op},0.',index='j').rstrip()}
     tl.store(Y+r[:,None]*{2*length}+c[None,:],y,(r[:,None]<NB*{width})&(c[None,:]<{2*length}))
 '''
         else:
@@ -57,11 +55,8 @@ def cube{stage}(P,W,Y):
     P=P+batch*{width * kin}
     Y=Y+batch*{2 * a * b}
     r=tl.program_id(0)*32+tl.arange(0,32)
-    j=tl.arange(0,{kin})
     c=tl.program_id(1)*64+tl.arange(0,64)
-    x=tl.load(P+r[:,None]*{kin}+j[None,:],r[:,None]<{width},0.)
-    w=tl.load(W+j[:,None]*{op}+c[None,:],c[None,:]<{op},0.)
-    y=tl.dot(x,w,input_precision="ieee")
+{ieee_matmul(kin,32,64,f'P+r[:,None]*{kin}+j[None,:],r[:,None]<{width},0.',f'W+j[:,None]*{op}+c[None,:],c[None,:]<{op},0.',index='j').rstrip()}
     tl.store(Y+r[:,None]*{2 * length}+c[None,:],y,(r[:,None]<{width})&(c[None,:]<{2 * length}))
 '''
     body += f'''@triton.jit
@@ -106,11 +101,8 @@ def pack0_real(X,P,T):
         body += f'''@triton.jit
 def cube0_real(P,W,Y,NB):
     r=tl.program_id(0)*{bm}+tl.arange(0,{bm})
-    k=tl.arange(0,{p})
     c=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    value=tl.load(P+r[:,None]*{p}+k[None,:],r[:,None]<NB*{b},0.)
-    weights=tl.load(W+k[:,None]*{2*p}+c[None,:],c[None,:]<{2*p},0.)
-    result=tl.dot(value,weights,input_precision="ieee")
+{ieee_matmul(p,bm,bn,f'P+r[:,None]*{p}+k[None,:],r[:,None]<NB*{b},0.',f'W+k[:,None]*{2*p}+c[None,:],c[None,:]<{2*p},0.',result='result').rstrip()}
     tl.store(Y+r[:,None]*{2*a}+c[None,:],result,(r[:,None]<NB*{b})&(c[None,:]<{2*a}))
 '''
     else:
@@ -118,11 +110,8 @@ def cube0_real(P,W,Y,NB):
 def cube0_real(P,W,Y):
     batch=tl.program_id(2).to(tl.int64)
     r=tl.program_id(0)*32+tl.arange(0,32)
-    k=tl.arange(0,{p})
     c=tl.program_id(1)*64+tl.arange(0,64)
-    value=tl.load(P+batch*{b*p}+r[:,None]*{p}+k[None,:],r[:,None]<{b},0.)
-    weights=tl.load(W+k[:,None]*{2*p}+c[None,:],c[None,:]<{2*p},0.)
-    result=tl.dot(value,weights,input_precision="ieee")
+{ieee_matmul(p,32,64,f'P+batch*{b*p}+r[:,None]*{p}+k[None,:],r[:,None]<{b},0.',f'W+k[:,None]*{2*p}+c[None,:],c[None,:]<{2*p},0.',result='result').rstrip()}
     tl.store(Y+batch*{2*a*b}+r[:,None]*{2*a}+c[None,:],result,(r[:,None]<{b})&(c[None,:]<{2*a}))
 '''
     bp=1 << (b - 1).bit_length()
@@ -131,11 +120,8 @@ def cube0_real(P,W,Y):
         body += f'''@triton.jit
 def cube1_half(P,W,Y,NB):
     r=tl.program_id(0)*{bm}+tl.arange(0,{bm})
-    k=tl.arange(0,{2*bp})
     c=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    value=tl.load(P+r[:,None]*{2*bp}+k[None,:],r[:,None]<NB*{a},0.)
-    weights=tl.load(W+k[:,None]*{2*bp}+c[None,:],c[None,:]<{2*bp},0.)
-    result=tl.dot(value,weights,input_precision="ieee")
+{ieee_matmul(2*bp,bm,bn,f'P+r[:,None]*{2*bp}+k[None,:],r[:,None]<NB*{a},0.',f'W+k[:,None]*{2*bp}+c[None,:],c[None,:]<{2*bp},0.',result='result').rstrip()}
     tl.store(Y+r[:,None]*{2*b}+c[None,:],result,(r[:,None]<NB*{a})&(c[None,:]<{compact_columns}))
 '''
     else:
@@ -143,11 +129,8 @@ def cube1_half(P,W,Y,NB):
 def cube1_half(P,W,Y):
     batch=tl.program_id(2).to(tl.int64)
     r=tl.program_id(0)*32+tl.arange(0,32)
-    k=tl.arange(0,{2*bp})
     c=tl.program_id(1)*64+tl.arange(0,64)
-    value=tl.load(P+batch*{a*2*bp}+r[:,None]*{2*bp}+k[None,:],r[:,None]<{a},0.)
-    weights=tl.load(W+k[:,None]*{2*bp}+c[None,:],c[None,:]<{2*bp},0.)
-    result=tl.dot(value,weights,input_precision="ieee")
+{ieee_matmul(2*bp,32,64,f'P+batch*{a*2*bp}+r[:,None]*{2*bp}+k[None,:],r[:,None]<{a},0.',f'W+k[:,None]*{2*bp}+c[None,:],c[None,:]<{2*bp},0.',result='result').rstrip()}
     tl.store(Y+batch*{2*a*b}+r[:,None]*{2*b}+c[None,:],result,(r[:,None]<{a})&(c[None,:]<{compact_columns}))
 '''
     half=a*b//2+1
@@ -170,11 +153,8 @@ def transpose_half(X,Y,D):
 def cube0_pack1(P,W,T,Y):
     batch=tl.program_id(2).to(tl.int64)
     row=tl.program_id(0)*{bm}+tl.arange(0,{bm})
-    k=tl.arange(0,{2*p})
     word=tl.program_id(1)*{bn}+tl.arange(0,{bn})
-    x=tl.load(P+batch*{b*2*p}+row[:,None]*{2*p}+k[None,:],row[:,None]<{b},0.)
-    w=tl.load(W+k[:,None]*{2*p}+word[None,:],word[None,:]<{2*p},0.)
-    y=tl.dot(x,w,input_precision="ieee")
+{ieee_matmul(2*p,bm,bn,f'P+batch*{b*2*p}+row[:,None]*{2*p}+k[None,:],row[:,None]<{b},0.',f'W+k[:,None]*{2*p}+word[None,:],word[None,:]<{2*p},0.').rstrip()}
     vr,vi=tl.split(tl.reshape(y,({bm*bn//2},2)))
     vr=tl.reshape(vr,({bm},{bn//2}))
     vi=tl.reshape(vi,({bm},{bn//2}))
@@ -199,11 +179,8 @@ def cube0_pack1(P,W,T,Y):
 def cube1_finish_real(P,W,Y,D):
     batch=tl.program_id(2).to(tl.int64)
     row=tl.program_id(0)*64+tl.arange(0,64)
-    k=tl.arange(0,{2*bp})
     freq=tl.program_id(1)*64+tl.arange(0,64)
-    x=tl.load(P+batch*{a*2*bp}+row[:,None]*{2*bp}+k[None,:],row[:,None]<{a},0.)
-    w=tl.load(W+k[:,None]*{bp}+freq[None,:],freq[None,:]<{bp},0.)
-    value=tl.dot(x,w,input_precision="ieee")
+{ieee_matmul(2*bp,64,64,f'P+batch*{a*2*bp}+row[:,None]*{2*bp}+k[None,:],row[:,None]<{a},0.',f'W+k[:,None]*{bp}+freq[None,:],freq[None,:]<{bp},0.',result='value').rstrip()}
     tl.store(Y+batch*D+freq[:,None]*{a}+row[None,:],tl.trans(value),(freq[:,None]<{b})&(row[None,:]<{a}))
 '''
     if wide and a>=128 and b>=128:
@@ -213,11 +190,8 @@ def cube1_finish_real(P,W,Y,D):
 def cube0_real_pack1(P,W,T,Y):
     batch=tl.program_id(2).to(tl.int64)
     row=tl.program_id(0)*128+tl.arange(0,128)
-    k=tl.arange(0,{p})
     word=tl.program_id(1)*128+tl.arange(0,128)
-    x=tl.load(P+batch*{b*p}+row[:,None]*{p}+k[None,:],row[:,None]<{b},0.)
-    w=tl.load(W+k[:,None]*{2*p}+word[None,:],word[None,:]<{2*p},0.)
-    y=tl.dot(x,w,input_precision="ieee")
+{ieee_matmul(p,128,128,f'P+batch*{b*p}+row[:,None]*{p}+k[None,:],row[:,None]<{b},0.',f'W+k[:,None]*{2*p}+word[None,:],word[None,:]<{2*p},0.').rstrip()}
     vr,vi=tl.split(tl.reshape(y,(8192,2)))
     vr=tl.reshape(vr,(128,64));vi=tl.reshape(vi,(128,64))
     freq=tl.program_id(1)*64+tl.arange(0,64)
@@ -240,11 +214,8 @@ def cube0_real_pack1(P,W,T,Y):
 def cube1_finish(P,W,Y):
     batch=tl.program_id(2).to(tl.int64)
     row=tl.program_id(0)*64+tl.arange(0,64)
-    k=tl.arange(0,{2*bp})
     word=tl.program_id(1)*64+tl.arange(0,64)
-    x=tl.load(P+batch*{a*2*bp}+row[:,None]*{2*bp}+k[None,:],row[:,None]<{a},0.)
-    w=tl.load(W+k[:,None]*{2*bp}+word[None,:],word[None,:]<{2*bp},0.)
-    value=tl.dot(x,w,input_precision="ieee")
+{ieee_matmul(2*bp,64,64,f'P+batch*{a*2*bp}+row[:,None]*{2*bp}+k[None,:],row[:,None]<{a},0.',f'W+k[:,None]*{2*bp}+word[None,:],word[None,:]<{2*bp},0.',result='value').rstrip()}
     re,im=tl.split(tl.reshape(value,(2048,2)))
     re=tl.trans(tl.reshape(re,(64,32)))
     im=tl.trans(tl.reshape(im,(64,32)))
