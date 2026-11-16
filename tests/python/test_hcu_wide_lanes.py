@@ -83,6 +83,65 @@ class NumpyTL:
         ptr.data[index[valid]] = value[valid]
 
 
+@pytest.mark.parametrize("n", [64, 128, 1024])
+@pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parametrize("span", [1, 3, 8, 65])
+def test_packed_transposed_spectrum_matches_numpy_with_partial_planes(monkeypatch, n, wide, span):
+    pack, batch = (8 if wide else 16), 2 * span + 1
+    dtype = np.float64 if wide else np.float32
+    rng = np.random.default_rng(1711)
+    data = rng.normal(size=(batch, 2 * n)).astype(dtype)
+    transformed = np.fft.rfft(data, axis=-1)
+    matrices = (batch + span - 1) // span
+    expected = np.full((matrices * span, n + 1), np.nan, dtype=transformed.dtype)
+    expected[:batch] = transformed
+    expected = expected.reshape(matrices, span, n + 1).transpose(0, 2, 1).ravel()
+    output = np.full(expected.shape, np.nan, dtype=np.complex128 if wide else np.complex64)
+    name, source = build_ix_warp_source(n, pack, "packed_r2c", wide=wide,
+        table_roots=not wide, local_codelet=True, output_radix_chunk=1,
+        packed_output_transpose=True)
+    functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
+    for function in functions:
+        function.decorator_list = []
+    roots = np.exp(-2j * np.pi * np.arange(n) / n)
+    packed_roots = np.exp(-1j * np.pi * np.arange(n) / n)
+    namespace = {"tl": NumpyTL, "wave_tw_r_ptr": Pointer(roots.real.astype(dtype)),
+        "wave_tw_i_ptr": Pointer(roots.imag.astype(dtype)),
+        "packed_twiddle_ptr": Pointer(packed_roots.astype(output.dtype).view(dtype))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "<packed-transposed-fft>", "exec"), namespace)
+    for pid in range((batch + pack - 1) // pack):
+        monkeypatch.setattr(NumpyTL, "pid", pid)
+        namespace[name](Pointer(data), Pointer(output.view(dtype)), span, batch, 2*n, n+1)
+    np.testing.assert_allclose(output, expected,
+        rtol=5e-13 if wide else 2e-5, atol=5e-11 if wide else 5e-5, equal_nan=True)
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("n,factors,lanes", [(128, (8, 4, 4), 16), (1024, (16, 8, 8), 64)])
+def test_transposed_packed_leaf_preserves_span_abi_and_native_fallback_names(
+        tmp_path, monkeypatch, dtype, n, factors, lanes):
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_STORE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "0")
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
+                                     max_dynamic_shared_memory=65536, policy="native"))
+    try:
+        meta = emit_jit_kernel(kernel="leaf_packed_r2c", length=n, factors=factors,
+            lanes=lanes, num_warps=2, generic_radices=(), smem_size=n,
+            direction="forward", dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0,
+            perm_form="outer_packed", out_dir=tmp_path)
+    finally:
+        reset_profile(token)
+    source = Path(meta["module_path"]).read_text()
+    compile(source, "<hcu-packed-transpose>", "exec")
+    assert "outer_packed" in Path(meta["module_path"]).name
+    assert "_transpose" in meta["kernel_name"]
+    assert "span=output_distance" in source
+    assert meta["arg_names"][-3:] == ["input_distance", "output_distance", "nbatch"]
+    assert 0 < meta["batch_per_block"] <= 16
+    assert meta["num_warps"] == min(8, meta["batch_per_block"])
+
+
 @pytest.mark.parametrize("mode,inverse", [("contiguous", False), ("contiguous", True),
                                           ("contiguous_r2c", False), ("c2r", True),
                                           ("packed_r2c", False), ("packed_c2r", True)])

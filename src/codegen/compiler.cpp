@@ -4562,6 +4562,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
       adaptor::Memory(bytes), adaptor::Memory(bytes));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_store(
+    const FFTRequest &request, int64_t batch, int64_t n, int64_t span) {
+  const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.packed_real_child || n < 128 || n > 2048 || (n & (n - 1)) != 0 ||
+      span <= 0 || batch <= 0 || batch % span ||
+      (packed && std::string(packed) == "0") ||
+      !flag_or_default("FLAGFFT_HCU_PACKED_REAL_STORE", false) ||
+      !flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false)) return nullptr;
+  const int64_t scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
+  if (n / 2 > adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes))
+    return nullptr;
+  FFTRequest child = request;
+  child.n = child.requested_n = child.fft_length = n / 2;
+  child.real_transform = false;
+  child.real_transform_kind.clear();
+  child.packed_real_child = true;
+  child.raw_dim = 1;
+  child.batch = batch;
+  child.input_shape = {batch, n / 2};
+  child.input_strides = {n / 2, 1};
+  PlanBuilder builder;
+  auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(n / 2, child));
+  if (!leaf) return nullptr;
+  auto key = KernelKey::leaf_r2c(triton_target_for_request(child), child.direction, child.input_dtype,
+      leaf->length, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
+  key.kind = KernelKind::LeafPackedR2C;
+  key.perm_form = "outer_packed";
+  return std::make_shared<CompiledRawR2CLeafNode>(n, compile_kernel(key),
+      build_raw_leaf_tables(*leaf, child), build_raw_packed_real_twiddle(request, n), span);
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const PlanNodePtr &node,
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
@@ -6861,10 +6894,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                 (r2c_permute_override == nullptr
                                      ? r2c_permute_default
                                      : std::string(r2c_permute_override) != "0");
-  const bool n2_permuted = hcu_n2_permuted || maca_r2c_first_store;
   const int64_t n2_batch = batch * n0 * n1;
-  std::shared_ptr<CompiledRawNode> n2_real_fft;
-  if (n2_permuted) {
+  auto n2_real_fft = !inverse && !small && n1_leaf
+      ? compile_raw_hcu_packed_r2c_store(n2_request, n2_batch, n2, n1) : nullptr;
+  const bool n2_permuted = n2_real_fft != nullptr || hcu_n2_permuted || maca_r2c_first_store;
+  if (n2_real_fft) {
+    // The half-length FFT reconstructs directly into the next axis layout.
+  } else if (n2_permuted) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                         n2_request.direction, n2_request.input_dtype,
                                         n2_leaf->length, n2_leaf->factors, n2_leaf->lanes,
@@ -7867,7 +7903,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
         ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
     mark_ix_warp_fft(key, row_request, n0);
-    auto row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
+    auto row_r2c = compile_raw_hcu_packed_r2c_store(row_request, batch * n0, n1, n0);
+    if (!row_r2c) row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
         n1, compile_kernel(key), build_raw_leaf_tables(*ix_row_leaf, row_request), DeviceAllocation{}, n0);
     FFTRequest col_request = request;
     col_request.fft_length = col_request.requested_n = n0;

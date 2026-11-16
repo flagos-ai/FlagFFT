@@ -37,7 +37,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          four_step_other: int = 0, wide: bool = False,
                          table_roots: bool = False, root_period: int = 0,
                          strided_input: bool = False,
-                         strided_output_major: bool = False) -> tuple[str, str]:
+                         strided_output_major: bool = False,
+                         packed_output_transpose: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -58,6 +59,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("strided wave input requires an ordinary inner store")
     if strided_output_major and not strided_input:
         raise ValueError("output-major row tiles require strided input")
+    if packed_output_transpose and mode != "packed_r2c":
+        raise ValueError("packed output transpose requires a forward real boundary")
     row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
     col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
@@ -87,6 +90,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if root_period: name+=f'_period{root_period}'
     if strided_input: name+='_stridedinput'
     if strided_output_major: name+='_outtile'
+    if packed_output_transpose: name+='_transpose'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -113,6 +117,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             outn=n//2+1 if mode=='r2c' else n
             a+=[f'    gbase=(row_base//span)*({outn}*span)+(row_base%span)+slot']
     a+= ['    valid=row[:,None]<nbatch']
+    if packed_output_transpose:
+        a += [f'    gbase=(row//span)*({n+1}*span)+row%span']
     if strided_input:
         a += ['    valid_row=(outer_row<(nbatch//span))&(span_row<span)',
               '    valid=valid_row[:,None]']
@@ -398,7 +404,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                     a += ['    z=tl.join(tl.trans(zr),tl.trans(zi))',
                           '    tl.store(ptr+address[:,:,None]*2+tl.arange(0,2)[None,None,:],z,mask[:,:,None])']
                 else:a += ['    tl.store(ptr+address,tl.trans(z),mask)']
-        elif mode in {'contiguous','c2r','contiguous_r2c','packed_r2c','packed_c2r'}:
+        elif mode in {'contiguous','c2r','contiguous_r2c','packed_r2c','packed_c2r'} and not packed_output_transpose:
             a+=['    address=row[:,None]*output_distance+freq[None,:]',
                  '    mask=row[:,None]<nbatch']
             if mode=='contiguous_r2c': a += [f'    mask=mask&(freq[None,:]<{n//2+1})']
@@ -417,7 +423,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
                       '    tl.store(ptr+address,nyquist,valid&(pos==0))']
         else:
-            if not strided_input:
+            if packed_output_transpose:
+                # A CTA may cross an odd-sized matrix boundary. Its row IDs
+                # still map separately; only aligned full runs get a hint.
+                a += [f'    if span%{pack}==0:',
+                      f'        gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})']
+            elif not strided_input:
                 a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')']
             elif strided_output_major:
                 a += [f'    if (nbatch//span)%{pack}==0:',
@@ -431,6 +442,15 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                 a += ['    z=tl.join(tl.trans(zr),tl.trans(zi))',
                       '    tl.store(out+address[:,:,None]*2+tl.arange(0,2)[None,None,:],z,mask[:,:,None])']
             else:a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
+            if packed_output_transpose and start == 0:
+                a += [f'    pos=lane*{radix}',
+                      f'    nyquist_address=tl.broadcast_to(gbase[:,None]+{n}*span,({pack},64))']
+                if wide:
+                    a += ['    tl.store(out+nyquist_address*2,nyquist_r,valid&(pos==0))',
+                          '    tl.store(out+nyquist_address*2+1,0.0,valid&(pos==0))']
+                else:
+                    a += ['    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
+                          '    tl.store(ptr+nyquist_address,nyquist,valid&(pos==0))']
     return _finish_warp_source(name,a,fast_math,radix if local_codelet else 0,False)
 
 

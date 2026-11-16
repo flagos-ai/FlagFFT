@@ -3506,7 +3506,14 @@ def _build_leaf_kernel_source_for_io(
     if short_pack:
         return build_small_wave(plan, io_mode, _leaf_kernel_params_for_io(plan, io_mode=io_mode), short_pack)
     from .kernels_hcu_warp import (hcu_warp_store_pack, build_hcu_warp_store,
-                                   hcu_dense_wave_pack, build_hcu_dense_wave)
+                                   hcu_dense_wave_pack, build_hcu_dense_wave,
+                                   hcu_packed_transposed_pack)
+    if io_mode == "packed_r2c" and perm_form == "outer_packed":
+        pack = hcu_packed_transposed_pack(plan)
+        if not pack:
+            raise ValueError("transposed packed real boundary requires a supported HCU wave leaf")
+        return build_hcu_dense_wave(plan, io_mode,
+            _leaf_kernel_params_for_io(plan, io_mode=io_mode), pack, packed_transpose=True)
     dense_wave_pack = hcu_dense_wave_pack(plan, io_mode)
     if dense_wave_pack:
         return build_hcu_dense_wave(

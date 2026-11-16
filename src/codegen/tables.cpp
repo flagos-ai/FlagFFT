@@ -182,12 +182,13 @@ namespace {
     };
     const char *dense_mode = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
     const bool dense = dense_mode && (std::string(dense_mode) == "1" || std::string(dense_mode) == "leaves" ||
+                                      std::string(dense_mode) == "packed" ||
                                       std::string(dense_mode) == "fourstep_codelets");
     const bool requested = std::is_same_v<Real, double>
-        ? (dense && enabled("FLAGFFT_HCU_DENSE_WAVE_FP64")) ||
+        ? enabled("FLAGFFT_HCU_PACKED_REAL_STORE") || (dense && enabled("FLAGFFT_HCU_DENSE_WAVE_FP64")) ||
           (enabled("FLAGFFT_HCU_3D_WARP_FFT") && enabled("FLAGFFT_HCU_3D_WARP_FP64"))
         : enabled("FLAGFFT_HCU_WAVE_ROOT_TABLE") &&
-          (dense || enabled("FLAGFFT_HCU_3D_WARP_FFT"));
+          (dense || enabled("FLAGFFT_HCU_3D_WARP_FFT") || enabled("FLAGFFT_HCU_PACKED_REAL_STORE"));
     if (!requested) return;
     // Preserve the stage-table prefix and supply exact-dtype roots to the
     // wave path. Native fallbacks continue to use their original addresses.

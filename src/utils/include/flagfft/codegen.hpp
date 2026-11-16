@@ -1828,6 +1828,9 @@ class TritonCompiler {
                                                     const FFTRequest &request,
                                                     int64_t batch,
                                                     bool allow_npu_aiv256_transposed_store = true);
+  std::shared_ptr<CompiledRawNode> compile_raw_hcu_packed_r2c_store(const FFTRequest &request,
+                                                                  int64_t batch, int64_t n,
+                                                                  int64_t span);
   std::shared_ptr<CompiledRawNode> compile_raw_r2c_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
                                                         int64_t batch,

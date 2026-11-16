@@ -407,6 +407,8 @@ def module_name_for(
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
     if spec.name in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"}:
+        if spec.name == "leaf_packed_r2c" and perm_form == "outer_packed":
+            return f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"
             f"_l{lanes}_b{lane_block}_{dtype_tag}"

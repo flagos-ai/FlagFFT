@@ -57,13 +57,15 @@ def hcu_dense_wave_pack(plan, io_mode):
     if profile.backend != "hcu" or profile.warp_size != 64:
         return 0
     setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE", "0")
-    if setting not in {"0", "1", "leaves", "fourstep_codelets"}:
-        raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0, 1, leaves or fourstep_codelets")
+    if setting not in {"0", "1", "leaves", "packed", "fourstep_codelets"}:
+        raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0, 1, leaves, packed or fourstep_codelets")
     wide_setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "0")
     if wide_setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
+    if setting == "packed" and not packed:
+        return 0
     lanes = hcu_dense_wave_lanes(plan, io_mode)
     if setting == "fourstep_codelets" and (
             io_mode not in _FOURSTEP_ROWS | _FOURSTEP_COLS or
@@ -98,7 +100,21 @@ def hcu_dense_wave_pack(plan, io_mode):
     return pack
 
 
-def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
+def hcu_packed_transposed_pack(plan):
+    profile = current_profile()
+    if (profile.backend != "hcu" or profile.warp_size != 64 or
+            os.getenv("FLAGFFT_HCU_PACKED_REAL_STORE", "0") != "1" or
+            not _root_table_enabled() or plan.dtype not in {"complex64", "complex128"} or
+            not 64 <= plan.length <= 1024 or plan.length & (plan.length - 1)):
+        return 0
+    pack = 8 if plan.dtype == "complex128" else 16
+    budget = 32 if plan.dtype == "complex128" else 64
+    while pack > 1 and plan.length * pack * 4 > min(pack, 8) * 64 * budget:
+        pack //= 2
+    return pack
+
+
+def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0, *, packed_transpose=False):
     from .kernels_ix_warp import build_ix_warp_source
 
     row = io_mode in _FOURSTEP_ROWS
@@ -123,9 +139,11 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
         lane_width=lanes,
         root_period=_wide_root_period(plan),
         local_codelet=_native_wave_codelet(),
+        packed_output_transpose=packed_transpose,
     )
     leaf_name = "hcu_" + name + "_dense"
-    aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
+    aliases = ["    inp=in_ptr", "    out=out_ptr",
+               "    span=output_distance" if packed_transpose else "    span=1"]
     if wide or root_table:
         last = len(plan.factors) - 1
         aliases.extend([f"    wave_tw_r_ptr=tw{last}_r_ptr+{plan.length}",
