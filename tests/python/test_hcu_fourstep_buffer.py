@@ -74,6 +74,32 @@ def test_partial_overwriting_stage_keeps_ping_pong_buffers():
     assert not hcu_four_step_single_buffer(plan)
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("n,factors,lanes", [(128, (8, 4, 4), 16),
+    (512, (32, 16), 16), (1024, (32, 32), 32), (1024, (16, 8, 8), 64)])
+def test_wider_fp32_independent_rows_respect_stage_lifetimes_and_launch_bounds(
+        tmp_path, monkeypatch, dtype, n, factors, lanes):
+    monkeypatch.setenv("FLAGFFT_HCU_FOURSTEP_PACKING", "fp32_wide")
+    monkeypatch.setenv("FLAGFFT_HCU_VECTOR_IO", "fp32")
+    metadata = emit_jit_kernel(kernel="four_step_col", length=n, factors=factors,
+        lanes=lanes, num_warps=1, generic_radices=(32,) if 32 in factors else (),
+        smem_size=n, direction="inverse", dtype=dtype, prime_n=0,
+        four_step_n1=512, four_step_n2=n, out_dir=tmp_path)
+    plan = LeafPlan(n, factors, 1, lanes, 1, (), n, dtype=dtype)
+    buffers = 2 if hcu_four_step_single_buffer(plan) else 4
+    assert buffers*n*metadata["inner_pack"]*(8 if dtype == "complex128" else 4) <= 65536
+    assert metadata["num_warps"]*64 <= 512
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, "<hcu-wide-fourstep>", "exec")
+    if dtype == "complex128" or not hcu_four_step_single_buffer(plan):
+        monkeypatch.setenv("FLAGFFT_HCU_FOURSTEP_PACKING", "resource")
+        original = emit_jit_kernel(kernel="four_step_col", length=n, factors=factors,
+            lanes=lanes, num_warps=1, generic_radices=(32,) if 32 in factors else (),
+            smem_size=n, direction="inverse", dtype=dtype, prime_n=0,
+            four_step_n1=512, four_step_n2=n, out_dir=tmp_path/"original")
+        assert source == Path(original["module_path"]).read_text()
+
+
 @pytest.mark.parametrize("dtype,n,factors,lanes,expected", [
     ("complex64", 1024, (32, 32), 32, 2),
     ("complex64", 512, (32, 16), 16, 4),

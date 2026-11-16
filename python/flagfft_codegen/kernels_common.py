@@ -1267,8 +1267,14 @@ def _hcu_four_step_pack_for(pack, plan):
     if profile.backend != "hcu":
         return pack
     mode = os.getenv("FLAGFFT_HCU_FOURSTEP_PACKING", "resource")
-    if mode not in {"resource", "fp32_wave"}:
-        raise ValueError("FLAGFFT_HCU_FOURSTEP_PACKING must be resource or fp32_wave")
+    if mode not in {"resource", "fp32_wave", "fp32_wide"}:
+        raise ValueError("FLAGFFT_HCU_FOURSTEP_PACKING must be resource, fp32_wave or fp32_wide")
+    if (mode == "fp32_wide" and plan is not None and profile.policy != "legacy"
+            and plan.dtype == "complex64" and hcu_four_step_single_buffer(plan)
+            and max(cooperative_stage_lanes_for(plan)) <= profile.warp_size):
+        # Widen the contiguous independent-row axis while keeping at most
+        # eight physical waves. The caller applies the queried LDS bound.
+        pack = max(pack, 8)
     if (mode == "fp32_wave" and plan is not None and profile.policy != "legacy"
             and plan.dtype == "complex64" and len(plan.factors) == 2
             and hcu_four_step_single_buffer(plan)):
