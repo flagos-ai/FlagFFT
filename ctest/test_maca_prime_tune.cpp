@@ -122,6 +122,28 @@ TEST(HcuPackedCTA, KeepsWaveAndDeviceGridParallelism) {
   EXPECT_EQ(flagfft::hcu_packed_grid_pack_limit(64, 0, 64), 0);
 }
 
+TEST(HcuRealInput, ExposesACompleteWideGlobalReadWithoutAddingFFTStages) {
+  ScopedEnv resource("FLAGFFT_HCU_PACKED_CTA_PUBLIC", "resource");
+  flagfft::FFTRequest request;
+  request.device_type = "hcu"; request.device_arch = "gfx936";
+  request.origin_rank = 1; request.input_dtype = "complex128";
+  flagfft::LeafPlanNode leaf(1024, {16, 8, 8}, 1, 128, 4, {}, 1024);
+  const auto factors = flagfft::hcu_real_inverse_factors(request, leaf);
+  EXPECT_EQ(factors.size(), leaf.factors.size());
+  EXPECT_GT(leaf.length/factors.front(), leaf.length/leaf.factors.front());
+  EXPECT_LE(leaf.length/factors.front(), 128);
+  int64_t product = 1;
+  for (auto radix : factors) product *= radix;
+  EXPECT_EQ(product, leaf.length);
+  request.device_type = "cuda";
+  EXPECT_EQ(flagfft::hcu_real_inverse_factors(request, leaf), leaf.factors);
+  request.device_type = "hcu"; request.origin_rank = 3;
+  EXPECT_EQ(flagfft::hcu_real_inverse_factors(request, leaf), leaf.factors);
+  request.origin_rank = 1;
+  ScopedEnv control("FLAGFFT_HCU_PACKED_CTA_PUBLIC", "0");
+  EXPECT_EQ(flagfft::hcu_real_inverse_factors(request, leaf), leaf.factors);
+}
+
 TEST(HcuWave3D, SelectsOnlySupportedDenseSinglePrecisionC2CGeometry) {
   flagfft::FFTRequest request;
   request.device_type = "hcu";

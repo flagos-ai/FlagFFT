@@ -2040,6 +2040,7 @@ int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pa
 bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
                                     int64_t n0, int64_t n1, int64_t n2);
 std::vector<int64_t> hcu_packed_cta_factors(const FFTRequest &request, const LeafPlanNode &leaf);
+std::vector<int64_t> hcu_real_inverse_factors(const FFTRequest &request, const LeafPlanNode &leaf);
 int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t active_lanes);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
 bool ix_real_single_pack_policy_enabled(const FFTRequest &request);

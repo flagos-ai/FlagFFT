@@ -2640,8 +2640,13 @@ namespace {
     const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
     const bool native_cta = n / 2 <= 1024 &&
         flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false);
+    const char *public_setting = std::getenv("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
+    const std::string public_mode = public_setting ? public_setting : "0";
+    const bool wide_inverse = (request.input_dtype == "complex128" || request.input_dtype == "float64") &&
+        (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
+         request.origin_real_transform_kind == "c2r" || request.origin_real_transform_kind == "z2d");
     const bool native_public = native_cta && request.origin_rank <= 1 &&
-        flag_or_default("FLAGFFT_HCU_PACKED_CTA_PUBLIC", false);
+        (public_mode == "1" || (public_mode == "resource" && !wide_inverse));
     const bool native_nd = native_cta && (request.origin_rank > 1 || native_public);
     const int64_t minimum = native_nd || (layout && std::string(layout) == "compact") ? 64 : 256;
     if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
@@ -5063,6 +5068,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     }
   }
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+    auto factors = hcu_real_inverse_factors(request, *leaf);
+    if (factors != leaf->factors)
+      leaf = std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
+          leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
     return std::make_shared<CompiledRawC2RLeafNode>(n,
                                                     compile_leaf_c2r_kernel(*leaf, request),
                                                     build_raw_leaf_tables(*leaf, request));

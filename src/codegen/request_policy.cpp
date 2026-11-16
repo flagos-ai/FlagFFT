@@ -26,6 +26,24 @@
 
 namespace flagfft {
 
+std::vector<int64_t> hcu_real_inverse_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
+  const char *setting = std::getenv("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" || request.origin_rank > 1 ||
+      request.input_dtype != "complex128" || !setting || std::string(setting) != "resource" ||
+      leaf.length <= 0 || (leaf.length & (leaf.length - 1)) || leaf.factors.size() < 2)
+    return leaf.factors;
+  auto factors = leaf.factors;
+  std::size_t best = 0;
+  for (std::size_t i = 1; i < factors.size(); ++i) {
+    const int64_t active = leaf.length / factors[i];
+    // The Hermitian global read benefits from more independent butterflies;
+    // keep a complete first stage within two physical waves.
+    if (active >= 64 && active <= 128 && factors[i] < factors[best]) best = i;
+  }
+  if (best) std::rotate(factors.begin(), factors.begin() + best, factors.begin() + best + 1);
+  return factors;
+}
+
 int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t active_lanes) {
   if (batch <= 0 || compute_units <= 0 || active_lanes <= 0) return 0;
   // Leave two blocks per CU before grouping rows, while filling the physical
