@@ -4324,6 +4324,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::reverse(fused_factors.begin() + 1, fused_factors.end());
       }
       int64_t fused_warps = leaf->num_warps;
+      int64_t fused_lanes = leaf->lanes;
+      if (request.device_type == "hcu" && request.device_arch == "gfx936" &&
+          flag_or_default("FLAGFFT_HCU_CONV_SINGLE_BUFFER", false) &&
+          leaf->length > 0 && (leaf->length & (leaf->length - 1)) == 0 &&
+          leaf->length <= 4096 && fused_factors.size() >= 2) {
+        int64_t complete_lanes = 1;
+        for (int64_t radix : fused_factors)
+          complete_lanes = std::max(complete_lanes, leaf->length / radix);
+        // Consume a full shared FFT before each overwrite. At most four
+        // physical waves cooperate; other convolutions keep ping-pong.
+        if (complete_lanes <= 256) {
+          fused_lanes = complete_lanes;
+          fused_warps = std::max(fused_warps, (complete_lanes + 31) / 32);
+        }
+      }
       if (request.device_type == "ix" && request.device_arch == "71" &&
           request.origin_rank == 3 && bluestein->length == 997) {
         const char *value = std::getenv("FLAGFFT_IX_3D_BLUESTEIN_WARPS");
@@ -4334,7 +4349,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       LeafPlanNode fused_leaf(leaf->length,
                               std::move(fused_factors),
                               leaf->remainder,
-                              leaf->lanes,
+                              fused_lanes,
                               fused_warps,
                               leaf->generic_radices,
                               leaf->smem_size);

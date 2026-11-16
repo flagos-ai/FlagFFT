@@ -284,6 +284,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-permuted-fill-wave-v1=" + std::string(fill_wave ? fill_wave : "0");
     const char *packed_layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
     cache_key += ";hcu-packed-wave-layout-v1=" + std::string(packed_layout ? packed_layout : "wave");
+    const char *conv_buffer = std::getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
+    cache_key += ";hcu-conv-single-buffer-v1=" + std::string(conv_buffer ? conv_buffer : "0");
     cache_key += ";hcu-wave-codelet-v1=" + std::string(wave_codelet ? wave_codelet : "0");
     const char *wave_budget = std::getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
     cache_key += ";hcu-wave-batched-v1;budget=" + std::string(wave_budget ? wave_budget : "64");

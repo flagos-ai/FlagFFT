@@ -282,7 +282,10 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     )
     wide_cuda = (current_profile().backend == "cuda" and current_profile().device_arch == "sm_80"
                  and os.getenv("FLAGFFT_CUDA_WIDE_STAGE") == "1")
-    max_lanes = 256 if wide_cuda else _COOPERATIVE_STAGE_MAX_LANES
+    wide_hcu_convolution = (_hcu_backend_active() and
+        os.getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER", "0") == "1" and
+        plan.lanes > _COOPERATIVE_STAGE_MAX_LANES and not fixed_lanes_are_compatible)
+    max_lanes = plan.lanes if wide_hcu_convolution else 256 if wide_cuda else _COOPERATIVE_STAGE_MAX_LANES
     min_length = _COOPERATIVE_STAGE_MIN_LENGTH
     short_cooperative = (current_profile().backend == "cuda" and plan.length < min_length and
                          os.getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE") == "1")
@@ -716,6 +719,21 @@ def hcu_leaf_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
     old_bytes = 4 * lane_block_for(old_stride * pack) * scalar_bytes
     new_bytes = 2 * lane_block_for(plan.smem_size * pack) * scalar_bytes
     return old_bytes >= capacity // 4 and new_bytes <= capacity
+
+
+def hcu_convolution_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_CONV_SINGLE_BUFFER must be 0 or 1")
+    if (setting != "1" or io_mode != "bluestein_full_leaf" or len(plan.factors) < 2 or
+            plan.length <= 0 or plan.length & (plan.length - 1)):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    # The first FFT's final stage and the second FFT's first stage also
+    # overwrite shared input. Every stage must read its entire FFT at once.
+    return all(plan.length == radix * width for radix, width in zip(plan.factors, lanes))
 
 
 def permuted_store_batch_pack_for(
@@ -1444,6 +1462,8 @@ def _use_single_smem_buffer(
     four_step_n2: int = 0,
 ) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if hcu_convolution_single_buffer(plan, io_mode):
+        return True
     if hcu_leaf_single_buffer(plan, io_mode):
         return True
     if (io_mode.startswith(("four_step_", "bluestein_four_step_")) and not io_mode.endswith("_strided")

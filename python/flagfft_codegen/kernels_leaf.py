@@ -2219,7 +2219,9 @@ def _emit_stage_block(
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     smem_tail = permuted_smem_store and is_last
-    if (single_smem_buffer and stage > 0 and not is_last) or smem_tail:
+    shared_read = stage > 0 or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 1)
+    shared_write = not is_last or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 0)
+    if (single_smem_buffer and shared_read and shared_write) or smem_tail:
         # Every old shared-memory input must be read before the final stage
         # reuses that buffer for a different, batch-contiguous layout.
         lines.append(f"{indent}tl.debug_barrier()")
@@ -4089,7 +4091,7 @@ def _build_leaf_kernel_source_for_io(
         if len(factors) < 2:
             raise ValueError("fused convolution leaf requires at least two FFT stages")
         last_source = "smem_b" if (len(factors) - 1) % 2 == 1 else "smem_a"
-        intermediate_buffer = "smem_a" if last_source == "smem_b" else "smem_b"
+        intermediate_buffer = "smem_b" if single_smem_buffer else ("smem_a" if last_source == "smem_b" else "smem_b")
 
     for stage in range(len(factors)):
         body.extend(

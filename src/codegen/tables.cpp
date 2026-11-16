@@ -98,8 +98,10 @@ namespace {
     return min_stage_lanes * 4 >= max_stage_lanes;
   }
 
-  int64_t cooperative_stage_lanes(int64_t n, int64_t radix, const FFTRequest &request) {
-    const int64_t lane_limit = cuda_wide_stage_lanes(request) ? 256 : kMaxLanes;
+  int64_t cooperative_stage_lanes(int64_t n, int64_t radix, const FFTRequest &request,
+                                  int64_t hcu_convolution_limit = 0) {
+    const int64_t lane_limit = hcu_convolution_limit > 0 ? hcu_convolution_limit :
+                               cuda_wide_stage_lanes(request) ? 256 : kMaxLanes;
     const int64_t codelets = n / radix;
     const int64_t upper = std::min(codelets, lane_limit);
     for (int64_t candidate = upper; candidate > 0; --candidate) {
@@ -402,6 +404,10 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    bool portable_default) {
   const bool is_double = dtype_is_double(request.input_dtype);
+  const char *hcu_conv_buffer = std::getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
+  const int64_t hcu_convolution_limit = request.device_type == "hcu" &&
+      hcu_conv_buffer && std::string(hcu_conv_buffer) == "1" && leaf.lanes > kMaxLanes
+          ? leaf.lanes : 0;
   std::vector<DeviceAllocation> tables;
   const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
   // The full TLE CTA uses fixed-width groups. Its final stage's table shape
@@ -417,7 +423,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
     const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda || npu_portable_leaf_enabled(request)) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
-                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request)
+                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request, hcu_convolution_limit)
                               : leaf.lanes;
     if (is_double) {
       auto twiddles =
