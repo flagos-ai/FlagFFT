@@ -19,10 +19,21 @@
 #include "flagfft/codegen.hpp"
 
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
 namespace flagfft {
+
+int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pack) {
+  if (transforms < 0 || span <= 0 || pack <= 0)
+    throw std::invalid_argument("invalid outer permutation launch dimensions");
+  const int64_t planes = transforms / span + (transforms % span != 0);
+  const int64_t tiles = span / pack + (span % pack != 0);
+  if (planes > std::numeric_limits<int64_t>::max() / tiles)
+    throw std::overflow_error("outer permutation launch size overflow");
+  return planes * tiles;
+}
 
 bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
                                     int64_t n0, int64_t n1, int64_t n2) {

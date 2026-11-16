@@ -178,6 +178,11 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   扩展源代码检查通过，仍需 large-prime 设备验证。
 - `FLAGFFT_HCU_2D_REAL_ROWS=1`：复用已有紧凑行调度，限 HCU dense 2D、
   大于现有小 RC 范围的首轴、偶数末轴；无 shape winner 表。
+- `FLAGFFT_HCU_2D_REAL_COL_STORE=1` 在紧凑行路线中复用现有列 FFT 的融合
+  置换写回，删除一次完整矩阵转置；限列为 Leaf 的计划，默认关闭。
+  wave outer store 允许奇数 span，以每个矩阵独立向上取整计算启动数，
+  保留每个尾 tile 的掩码。CPU 地址检查覆盖奇数半谱、batch1/4 和两精度；
+  设备资格与性能尚待验证，未将此开关设为默认。
 - `FLAGFFT_HCU_FUSED_PACKED_REAL=1`：复用 LeafPackedR2C/C2R，按半长 FFT
   和重建共六个标量缓冲的 LDS 上界限定候选，未通过性能资格，不默认开启。
 - `FLAGFFT_HCU_SMALL_WAVE=1`：FP32、16–64 的二次幂连续叶子在一个 wave 内

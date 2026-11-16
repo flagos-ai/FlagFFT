@@ -56,6 +56,31 @@ class ScopedEnv {
 
 }  // namespace
 
+TEST(PermutedStoreGrid, CoversEachPlaneIncludingOddSpansAndTailTiles) {
+  for (int64_t span : {3, 65, 129, 997, 1025}) {
+    for (int64_t batch : {1, 3, 4, 7}) {
+      for (int64_t pack : {1, 2, 4, 8, 16, 32}) {
+        const int64_t rows = batch * span;
+        const int64_t groups = span / pack + (span % pack != 0);
+        const int64_t blocks = flagfft::permuted_store_outer_blocks(rows, span, pack);
+        std::set<int64_t> covered;
+        for (int64_t pid = 0; pid < blocks; ++pid) {
+          for (int64_t slot = 0; slot < pack; ++slot) {
+            const int64_t local_row = (pid % groups) * pack + slot;
+            const int64_t row = (pid / groups) * span + local_row;
+            if (local_row >= span || row >= rows) continue;
+            EXPECT_TRUE(covered.insert(row).second);
+          }
+        }
+        EXPECT_EQ(covered.size(), static_cast<std::size_t>(rows));
+        EXPECT_EQ(*covered.begin(), 0);
+        EXPECT_EQ(*covered.rbegin(), rows - 1);
+      }
+    }
+  }
+  EXPECT_EQ(flagfft::permuted_store_outer_blocks(4 * 1025, 1025, 8), 516);
+}
+
 TEST(HcuWave3D, SelectsOnlySupportedDenseSinglePrecisionC2CGeometry) {
   flagfft::FFTRequest request;
   request.device_type = "hcu";

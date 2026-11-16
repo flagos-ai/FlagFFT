@@ -612,9 +612,10 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     int64_t blocks = ceil_div(context.batch, kernel->batch_per_block);
-    if (kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+    if ((kernel->kernel_name.rfind("ix_warp", 0) == 0 ||
+         kernel->kernel_name.rfind("hcu_warp", 0) == 0) &&
         kernel->kernel_name.find("_outer_") != std::string::npos) {
-      blocks = ceil_div(context.batch, outer_stride) * ceil_div(outer_stride, kernel->batch_per_block);
+      blocks = permuted_store_outer_blocks(context.batch, outer_stride, kernel->batch_per_block);
     }
     kernel->launch(context.stream, args, blocks, 1, 1);
     return FLAGFFT_SUCCESS;

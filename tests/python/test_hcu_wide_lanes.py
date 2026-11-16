@@ -177,7 +177,7 @@ def test_wide_permutation_keeps_native_fallback_above_one_wave_payload(monkeypat
         plan = LeafPlan(2048, (16, 16, 8), 1, 128, 4, (), 2048, dtype="complex128")
         assert hcu_warp_store_pack(plan, "permuted_store", "inner", 64, 32768) == 0
         plan = LeafPlan(256, (16, 16), 1, 16, 1, (), 256, dtype="complex128")
-        assert hcu_warp_store_pack(plan, "permuted_store", "outer", 997, 997*16) == 0
+        assert hcu_warp_store_pack(plan, "permuted_store_r2c", "outer", 997, 997*16) == 0
     finally:
         reset_profile(token)
 

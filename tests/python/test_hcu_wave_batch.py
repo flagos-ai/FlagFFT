@@ -75,3 +75,40 @@ def test_large_output_tiles_respect_explicit_payload_budget(tmp_path, monkeypatc
     assert metadata["batch_per_block"] == expected
     assert metadata["num_warps"] == 8
     assert 2048 * expected * 2 <= 8 * 64 * int(budget)
+
+
+@pytest.mark.parametrize("span", [65, 129, 1025])
+@pytest.mark.parametrize("batch", [1, 4])
+@pytest.mark.parametrize("dtype,n,factors", [("complex64", 2048, (16, 16, 8)),
+                                            ("complex128", 256, (16, 16))])
+def test_padded_outer_tiles_match_independent_matrix_transpose(tmp_path, monkeypatch, span, batch, dtype, n, factors):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FP64", "1")
+    rows = batch * span
+    metadata = emit_jit_kernel(kernel="leaf_permuted_store", length=n, factors=factors,
+        lanes=128 if n == 2048 else 16, num_warps=4, generic_radices=(), smem_size=n,
+        direction="forward", dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0,
+        perm_form="outer", permutation_span=span, permutation_batch=rows, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    function = next(v for v in ast.parse(source).body
+                    if isinstance(v, ast.FunctionDef) and v.name == metadata["kernel_name"])
+    pack = metadata["batch_per_block"]
+    assert pack == (8 if dtype == "complex64" else 16)
+    groups = (span + pack - 1) // pack
+    env = {"pid": np.arange(batch * groups, dtype=np.int64)[:, None],
+           "slot": np.arange(pack, dtype=np.int64)[None, :], "span": span, "nbatch": rows}
+    for node in function.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in {"groups", "row_base", "row", "gbase"} and not any(
+                isinstance(v, ast.Call) for v in ast.walk(node.value)
+            ):
+                env[name] = eval(compile(ast.Expression(node.value), "<outer-address>", "eval"), {}, env)
+    valid = (env["row"] < rows) & ((env["pid"] % groups) * pack + env["slot"] < span)
+    row, base = env["row"][valid], env["gbase"][valid]
+    np.testing.assert_array_equal(np.sort(row), np.arange(rows))
+    assert np.all(env["gbase"][:, 0] % pack == 0)
+    frequencies = np.array([0, 1, n // 2, n - 1])
+    expected = np.arange(batch * n * span, dtype=np.int64).reshape(batch, n, span)
+    actual = base[:, None] + frequencies[None, :] * span
+    np.testing.assert_array_equal(actual,
+        expected[row[:, None] // span, frequencies[None, :], row[:, None] % span])

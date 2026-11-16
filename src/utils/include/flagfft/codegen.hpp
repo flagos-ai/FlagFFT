@@ -2033,6 +2033,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              const std::vector<int64_t> &idx);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    bool portable_default = false);
+int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pack);
 bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
                                     int64_t n0, int64_t n1, int64_t n2);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);

@@ -134,7 +134,7 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
             or span <= 0 or batch <= 0):
         return 0
     inner = perm_form.startswith("inner")
-    if inner and batch % span:
+    if batch % span:
         return 0
     target = os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
     if target not in {"auto", "1", "2", "4", "8", "16", "32"}:
@@ -147,12 +147,12 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     budget = 32 if wide else _scalar_wave_budget(plan)
     while pack > 1 and plan.length * pack * 2 > min(pack * lanes // 64, 8) * 64 * budget:
         pack //= 2
-    while pack > 1 and (batch % span or (batch // span) % pack
-                       if inner else span % pack):
+    while pack > 1 and ((batch // span) % pack
+                       if inner else span % pack if io_mode == "permuted_store_r2c" else False):
         pack //= 2
     if wide and target == "auto" and pack < 4:
         # Retain the native store when row alignment prevents a coalesced
-        # FP64 tile. This also leaves odd-span and short-row fallbacks intact.
+        # FP64 real-input tile. Complex outer stores use padded plane grids.
         return 0
     return pack
 
