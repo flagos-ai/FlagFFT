@@ -257,6 +257,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-fourstep-single-buffer-v1=" + std::string(single_buffer ? single_buffer : "0");
     const char *packing = std::getenv("FLAGFFT_HCU_FOURSTEP_PACKING");
     cache_key += ";hcu-fourstep-packing-v1=" + std::string(packing ? packing : "resource");
+    const char *row_twiddle = std::getenv("FLAGFFT_HCU_FP32_ROW_TWIDDLE");
+    cache_key += ";hcu-fp32-row-twiddle-v1=" + std::string(row_twiddle ? row_twiddle : "0");
     const char *leaf_buffer = std::getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
     cache_key += ";hcu-leaf-single-buffer-v1=" + std::string(leaf_buffer ? leaf_buffer : "0");
     const char *leaf_packing = std::getenv("FLAGFFT_HCU_LEAF_PACKING");

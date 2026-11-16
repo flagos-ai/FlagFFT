@@ -1353,6 +1353,14 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
         return True
     if _portable_leaf_backend_active():
         return False
+    if _hcu_backend_active():
+        setting = os.getenv("FLAGFFT_HCU_FP32_ROW_TWIDDLE", "0")
+        if setting not in {"0", "1"}:
+            raise ValueError("FLAGFFT_HCU_FP32_ROW_TWIDDLE must be 0 or 1")
+        shared = current_profile().max_dynamic_shared_memory or 65536
+        if (setting == "1" and dtype == "complex64" and 1 < n1 <= 1024
+                and 1 < n2 <= 1024 and n1 * n2 * 8 >= shared):
+            return True
     return use_tle_fused_twiddle(n1, n2, dtype) or (
         _is_double_dtype(dtype) and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
     )
