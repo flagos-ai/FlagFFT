@@ -1,9 +1,10 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# BW1000 / gfx936 candidate. Source after configuring DTK and the codegen stack.
+# BW1000 / gfx936 profile. Source after configuring DTK and the codegen stack.
 # Acceptance status and exact source revisions: docs/hcu-bw1000-acceptance.md.
-# This profile is still undergoing full-matrix device validation.
+# Canonical 400-case full-batch acceptance passed at b11a09fb.
+# Frozen generalization validation is recorded separately in the document.
 unset FLAGFFT_PACKED_REAL FLAGFFT_HCU_3D_HYBRID FLAGFFT_HCU_3D_LAST_TRANSPOSE FLAGFFT_HCU_3D_HYBRID_LAST_TRANSPOSE
 export FLAGFFT_HCU_2D_REAL_COL_STORE=1
 export FLAGFFT_HCU_2D_REAL_ROWS=1

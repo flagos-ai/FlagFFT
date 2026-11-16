@@ -1,8 +1,24 @@
-# BW1000 优化与验收（2026-11-16）
+# BW1000 优化与验收（2026-11-17）
 
 目标：默认 30 算子、400 个性能 case 的逐 case 加权几何平均加速比至少 1.0x，
 每个 case 至少 0.7x；同时要求 NumPy 和 hipFFT 参考准确性通过。算子等权几何平均
 单独记录，不与逐 case 口径混用。
+
+2026-11-17 07:10，`b11a09fb872090d334a0732babf5eb8e2f9e5853` 已通过规范
+400 项正式验收。逐 case GM **1.32575139x**，最低 **0.71266440x**，算子等权
+GM **1.31066935x**，低于 0.7x 的项数为 **0**。FlagFFT/NumPy、hipFFT/NumPy
+各 **400/400** 通过，全部执行请求的完整 batch；400 个参考时延均经过数值验证。
+远端及归档后的本地验收器均通过矩阵 SHA、身份、覆盖和阈值检查。
+
+运行配置为 `conf/hcu_bw1000.sh`，两张卡使用同一配置，warmup=10、iters=100；
+没有拼接局部候选的最优时延。归档为外部结果根目录下
+`remote/20261117_040311_canonical400_combined/`，其中 `acceptance.json`、
+`acceptance.local.json`、`REPORT.md`、`case_metrics.csv` 和配置快照可供复核。
+最低项是 2048²、batch1 的 FP64 R2C。
+
+同一冻结实现和配置正在运行矩阵外完整 400 项，目录为
+`remote/20261117_071030_frozen_holdout400_combined/`。该轮尚未结束，不能将规范
+矩阵通过等同于所有扩展尺寸通过；后续结果单独记录，不用扩展结果选择逐项赢家。
 
 代码工作分支为 `codex/hcu-general-opt`，从 `codex/hcu-3d-09@62e2e015` 继续，
 该基线包含 `dev@04f49734` 和此前 prepared native dispatch 改进。
