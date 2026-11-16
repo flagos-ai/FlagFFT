@@ -154,20 +154,45 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
 PlanNodePtr PlanBuilder::build_convolution_fft(int64_t length) {
   const auto &context = request_context();
   const bool wide = context.input_dtype == "complex128" || context.input_dtype == "float64";
-  if (context.hcu_fp64_convolution_radix_cap && wide && length >= 65536 &&
-      factorize_supported_radices(length).remainder == 1) {
+  const bool bounded = context.hcu_fp64_convolution_radix_cap && wide && length >= 65536 &&
+      factorize_supported_radices(length).remainder == 1;
+  if (bounded || context.hcu_balance_convolution) {
     // The convolution extent and prime algorithm are already selected.
     // Bound its FFT's local butterflies in an isolated planning context;
     // do not change the public prime request or process-wide settings.
     PlanBuilder convolution_builder;
     convolution_builder.request_context_ = context;
     auto &child = *convolution_builder.request_context_;
-    child.origin_rank = 1;
-    child.requested_n = length;
-    child.hcu_fourstep_radix_cap = context.hcu_fp64_convolution_radix_cap;
+    child.hcu_balance_convolution = false;
+    if (bounded) {
+      child.origin_rank = 1;
+      child.requested_n = length;
+      child.hcu_fourstep_radix_cap = context.hcu_fp64_convolution_radix_cap;
+      child.hcu_preserve_fourstep_split = false;
+    }
     child.hcu_fp64_convolution_radix_cap = 0;
-    child.hcu_preserve_fourstep_split = false;
-    return convolution_builder.build_auto_node(length, false);
+    auto automatic = convolution_builder.build_auto_node(length, false);
+    if (!context.hcu_balance_convolution ||
+        !std::dynamic_pointer_cast<FourStepPlanNode>(automatic)) return automatic;
+    // Avoid a tiny matrix side feeding a long, poorly cooperating mixed
+    // leaf. Enumerate divisors, retaining only pairs of supported leaves,
+    // and minimize their aspect ratio without changing the convolution size.
+    int64_t best_n1 = 0;
+    PlanNodePtr best_row, best_col;
+    for (int64_t n1 : convolution_builder.enumerate_divisors(length)) {
+      if (n1 <= 1 || n1 > length / n1) continue;
+      auto row = convolution_builder.build_auto_node(n1, false);
+      auto col = convolution_builder.build_auto_node(length / n1, false);
+      if (std::dynamic_pointer_cast<LeafPlanNode>(row) &&
+          std::dynamic_pointer_cast<LeafPlanNode>(col) && n1 > best_n1) {
+        best_n1 = n1;
+        best_row = std::move(row);
+        best_col = std::move(col);
+      }
+    }
+    if (best_n1) return std::make_shared<FourStepPlanNode>(length, best_n1, length / best_n1,
+                                                        std::move(best_row), std::move(best_col));
+    return automatic;
   }
   return build_auto_node(length, false);
 }

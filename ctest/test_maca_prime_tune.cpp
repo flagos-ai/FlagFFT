@@ -322,6 +322,39 @@ TEST(HcuConvolution, BoundsFp64ChildButterfliesWithoutChangingPrimeExtentOrCache
   }
 }
 
+TEST(HcuConvolution, BalancesSupportedLeafMatricesWithoutChangingExtent) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 64;
+  ScopedEnv cap("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {8191, 16381}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {64, n};
+    request.input_strides = {n, 1};
+    ScopedEnv original("FLAGFFT_HCU_CONV_BALANCE", "0");
+    const auto baseline = builder.build(n, request)->describe();
+    {
+      ScopedEnv selected("FLAGFFT_HCU_CONV_BALANCE", "fp64");
+      auto prime = std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(n, request));
+      ASSERT_NE(prime, nullptr);
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(prime->conv_plan);
+      ASSERT_NE(pair, nullptr);
+      EXPECT_EQ(pair->n1 * pair->n2, n - 1);
+      EXPECT_LE(pair->n1, pair->n2);
+      EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(pair->row_plan), nullptr);
+      EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(pair->col_plan), nullptr);
+      for (int64_t divisor = pair->n1 + 1; divisor <= (n - 1) / divisor; ++divisor)
+        EXPECT_NE((n - 1) % divisor, 0);
+    }
+    EXPECT_EQ(builder.build(n, request)->describe(), baseline);
+  }
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;

@@ -171,6 +171,7 @@ class PlanBuilder {
     int ix_fourstep_preset = 0;
     int hcu_fourstep_radix_cap = 0;
     int hcu_fp64_convolution_radix_cap = 0;
+    bool hcu_balance_convolution = false;
     bool hcu_preserve_fourstep_split = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 
