@@ -169,6 +169,7 @@ class PlanBuilder {
     bool ix_short_single = false;
     bool ix_ct_batch = false;
     int ix_fourstep_preset = 0;
+    int hcu_fourstep_radix_cap = 0;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 
     bool operator==(const RequestContext& other) const;

@@ -56,6 +56,65 @@ class ScopedEnv {
 
 }  // namespace
 
+TEST(HcuFourStep, BalancedRegisterStagesAndPolicyCacheAreBounded) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.batch = 7;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {65536, 131072, 262144, 524288, 1048576}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {request.batch, n};
+    request.input_strides = {n, 1};
+    std::vector<std::string> descriptions;
+    for (const char *cap : {"auto", "8", "16", "auto"}) {
+      ScopedEnv policy("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", cap);
+      auto root = builder.build(n, request);
+      descriptions.push_back(root->describe());
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root);
+      ASSERT_NE(pair, nullptr);
+      for (const auto &child : {pair->row_plan, pair->col_plan}) {
+        auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+        ASSERT_NE(leaf, nullptr);
+        int64_t product = 1;
+        for (auto radix : leaf->factors) {
+          product *= radix;
+          if (std::string(cap) != "auto") {
+            EXPECT_LE(radix, std::stoi(cap));
+            EXPECT_GE(radix, 4);
+          }
+        }
+        EXPECT_EQ(product, leaf->length);
+      }
+    }
+    EXPECT_EQ(descriptions.front(), descriptions.back());
+    EXPECT_NE(descriptions[1], descriptions[2]);
+  }
+}
+
+TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
+  for (const char *backend : {"hcu", "cuda"}) {
+    flagfft::FFTRequest request;
+    request.device_type = backend;
+    request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+    request.origin_rank = request.raw_dim = 1;
+    request.batch = 3;
+    request.n = request.requested_n = request.fft_length = 8191;
+    request.input_dtype = request.output_dtype = "complex64";
+    request.input_layout = "contiguous";
+    request.input_shape = {3, 8191};
+    request.input_strides = {8191, 1};
+    flagfft::PlanBuilder builder;
+    ScopedEnv original("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+    auto baseline = builder.build(8191, request)->describe();
+    ScopedEnv candidate("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "8");
+    EXPECT_EQ(builder.build(8191, request)->describe(), baseline);
+  }
+}
+
 TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   flagfft::FFTRequest request;
   request.device_type = "maca";

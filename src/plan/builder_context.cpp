@@ -34,6 +34,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
          ix_fourstep_preset == other.ix_fourstep_preset &&
+         hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
 
@@ -46,6 +47,14 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;
+  if (request.device_type == "hcu" && request.device_arch == "gfx936") {
+    const char *setting = std::getenv("FLAGFFT_HCU_FOURSTEP_RADIX_CAP");
+    const std::string value = setting ? setting : "auto";
+    if (value != "auto" && value != "8" && value != "16") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8 or 16");
+    }
+    context.hcu_fourstep_radix_cap = value == "auto" ? 0 : std::stoi(value);
+  }
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
     if (split != nullptr) context.musa_1d_fourstep_split = split;

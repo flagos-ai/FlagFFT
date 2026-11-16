@@ -129,6 +129,23 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.hcu_fourstep_radix_cap && context.origin_rank == 1 &&
+      context.requested_n >= 65536 &&
+      (context.requested_n & (context.requested_n - 1)) == 0 &&
+      n >= 64 && n <= 4096 && n < context.requested_n && (n & (n - 1)) == 0) {
+    // Balance the exponent across bounded register butterflies. This fills
+    // HCU's 64-lane waves without a large radix-32 per-thread live set or a
+    // radix-2 tail. The root-size domain excludes prime convolution children.
+    int bits = 0;
+    for (int64_t remaining = n; remaining > 1; remaining >>= 1) ++bits;
+    const int cap_bits = context.hcu_fourstep_radix_cap == 8 ? 3 : 4;
+    const int stages = (bits + cap_bits - 1) / cap_bits;
+    std::vector<int64_t> factors;
+    for (int stage = 0; stage < stages; ++stage) {
+      factors.push_back(int64_t {1} << (bits / stages + (stage < bits % stages)));
+    }
+    return factors;
+  }
   const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
   if (context.device_type == "cuda" && context.device_arch == "sm_80" &&
       context.input_dtype == "complex64" && cuda_wide && std::string(cuda_wide) == "1") {
