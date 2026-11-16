@@ -210,6 +210,14 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   三角函数。FP64 packed wave 同样使用双精度表，候选不再经过 FP32 三角函数。
   `FLAGFFT_HCU_DENSE_WAVE_PACK` 的 16-row 实验会按每物理 lane 的活跃 payload
   自动缩小；重建按双倍 payload 计，不仅按共享内存容量放大 tile。
+- `FLAGFFT_HCU_WAVE_ROOT_PERIOD=4|8` 对 FP64 的 wave 内系数分块递推，每隔
+  固定数量重新从精确类型的表取值，限制累积误差并减少同时存活的独立系数。
+  它允许另行筛选大 FP64 叶子的单 wave 实现，避开已拒绝的跨 wave FFT。
+  CPU 对生成数学进行 C2C 正反向、R2C/C2R、packed 和置换写回对照，
+  连续与 packed 路径的最差逐 batch L2 误差低于 4e-15、Linf 低于 6e-15。
+  默认 0，尚待设备资源、正确性与性能资格；FP32 数学保持原路径。
+  `FLAGFFT_HCU_DENSE_WAVE=leaves` 仅替换连续/packed 叶子，保留 FourStep
+  行列的原生实现，以便独立验证这两类内存访问方式。
 - `FLAGFFT_HCU_WAVE_SCALAR_BUDGET=128` 是默认 64 以外的 FP32 寄存器预算实验，
   用于在 LDS 分块约束下测试更宽的合并写回；FP64 仍保留原预算。该实验没有
   设备资格，不作为默认。wave 中轴的 batched 地址按每个 cube 的行数计算，

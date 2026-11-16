@@ -26,6 +26,13 @@ def _scalar_wave_budget(plan):
     return 64 if plan.dtype == "complex128" else int(setting)
 
 
+def _wide_root_period(plan):
+    setting = os.getenv("FLAGFFT_HCU_WAVE_ROOT_PERIOD", "0")
+    if setting not in {"0", "4", "8"}:
+        raise ValueError("FLAGFFT_HCU_WAVE_ROOT_PERIOD must be 0, 4 or 8")
+    return int(setting) if plan.dtype == "complex128" else 0
+
+
 def hcu_dense_wave_lanes(plan, io_mode):
     setting = os.getenv("FLAGFFT_HCU_WIDE_WAVE_LANES", "64")
     if setting not in {"64", "auto"}:
@@ -43,15 +50,17 @@ def hcu_dense_wave_pack(plan, io_mode):
     if profile.backend != "hcu" or profile.warp_size != 64:
         return 0
     setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE", "0")
-    if setting not in {"0", "1"}:
-        raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0 or 1")
+    if setting not in {"0", "1", "leaves"}:
+        raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0, 1 or leaves")
     wide_setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "0")
     if wide_setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
     lanes = hcu_dense_wave_lanes(plan, io_mode)
-    if wide and not packed and plan.length * 8 > lanes * 128:
+    byte_budget = 256 if (_wide_root_period(plan) and lanes == 64 and
+        io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}) else 128
+    if wide and not packed and plan.length * 8 > lanes * byte_budget:
         # Account for input/output redistribution and 64-bit scalar width.
         # Larger tiles exceeded 256 VGPRs and spilled on the queried target.
         return 0
@@ -59,7 +68,8 @@ def hcu_dense_wave_pack(plan, io_mode):
         # Reconstruction keeps both partner FFT values and output registers
         # live. Bound that doubled payload before selecting the wave path.
         return 0
-    if (setting != "1" or (plan.dtype != "complex64" and not wide) or
+    if (setting == "0" or (setting == "leaves" and io_mode in _FOURSTEP_ROWS | _FOURSTEP_COLS)
+            or (plan.dtype != "complex64" and not wide) or
             not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1) or
             io_mode not in {"contiguous", "contiguous_r2c", "contiguous_c2r", "packed_r2c", "packed_c2r"} | _FOURSTEP_ROWS | _FOURSTEP_COLS):
         return 0
@@ -100,6 +110,7 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
         wide=wide,
         table_roots=root_table and not wide,
         lane_width=lanes,
+        root_period=_wide_root_period(plan),
     )
     leaf_name = "hcu_" + name + "_dense"
     aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
@@ -129,7 +140,8 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
             or os.getenv("FLAGFFT_HCU_3D_WARP_FFT", "0") != "1"
             or (plan.dtype != "complex64" and not wide)
             or not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1)
-            or (wide and plan.length * 8 > profile.warp_size * 128)
+            or (wide and plan.length * 8 > profile.warp_size *
+                (256 if _wide_root_period(plan) else 128))
             or (io_mode != "permuted_store" and not (wide and io_mode == "permuted_store_r2c"))
             or span <= 0 or batch <= 0):
         return 0
@@ -144,7 +156,7 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     # experimental budget for wider coalesced output tiles.
     # Logical FFT rows can share a wave; the physical block stays <= 512 lanes.
     lanes = 64
-    budget = 32 if wide else _scalar_wave_budget(plan)
+    budget = (64 if plan.length * 8 > 64 * 128 else 32) if wide else _scalar_wave_budget(plan)
     while pack > 1 and plan.length * pack * 2 > min(pack * lanes // 64, 8) * 64 * budget:
         pack //= 2
     while pack > 1 and ((batch // span) % pack
@@ -176,6 +188,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
         output_radix_chunk=chunk if chunk < radix else 0,
         table_roots=_root_table_enabled() and not wide,
         wide=wide, lane_width=lanes,
+        root_period=_wide_root_period(plan),
     )
     batched = perm_form.endswith("_batched")
     leaf_name = "hcu_" + name + ("_batched" if batched else "") + "_leaf"

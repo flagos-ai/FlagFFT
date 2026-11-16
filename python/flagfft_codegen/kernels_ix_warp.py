@@ -25,7 +25,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          output_radix_chunk: int = 0, lane_width: int = 64,
                          packed_gather: bool = False,
                          four_step_other: int = 0, wide: bool = False,
-                         table_roots: bool = False) -> tuple[str, str]:
+                         table_roots: bool = False, root_period: int = 0) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -40,6 +40,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp output chunk")
     if pack not in {1,2,4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
+    if root_period not in {0, 4, 8} or (root_period and not (wide or table_roots)):
+        raise ValueError("periodic wave roots require supplied tables and period 4 or 8")
     row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
     col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
@@ -66,6 +68,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if packed_gather: name+='_pairgather'
     if wide: name+='_f64'
     if table_roots: name+='_roots'
+    if root_period: name+=f'_period{root_period}'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -215,10 +218,15 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                     a += [f'    ar=r{lo}',f'    ai=i{lo}',f'    r{lo}=ar+tr',f'    i{lo}=ai+ti',
                           f'    r{hi}=ar-tr',f'    i{hi}=ai-ti']
     for j in range(1,radix):
-        if wide or table_roots:
+        if root_period and j > 1 and j % root_period:
+            a += ['    next_wr=wr*base_wr-wi*base_wi',
+                  '    wi=wr*base_wi+wi*base_wr', '    wr=next_wr']
+        elif wide or table_roots:
             a += [f'    root_index=(lane*{j})%{n}',
                   '    wr=tl.load(wave_tw_r_ptr+root_index)',
                   '    wi=tl.load(wave_tw_i_ptr+root_index)']
+            if root_period and j == 1:
+                a += ['    base_wr=wr', '    base_wi=wi']
         elif recurrence and j>1:
             a+=['    next_wr=wr*base_wr-wi*base_wi','    wi=wr*base_wi+wi*base_wr','    wr=next_wr']
         else:

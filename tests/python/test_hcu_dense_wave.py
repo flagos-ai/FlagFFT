@@ -104,6 +104,14 @@ def test_wide_redistribution_keeps_native_fallback_above_register_budget(monkeyp
     assert hcu_dense_wave_pack(plan, "four_step_row") == 0
 
 
+def test_leaf_scope_retains_fourstep_kernels(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "leaves")
+    plan = LeafPlan(1024, (32, 32), 1, 32, 1, (32,), 1024, dtype="complex64")
+    assert hcu_dense_wave_pack(plan, "contiguous") == 8
+    assert hcu_dense_wave_pack(plan, "four_step_row") == 0
+    assert hcu_dense_wave_pack(plan, "four_step_col") == 0
+
+
 @pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("kind,direction", [("leaf_packed_r2c", "forward"), ("leaf_packed_c2r", "inverse")])

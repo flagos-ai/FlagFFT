@@ -269,6 +269,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                  ";pack=" + std::string(dense_wave_pack ? dense_wave_pack : "auto");
     const char *wave_roots = std::getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE");
     cache_key += ";hcu-wave-root-table-v1=" + std::string(wave_roots ? wave_roots : "0");
+    const char *root_period = std::getenv("FLAGFFT_HCU_WAVE_ROOT_PERIOD");
+    cache_key += ";hcu-wave-root-period-v1=" + std::string(root_period ? root_period : "0");
     const char *wave_budget = std::getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
     cache_key += ";hcu-wave-batched-v1;budget=" + std::string(wave_budget ? wave_budget : "64");
     const char *wide_lanes = std::getenv("FLAGFFT_HCU_WIDE_WAVE_LANES");
