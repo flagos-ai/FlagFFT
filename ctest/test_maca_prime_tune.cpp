@@ -95,6 +95,43 @@ TEST(HcuFourStep, BalancedRegisterStagesAndPolicyCacheAreBounded) {
   }
 }
 
+TEST(HcuFourStep, MixedRegisterStagesPreserveProductsAndIrreduciblePrimes) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.batch = 7;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {90000, 129600, 340200, 663000}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {request.batch, n};
+    request.input_strides = {n, 1};
+    std::vector<std::string> descriptions;
+    for (const char *cap : {"auto", "8", "16", "auto"}) {
+      ScopedEnv policy("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", cap);
+      auto root = builder.build(n, request);
+      descriptions.push_back(root->describe());
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root);
+      ASSERT_NE(pair, nullptr);
+      for (const auto &child : {pair->row_plan, pair->col_plan}) {
+        auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+        ASSERT_NE(leaf, nullptr);
+        int64_t product = 1;
+        for (auto radix : leaf->factors) {
+          product *= radix;
+          if (std::string(cap) != "auto" && radix > std::stoi(cap)) {
+            for (int64_t d = 2; d <= radix / d; ++d) EXPECT_NE(radix % d, 0);
+          }
+        }
+        EXPECT_EQ(product, leaf->length);
+      }
+    }
+    EXPECT_EQ(descriptions.front(), descriptions.back());
+  }
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;

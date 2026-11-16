@@ -146,6 +146,28 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     }
     return factors;
   }
+  if (context.hcu_fourstep_radix_cap && context.origin_rank == 1 &&
+      context.requested_n >= 65536 && n >= 64 && n <= 4096 && n < context.requested_n &&
+      factorize_supported_radices(context.requested_n).remainder == 1) {
+    const int64_t cap = context.hcu_fourstep_radix_cap;
+    std::vector<int64_t> best, best_score;
+    for (const auto &candidate : enumerate_supported_factorizations(n)) {
+      if (!std::all_of(candidate.begin(), candidate.end(), [cap](int64_t radix) {
+            if (radix <= cap) return true;
+            // Irreducible supported primes cannot be split; the resource
+            // bound limits composite butterflies such as 25, 27 and 28.
+            for (int64_t divisor = 2; divisor <= radix / divisor; ++divisor)
+              if (radix % divisor == 0) return false;
+            return true;
+          })) continue;
+      auto score = score_leaf_factorization(n, candidate);
+      if (best.empty() || score > best_score) {
+        best = candidate;
+        best_score = std::move(score);
+      }
+    }
+    if (!best.empty()) return best;
+  }
   const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
   if (context.device_type == "cuda" && context.device_arch == "sm_80" &&
       context.input_dtype == "complex64" && cuda_wide && std::string(cuda_wide) == "1") {

@@ -524,7 +524,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       (context.input_dtype == "complex128" && context.output_dtype == "complex128");
   const bool hcu_bounded_fourstep = context.hcu_fourstep_radix_cap &&
       context.origin_rank == 1 && context.requested_n >= 65536 &&
-      (context.requested_n & (context.requested_n - 1)) == 0;
+      factorize_supported_radices(context.requested_n).remainder == 1;
   if (context.device_type != "maca" && thread_local_complex && n % kThreadLocalColLength == 0) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;

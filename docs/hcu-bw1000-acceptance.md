@@ -123,10 +123,13 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
 - `FLAGFFT_HCU_VECTOR_IO=1`：复用可移植的复数成对 load/store，覆盖 dense leaf
   和 Four-Step 行列。默认 0；没有增加尺寸白名单。HCU artifact identity 使用
   有界哈希，避免配置目录超出 255 字节，并隔离所有 HCU 环境开关。
-- `FLAGFFT_HCU_FOURSTEP_RADIX_CAP=8|16`：对公开 1D、大于等于 65536 的二次幂
-  请求，将子叶的指数平衡分配到有界 radix，减少每线程寄存器负担。默认 auto
+- `FLAGFFT_HCU_FOURSTEP_RADIX_CAP=8|16`：对公开 1D、大于等于 65536 的支持分解
+  请求，二次幂子叶的指数平衡分配到有界 radix；混合长度在已有候选中限制复合
+  radix 的上界，保留不可再拆的受支持素数，以减少每线程寄存器负担。默认 auto
   保留原策略。请求上下文包含该值；固定 thread-local 候选不能绕过限制；
   素数卷积及其他后端保留原路线。
+  混合长度扩展在原 acceptance 340200 FP64 使用 `[28,18]` / `[27,25]`
+  大寄存器蝶形的证据下加入，不依赖 holdout 结果；尚待设备资格验证。
 - `FLAGFFT_HCU_3D_CT=1`：二次幂 FP32 3D 的两遍 Cooley-Tukey 原型。两遍 tile
   均由 8192 complex 元素预算推导，batch 使用独立地址，不是逐 shape 路由表。
   默认关闭，FP64/不支持几何保留原实现。
