@@ -24,6 +24,21 @@
 
 namespace flagfft {
 
+bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
+                                    int64_t n0, int64_t n1, int64_t n2) {
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+      request.origin_rank != 3 || request.raw_dim != 3 || request.real_transform ||
+      !request.real_transform_kind.empty() || !request.origin_real_transform_kind.empty() ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy) return false;
+  for (int64_t axis : {n0, n1, n2}) {
+    if (axis < 64 || axis > 2048 || (axis & (axis - 1)) != 0) return false;
+  }
+  const char *wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
+  const char *roots = std::getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE");
+  return wave && std::string(wave) == "1" && roots && std::string(roots) == "1";
+}
+
 int ix_fourstep_default_preset(const FFTRequest &request) {
   if (request.device_type!="ix" || request.device_arch!="71" || request.raw_dim!=1 ||
       request.origin_rank>1 || request.fft_length!=request.requested_n ||

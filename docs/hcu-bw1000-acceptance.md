@@ -131,6 +131,12 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   scalar+cap16 的 20 个实数样本最低 0.757x，而 FP64 complex 的最低仍为
   0.693x；不能把部分结果当作全量通过。FP32 paired 的大长度有收益，但
   限制 radix 的版本会使部分混合长度回退，因此不采用统一强制 cap。
+- FP32 三维 wave store：较大预算原型完成 16/16 完整 batch 的 NumPy 与 hipFFT
+  校验（两形状、batch1/4、两方向、两精度，其中 FP64 为原生数学控制）。
+  64-scalar 预算的首轮单 batch FP32 性能为 256³ 0.754x、长轴 0.826x，
+  同轮原生控制为 0.681x、0.540x。强制 FP64 走相同整体布局反而退化，
+  所以后续按精度和支持的几何选择，不全局关闭 hybrid。仍待 ABBA、
+  batch4 和矩阵外性能；这些数字不能代替完整验收。
 
 ## 实现与候选边界
 
@@ -196,6 +202,12 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   即使一个 CTA 跨越两个 cube 也不混用输出 stride；保留原始参数 ABI。
   CPU 对生成地址求值，与独立 NumPy 轴置换逐项比较，通过 batch2/3/5 和
   不同外轴长度的验证；仍需设备数值测试。
+- 同时开启 `FLAGFFT_HCU_3D_WARP_FFT=1` 与 `FLAGFFT_HCU_WAVE_ROOT_TABLE=1`
+  时，对 dense FP32 C2C、三个轴均为 64–2048 的二次幂且均为叶子的计划，
+  默认选择三个融合置换 store，替代 hybrid 中轴的显式转置；静态 span/batch
+  默认随之启用。原有环境覆盖仍优先。FP64、复制输入、实数根、非支持轴和
+  非叶子计划保留既有图结构，不使用尺寸赢家表。该接入仍是 opt-in，
+  尚需对自动路由本身进行统一候选的完整设备验收。
 - 半长度实数策略首先按 FFT 工作量、原/子计划结构、布局及资源界限建立适用域，
   再经过同卡重复性能、三幅度准确性和 holdout 决定默认行为；不增加逐 case winner 表。
 - 下一轮已冻结的 half-length 策略为 `FLAGFFT_HCU_LARGE_PACKED_REAL=1`（默认 0）：

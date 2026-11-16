@@ -977,11 +977,14 @@ namespace {
   void mark_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
     const bool ix_static = request.device_type == "ix" && request.device_arch == "71" &&
                            flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false);
+    const bool hcu_wave_static = request.device_type == "hcu" &&
+                                  flag_or_default("FLAGFFT_HCU_3D_WARP_FFT", false) &&
+                                  flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false);
     const bool hcu_static = request.device_type == "hcu" && request.origin_rank == 3 &&
-                            flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE", false);
+                            flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE", hcu_wave_static);
     if (span > 0 && (ix_static || hcu_static)) {
       key.permutation_span = span;
-      if (hcu_static && flag_or_default("FLAGFFT_HCU_3D_STATIC_BATCH", false)) {
+      if (hcu_static && flag_or_default("FLAGFFT_HCU_3D_STATIC_BATCH", hcu_wave_static)) {
         key.permutation_batch = request.batch;
       }
     }
@@ -6206,8 +6209,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", ix_nd_pack==0) &&
       batch * n0 * n1 * n2 > kStridedMaxElements;
   const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
+  const bool hcu_wave_graph = n0_leaf && n1_leaf && n2_leaf &&
+      hcu_wave_3d_c2c_policy_enabled(request, n0, n1, n2);
   const bool hcu_hybrid = request.device_type == "hcu" &&
-                          (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
+                          (hcu_hybrid_override == nullptr
+                               ? !hcu_wave_graph : std::string(hcu_hybrid_override) != "0");
   const bool portable_hybrid = fused_3d_store_enabled() && elongated_3d &&
                                (musa_hybrid || hcu_hybrid);
   const bool cuda_hybrid = request.device_type == "cuda" && request.device_arch == "sm_80" &&

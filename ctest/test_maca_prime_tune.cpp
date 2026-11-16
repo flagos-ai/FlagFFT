@@ -56,6 +56,46 @@ class ScopedEnv {
 
 }  // namespace
 
+TEST(HcuWave3D, SelectsOnlySupportedDenseSinglePrecisionC2CGeometry) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 3;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_layout = "contiguous";
+  ScopedEnv wave("FLAGFFT_HCU_3D_WARP_FFT", "1");
+  ScopedEnv roots("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1");
+  for (int64_t n0 : {64, 128, 256}) {
+    for (int64_t n1 : {64, 512, 2048}) {
+      for (int64_t n2 : {64, 128, 256}) {
+        EXPECT_TRUE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, n0, n1, n2));
+      }
+    }
+  }
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 96, 256, 64));
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 32, 512, 64));
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 128, 4096, 64));
+  for (const char *dtype : {"complex128", "float32"}) {
+    auto other = request;
+    other.input_dtype = other.output_dtype = dtype;
+    EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(other, 128, 512, 64));
+  }
+  auto copied = request;
+  copied.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(copied, 128, 512, 64));
+  auto real = request;
+  real.origin_real_transform_kind = "r2c";
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(real, 128, 512, 64));
+  {
+    ScopedEnv disabled("FLAGFFT_HCU_3D_WARP_FFT", "0");
+    EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 128, 512, 64));
+  }
+  {
+    ScopedEnv disabled("FLAGFFT_HCU_WAVE_ROOT_TABLE", "0");
+    EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 128, 512, 64));
+  }
+}
+
 TEST(HcuFourStep, BalancedRegisterStagesAndPolicyCacheAreBounded) {
   flagfft::FFTRequest request;
   request.device_type = "hcu";
