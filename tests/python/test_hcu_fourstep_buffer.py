@@ -88,3 +88,16 @@ def test_leaf_reuses_storage_only_after_complete_shared_reads(monkeypatch, dtype
     assert read < stage.find("tl.debug_barrier()", read) < stage.find("tl.store(tle.gpu.local_ptr(smem_b_r")
     small = LeafPlan(64, (4, 4, 4), 1, 16, 1, (), 64, dtype=dtype)
     assert not hcu_leaf_single_buffer(small, mode)
+
+
+@pytest.mark.parametrize("pack", [2, 4, 8, 16, 32])
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024, 2048])
+def test_wave_skew_is_bijective_and_spreads_interleaved_shared_reads(n, pack):
+    step = 64 // pack
+    addresses = [slot*n + ((frequency + slot*step) & (n-1))
+                 for slot in range(pack) for frequency in range(n)]
+    assert sorted(addresses) == list(range(n*pack))
+    # A 64-lane read covers contiguous frequency segments from each FFT.
+    wave = [slot*n + ((frequency + slot*step) & (n-1))
+            for slot in range(pack) for frequency in range(step)]
+    assert sorted(address % 64 for address in wave) == list(range(64))

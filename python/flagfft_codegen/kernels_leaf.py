@@ -1367,6 +1367,16 @@ def _emit_stage_block(
                  and os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1"))
     )
     hcu_cyclic_slot = "inner_slot" if inner_pack > 1 else "batch_slot"
+    if hcu_cyclic_smem:
+        skew = os.getenv("FLAGFFT_HCU_CYCLIC_SKEW", "unit")
+        if skew not in {"unit", "wave"}:
+            raise ValueError("FLAGFFT_HCU_CYCLIC_SKEW must be unit or wave")
+        if skew == "wave":
+            # Adjacent threads own adjacent FFT slots after a direct store
+            # remap, and throughout a FourStep tile. Shift each slot by one
+            # wave's frequency span so that the shared read spans the banks.
+            step = max(1, current_profile().warp_size // smem_pack)
+            hcu_cyclic_slot = f"{hcu_cyclic_slot} * {step}"
     batch_interleave = _ix_batch_smem_interleave(io_mode, portable_exchange, smem_pack)
     smem_interleave = batch_interleave or (
         _ix_backend_active() and not portable_exchange and inner_pack > 1
