@@ -255,6 +255,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-vector-io-v2=" + std::string(vector_io ? vector_io : "0");
     const char *single_buffer = std::getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER");
     cache_key += ";hcu-fourstep-single-buffer-v1=" + std::string(single_buffer ? single_buffer : "0");
+    const char *packing = std::getenv("FLAGFFT_HCU_FOURSTEP_PACKING");
+    cache_key += ";hcu-fourstep-packing-v1=" + std::string(packing ? packing : "resource");
     const char *leaf_buffer = std::getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
     cache_key += ";hcu-leaf-single-buffer-v1=" + std::string(leaf_buffer ? leaf_buffer : "0");
     const char *cyclic_skew = std::getenv("FLAGFFT_HCU_CYCLIC_SKEW");

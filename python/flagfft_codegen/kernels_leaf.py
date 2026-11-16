@@ -91,9 +91,9 @@ def _hcu_vector_io(dtype: str) -> bool:
     if not _hcu_backend_active():
         return False
     setting = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
-    if setting not in {"0", "1", "packed"}:
-        raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0, 1 or packed")
-    return setting == "1" or (setting == "packed" and dtype == "complex64")
+    if setting not in {"0", "1", "packed", "fp32"}:
+        raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0, 1, packed or fp32")
+    return setting == "1" or (setting in {"packed", "fp32"} and dtype == "complex64")
 
 
 def _packed_hcu_fp32_complex_io(dtype: str) -> bool:

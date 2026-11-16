@@ -20,6 +20,17 @@
 #include <string>
 
 namespace flagfft {
+namespace {
+bool has_prime_factor_above(int64_t value, int cap) {
+  if (value <= 1 || cap <= 0) return false;
+  for (int64_t divisor = 2; divisor <= value / divisor; ++divisor) {
+    if (value % divisor != 0) continue;
+    if (divisor > cap) return true;
+    do { value /= divisor; } while (value % divisor == 0);
+  }
+  return value > cap;
+}
+}  // namespace
 
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
   return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
@@ -52,16 +63,20 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   if (request.device_type == "hcu" && request.device_arch == "gfx936") {
     const char *setting = std::getenv("FLAGFFT_HCU_FOURSTEP_RADIX_CAP");
     const std::string value = setting ? setting : "auto";
-    if (value != "auto" && value != "8" && value != "16") {
-      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8 or 16");
+    if (value != "auto" && value != "8" && value != "16" && value != "fp64") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8, 16 or fp64");
     }
-    context.hcu_fourstep_radix_cap = value == "auto" ? 0 : std::stoi(value);
+    const bool wide = request.input_dtype == "complex128" || request.input_dtype == "float64";
+    context.hcu_fourstep_radix_cap = value == "fp64" ? (wide ? 16 : 0)
+        : value == "auto" ? 0 : std::stoi(value);
     const char *preserve = std::getenv("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT");
     const std::string preserve_value = preserve ? preserve : "0";
-    if (preserve_value != "0" && preserve_value != "1") {
-      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0 or 1");
+    if (preserve_value != "0" && preserve_value != "1" && preserve_value != "irreducible") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0, 1 or irreducible");
     }
-    context.hcu_preserve_fourstep_split = preserve_value == "1";
+    context.hcu_preserve_fourstep_split = preserve_value == "1" ||
+        (preserve_value == "irreducible" &&
+         has_prime_factor_above(request.requested_n, context.hcu_fourstep_radix_cap));
     const char *convolution = std::getenv("FLAGFFT_HCU_FP64_CONV_RADIX_CAP");
     const std::string convolution_value = convolution ? convolution : "auto";
     if (convolution_value != "auto" && convolution_value != "8" && convolution_value != "16") {

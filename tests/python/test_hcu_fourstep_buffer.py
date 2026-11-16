@@ -74,6 +74,24 @@ def test_partial_overwriting_stage_keeps_ping_pong_buffers():
     assert not hcu_four_step_single_buffer(plan)
 
 
+@pytest.mark.parametrize("dtype,n,factors,lanes,expected", [
+    ("complex64", 1024, (32, 32), 32, 2),
+    ("complex64", 512, (32, 16), 16, 4),
+    ("complex64", 256, (16, 16), 16, 4),
+    ("complex128", 1024, (32, 32), 32, 4),
+])
+def test_uniform_fp32_two_stage_tiles_can_fit_one_physical_wave(tmp_path, monkeypatch, dtype, n, factors, lanes, expected):
+    monkeypatch.setenv("FLAGFFT_HCU_FOURSTEP_PACKING", "fp32_wave")
+    monkeypatch.setenv("FLAGFFT_HCU_VECTOR_IO", "fp32")
+    metadata = emit_jit_kernel(kernel="four_step_col", length=n, factors=factors,
+        lanes=lanes, num_warps=1, generic_radices=(32,) if 32 in factors else (),
+        smem_size=n, direction="forward", dtype=dtype, prime_n=0,
+        four_step_n1=512, four_step_n2=n, out_dir=tmp_path)
+    assert metadata["inner_pack"] == expected
+    if dtype == "complex64" and len(set(factors)) == 1:
+        assert metadata["num_warps"] == 1
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("mode", ["contiguous", "strided", "contiguous_r2c", "contiguous_c2r"])
 def test_leaf_reuses_storage_only_after_complete_shared_reads(monkeypatch, dtype, mode):

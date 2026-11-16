@@ -243,6 +243,33 @@ TEST(HcuFourStep, BoundedLeavesCanRetainTheUncappedMemoryDecomposition) {
   }
 }
 
+TEST(HcuFourStep, PrecisionAndIrreducibleFactorsSelectPolicyWithoutLengthTables) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 64;
+  ScopedEnv cap("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "fp64");
+  flagfft::PlanBuilder builder;
+  for (auto [length, preserve] : std::vector<std::pair<int64_t, bool>> {
+           {90000, false}, {131072, false}, {185640, true}, {340200, false}, {663000, true}}) {
+    request.n = request.requested_n = request.fft_length = length;
+    request.input_shape = {64, length};
+    request.input_strides = {length, 1};
+    ScopedEnv selected("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", "irreducible");
+    auto candidate = builder.build(length, request)->describe();
+    ScopedEnv expected("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", preserve ? "1" : "0");
+    EXPECT_EQ(candidate, builder.build(length, request)->describe());
+  }
+  request.input_dtype = request.output_dtype = "complex64";
+  ScopedEnv selected("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", "irreducible");
+  auto candidate = builder.build(request.requested_n, request)->describe();
+  ScopedEnv original("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+  EXPECT_EQ(candidate, builder.build(request.requested_n, request)->describe());
+}
+
 TEST(HcuConvolution, BoundsFp64ChildButterfliesWithoutChangingPrimeExtentOrCachePolicy) {
   flagfft::FFTRequest request;
   request.device_type = "hcu";

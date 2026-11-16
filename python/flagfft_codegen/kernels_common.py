@@ -1248,6 +1248,22 @@ def _musa_four_step_inner_pack_override(plan, axis: str) -> int | None:
     return _bounded_inner_pack(int(override), plan)
 
 
+def _hcu_four_step_pack_for(pack, plan):
+    profile = current_profile()
+    if profile.backend != "hcu":
+        return pack
+    mode = os.getenv("FLAGFFT_HCU_FOURSTEP_PACKING", "resource")
+    if mode not in {"resource", "fp32_wave"}:
+        raise ValueError("FLAGFFT_HCU_FOURSTEP_PACKING must be resource or fp32_wave")
+    if (mode == "fp32_wave" and plan is not None and profile.policy != "legacy"
+            and plan.dtype == "complex64" and len(plan.factors) == 2
+            and hcu_four_step_single_buffer(plan)):
+        lanes = cooperative_stage_lanes_for(plan)
+        if len(set(lanes)) == 1 and lanes[0] <= profile.warp_size:
+            pack = min(pack, max(1, profile.warp_size // lane_block_for(lanes[0])))
+    return pack
+
+
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _cuda_four_step_pack_four(plan):
         return 4
@@ -1267,7 +1283,7 @@ def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
         else 1
     )
     return _bounded_inner_pack(
-        _four_step_col_inner_pack_for(n1, n2, dtype, plan),
+        _hcu_four_step_pack_for(_four_step_col_inner_pack_for(n1, n2, dtype, plan), plan),
         plan,
         extra_smem_elements=extra_smem_elements,
     )
@@ -1287,7 +1303,7 @@ def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
         else 1
     )
     return _bounded_inner_pack(
-        _four_step_row_inner_pack_for(n1, n2, dtype, plan),
+        _hcu_four_step_pack_for(_four_step_row_inner_pack_for(n1, n2, dtype, plan), plan),
         plan,
         extra_smem_elements=extra_smem_elements,
     )
