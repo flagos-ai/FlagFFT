@@ -10,6 +10,22 @@ Without that option, the runner continues to use `test_matrix.yaml`.
 | `test_matrix_generalization.yaml` | Discovery baseline for policy design | 736 | 736 |
 | `test_matrix_generalization_holdout.yaml` | Fixed validation after policy changes | 624 | 624 |
 
+`test_matrix_hcu_large_holdout.yaml` adds large lengths, rectangular tensors
+and uneven batches for HCU policy qualification. It is frozen before inspecting
+the candidate measurements. Run the affected operators with `--ops`; keep its
+results separate from the 400-case acceptance matrix. The non-power-of-two 3D
+shape also checks that experimental power-of-two CT routes keep their fallback.
+
+The release gate for the default HCU matrix is:
+
+```bash
+python tools/check_acceptance.py /path/to/complete/result_directory
+```
+
+It requires all 400 cases and 30 operators, passing NumPy and platform
+accuracy, validated reference timings, case-weighted geomean at least 1.0,
+and every speedup at least 0.7. A performance-only run cannot pass this gate.
+
 Counts include FP32/FP64 and all legal directions, before backend precision
 omissions and reference-library skips. IX/NPU currently omit FP64, halving
 these expanded counts. The manifest contains the full matrix, its source path
