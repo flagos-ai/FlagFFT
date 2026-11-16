@@ -359,13 +359,13 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       '    tl.store(out+address[:,:,None]*2+tl.arange(0,2)[None,None,:],z,mask[:,:,None])']
             else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
             if mode=='packed_r2c' and start==0:
-                a += [f'    pos=lane*{radix}',f'    address=row[:,None]*output_distance+{n}']
+                a += [f'    pos=lane*{radix}',f'    address=row[:,None]*output_distance+{n}',
+                      f'    address=tl.broadcast_to(address,({pack},64))']
                 if wide:
                     a += ['    tl.store(out+address*2,nyquist_r,valid&(pos==0))',
                           '    tl.store(out+address*2+1,0.0,valid&(pos==0))']
                 else:a += [
                       '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
-                      f'    address=tl.broadcast_to(address,({pack},64))',
                       '    tl.store(ptr+address,nyquist,valid&(pos==0))']
         else:
             a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')',

@@ -175,6 +175,10 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   已用到 256 VGPR 且有 112 字节 private segment，因此不能仅凭 LDS 合法就选择。
   FP32 packed 边界另按重建需要的双倍活跃 payload 限制在 64 个标量/物理 lane。
   设备验证前均保持 opt-in。
+  FP64 packed R2C 的首次二维验证暴露 Nyquist store 的指针张量未显式扩展到
+  value/mask 形状，编译失败，未执行设备 kernel。已统一两种精度的显式广播；
+  CPU 数学对照新增 packed 正反实数路径，并要求 store 的广播结果不能扩大
+  指针形状。失败日志保留，修复后需重新进行设备验证。
 - `FLAGFFT_HCU_WIDE_WAVE_LANES=auto`：FP64 连续叶子按每个逻辑 lane 的
   输入字节预算选择 64 或 128 个逻辑 lane，后者由两个物理 wave 协作；默认
   `64` 保留较大叶子的原生回退。FourStep 和 packed 边界保留 64-lane ABI。

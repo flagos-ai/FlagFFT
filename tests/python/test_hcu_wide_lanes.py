@@ -54,22 +54,28 @@ class NumpyTL:
 
     @staticmethod
     def store(ptr, value, mask=True):
+        shape = np.shape(ptr.offset)
+        assert np.broadcast_shapes(shape, np.shape(value), np.shape(mask)) == shape
         index, value, valid = np.broadcast_arrays(ptr.offset, value, mask)
         ptr.data[index[valid]] = value[valid]
 
 
 @pytest.mark.parametrize("mode,inverse", [("contiguous", False), ("contiguous", True),
-                                          ("contiguous_r2c", False), ("c2r", True)])
+                                          ("contiguous_r2c", False), ("c2r", True),
+                                          ("packed_r2c", False), ("packed_c2r", True)])
 def test_two_wave_generated_fft_matches_numpy_with_masked_tail(mode, inverse):
-    n, batch, pack = 2048, 3, 4
+    packed = mode.startswith("packed_")
+    n, batch, pack = (1024 if packed else 2048), 3, 4
     rng = np.random.default_rng(716)
-    real = rng.normal(size=(batch, n))
-    if mode == "contiguous_r2c":
+    real = rng.normal(size=(batch, 2*n if packed else n))
+    if mode in {"contiguous_r2c", "packed_r2c"}:
         data = real
         expected = np.fft.rfft(real, axis=-1)
-    elif mode == "c2r":
+    elif mode in {"c2r", "packed_c2r"}:
         data = np.fft.rfft(real, axis=-1)
-        expected = real * n
+        expected = real * real.shape[-1]
+        if packed:
+            expected = expected.view(np.complex128)
     else:
         data = real + 1j * rng.normal(size=(batch, n))
         expected = np.fft.ifft(data, axis=-1) * n if inverse else np.fft.fft(data, axis=-1)
@@ -77,12 +83,14 @@ def test_two_wave_generated_fft_matches_numpy_with_masked_tail(mode, inverse):
     output_distance = expected.shape[-1]
     output = np.full(expected.shape, np.nan, dtype=expected.dtype)
     name, source = build_ix_warp_source(n, pack, mode, inverse, wide=True,
-                                      lane_width=128, output_radix_chunk=4)
+                                      lane_width=64 if packed else 128, output_radix_chunk=4)
     source = "\n".join(line for line in source.splitlines()
                        if not line.startswith(("import ", "@triton.jit")))
     roots = np.exp((1j if inverse else -1j) * 2 * np.pi * np.arange(n) / n)
     namespace = {"tl": NumpyTL, "wave_tw_r_ptr": Pointer(roots.real.copy()),
                  "wave_tw_i_ptr": Pointer(roots.imag.copy())}
+    packed_roots = np.exp(-1j * np.pi * np.arange(n) / n)
+    namespace["packed_twiddle_ptr"] = Pointer(packed_roots.view(np.float64))
     exec(compile(source, "<emitted-wide-fft>", "exec"), namespace)
     namespace[name](Pointer(data.view(np.float64)), Pointer(output.view(np.float64)),
                     1, batch, input_distance, output_distance)
