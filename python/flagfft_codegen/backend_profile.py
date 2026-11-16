@@ -40,6 +40,8 @@ class BackendProfile:
     facts_source: str = "driver_query"
     # Policy budget for live FFT values, not a queried physical register count.
     leaf_live_bytes_per_thread: int = 128
+    # Optional device-wide parallelism for policies that bound the CTA grid.
+    multiprocessor_count: int | None = None
 
     @classmethod
     def from_device(cls, device: dict, policy: str = "native"):
@@ -65,6 +67,9 @@ class BackendProfile:
         if shared is not None and (not isinstance(shared, int) or shared <= 0):
             shared = None
             facts_source = "backend_default"
+        units = device.get("multiprocessor_count")
+        if type(units) is not int or units <= 0:
+            units = None
         return cls(
             backend,
             device["device_arch"],
@@ -73,6 +78,7 @@ class BackendProfile:
             shared,
             policy,
             facts_source=facts_source,
+            multiprocessor_count=units,
         )
 
     @property

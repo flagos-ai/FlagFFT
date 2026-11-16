@@ -20,16 +20,44 @@ from flagfft_codegen.kernels_hcu_warp import hcu_warp_store_pack
 @pytest.fixture(autouse=True)
 def hcu_profile(monkeypatch):
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
-                                     max_dynamic_shared_memory=65536, policy="native"))
+                                     max_dynamic_shared_memory=65536, policy="native",
+                                     multiprocessor_count=80))
     monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "1")
     monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
     yield
     reset_profile(token)
 
 
+@pytest.mark.parametrize("rows", [33, 65, 129, 1025, 4096, 65536])
+def test_resource_pack_bounds_grid_without_changing_large_tiles(monkeypatch, rows):
+    plan = LeafPlan(64, (4, 4, 4), 1, 16, 1, (), 64)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
+    original = hcu_warp_store_pack(plan, "permuted_store", "outer", rows, rows)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_PACK", "resource")
+    pack = hcu_warp_store_pack(plan, "permuted_store", "outer", rows, rows)
+    assert pack > 0 and not pack & (pack - 1)
+    assert pack <= original
+    assert pack == 1 or rows // pack >= 160
+    if rows >= 160 * original:
+        assert pack == original
+
+
+@pytest.mark.parametrize("units", [None, 0, -1, "80", True, 80])
+def test_optional_compute_unit_fact_is_validated_and_separates_cache(units):
+    device = dict(backend="hcu", device_arch="gfx936", warp_size=64,
+                  max_threads_per_block=1024, multiprocessor_count=units)
+    profile = BackendProfile.from_device(device)
+    assert profile.multiprocessor_count == (80 if type(units) is int and units == 80 else None)
+    if profile.multiprocessor_count is not None:
+        device.pop("multiprocessor_count")
+        assert profile.fingerprint != BackendProfile.from_device(device).fingerprint
+
+
 @pytest.mark.parametrize("outer", [8, 16, 128])
 @pytest.mark.parametrize("batch", [2, 3, 5])
-def test_generated_batched_store_matches_numpy_transpose(tmp_path, outer, batch):
+@pytest.mark.parametrize("packing", ["auto", "resource"])
+def test_generated_batched_store_matches_numpy_transpose(tmp_path, monkeypatch, outer, batch, packing):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_PACK", packing)
     n, span = 64, 64
     rows_per_cube = outer * span
     rows = batch * rows_per_cube
@@ -81,18 +109,25 @@ def test_large_output_tiles_respect_explicit_payload_budget(tmp_path, monkeypatc
 @pytest.mark.parametrize("batch", [1, 4])
 @pytest.mark.parametrize("dtype,n,factors", [("complex64", 2048, (16, 16, 8)),
                                             ("complex128", 256, (16, 16))])
-def test_padded_outer_tiles_match_independent_matrix_transpose(tmp_path, monkeypatch, span, batch, dtype, n, factors):
+@pytest.mark.parametrize("packing", ["auto", "resource"])
+def test_padded_outer_tiles_match_independent_matrix_transpose(tmp_path, monkeypatch, span, batch, dtype, n, factors, packing):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_PACK", packing)
     monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FP64", "1")
     rows = batch * span
     metadata = emit_jit_kernel(kernel="leaf_permuted_store", length=n, factors=factors,
         lanes=128 if n == 2048 else 16, num_warps=4, generic_radices=(), smem_size=n,
         direction="forward", dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0,
         perm_form="outer", permutation_span=span, permutation_batch=rows, out_dir=tmp_path)
+    if dtype == "complex128" and packing == "resource" and rows < 4 * 160:
+        plan = LeafPlan(n, factors, 1, 16, 4, (), n, dtype=dtype)
+        assert hcu_warp_store_pack(plan, "permuted_store", "outer", span, rows) == 0
+        assert not metadata["kernel_name"].startswith("hcu_warp")
+        return
     source = Path(metadata["module_path"]).read_text()
     function = next(v for v in ast.parse(source).body
                     if isinstance(v, ast.FunctionDef) and v.name == metadata["kernel_name"])
     pack = metadata["batch_per_block"]
-    assert pack == (8 if dtype == "complex64" else 16)
+    assert 0 < pack <= (8 if dtype == "complex64" else 16)
     groups = (span + pack - 1) // pack
     env = {"pid": np.arange(batch * groups, dtype=np.int64)[:, None],
            "slot": np.arange(pack, dtype=np.int64)[None, :], "span": span, "nbatch": rows}

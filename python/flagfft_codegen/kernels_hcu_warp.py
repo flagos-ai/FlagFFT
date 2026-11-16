@@ -228,9 +228,10 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     if batch % span:
         return 0
     target = os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
-    if target not in {"auto", "1", "2", "4", "8", "16", "32"}:
-        raise ValueError("FLAGFFT_HCU_3D_WARP_PACK must be auto, 1, 2, 4, 8, 16 or 32")
-    pack = (16 if wide else 32) if target == "auto" else int(target)
+    if target not in {"auto", "resource", "1", "2", "4", "8", "16", "32"}:
+        raise ValueError("FLAGFFT_HCU_3D_WARP_PACK must be auto, resource, 1, 2, 4, 8, 16 or 32")
+    automatic = target in {"auto", "resource"}
+    pack = (16 if wide else 32) if automatic else int(target)
     # Limit the live payload per physical thread, with a bounded larger
     # experimental budget for wider coalesced output tiles.
     # Logical FFT rows can share a wave; the physical block stays <= 512 lanes.
@@ -238,16 +239,22 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     budget = (64 if plan.length * 8 > 64 * 128 else 32) if wide else _scalar_wave_budget(plan)
     while pack > 1 and plan.length * pack * 2 > min(pack * lanes // 64, 8) * 64 * budget:
         pack //= 2
-    if wide and target == "auto":
+    if wide and automatic:
         # Bound the complete CTA's live FP64 payload as well as each lane's
         # share. Leave register space for coefficients and layout temporaries.
         live_bytes = 2 * (profile.max_dynamic_shared_memory or 65536)
         while pack > 1 and plan.length * pack * 16 > live_bytes:
             pack //= 2
+    if target == "resource" and profile.multiprocessor_count is not None:
+        # One FFT occupies a complete wave. Preserve two independent CTAs
+        # per compute unit when the total row count cannot fill a wide tile.
+        wanted = max(1, batch // (2 * profile.multiprocessor_count))
+        while pack > wanted:
+            pack //= 2
     while not strided and pack > 1 and ((batch // span) % pack
                        if inner else span % pack if io_mode == "permuted_store_r2c" else False):
         pack //= 2
-    if wide and target == "auto" and pack < 4:
+    if wide and automatic and pack < 4:
         # Retain the native store when row alignment prevents a coalesced
         # FP64 real-input tile. Complex outer stores use padded plane grids.
         return 0
