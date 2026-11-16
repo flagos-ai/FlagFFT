@@ -2630,7 +2630,7 @@ namespace {
   bool hcu_2d_compact_real_rows_enabled(const FFTRequest &request, int64_t n0, int64_t n1) {
     return request.device_type == "hcu" && request.device_arch == "gfx936" &&
         request.origin_rank == 2 && request.input_layout == "contiguous" &&
-        !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && n1 % 2 == 0 &&
+        !request.requires_contiguous_copy && n0 > 1 && n1 > 1 && n1 % 2 == 0 &&
         flag_or_default("FLAGFFT_HCU_2D_REAL_ROWS", false);
   }
 

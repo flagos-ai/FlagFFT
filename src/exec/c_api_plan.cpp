@@ -466,9 +466,10 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     }
     if (request.device_type == "hcu") {
       const char *setting = std::getenv("FLAGFFT_HCU_PLAN_GRAPH");
-      if (setting && std::string(setting) != "0" && std::string(setting) != "1")
-        throw std::runtime_error("FLAGFFT_HCU_PLAN_GRAPH must be 0 or 1");
-      if (setting && std::string(setting) == "1" &&
+      const std::string graph_mode = setting ? setting : "0";
+      if (graph_mode != "0" && graph_mode != "1" && graph_mode != "real_2d")
+        throw std::runtime_error("FLAGFFT_HCU_PLAN_GRAPH must be 0, 1 or real_2d");
+      if ((graph_mode == "1" || (graph_mode == "real_2d" && is_2d && real_multid)) &&
           std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
         const auto wrap = [](std::shared_ptr<CompiledRawNode> &node) {
           if (node && !std::dynamic_pointer_cast<CompiledRawGraphNode>(node))
