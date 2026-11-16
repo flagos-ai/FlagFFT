@@ -80,3 +80,25 @@ def test_ct_geometry_bounds_both_passes_without_case_tables(shape):
 @pytest.mark.parametrize("shape", [(127, 256, 64), (128, 2048, 997), (4096, 4096, 64)])
 def test_ct_geometry_preserves_fallback_for_unsupported_or_excessive_tiles(shape):
     assert ct_geometry(*shape) is None
+
+
+@pytest.mark.parametrize("shape", [(128, 128, 128), (64, 512, 32), (256, 256, 256)])
+def test_ct_metadata_launches_exactly_one_block_per_local_tile(tmp_path, shape):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.kernels_hcu_3d_ct import emit_ct_kernel
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
+                                     max_dynamic_shared_memory=65536, policy="native"))
+    try:
+        n0, n1, n2 = shape
+        h0, h1, tile = ct_geometry(*shape)
+        total = n0 * n1 * n2
+        for first in (True, False):
+            metadata = emit_ct_kernel(n0=n0, n1=n1, n2=n2, h0=h0, h1=h1,
+                                      direction="forward", first=first,
+                                      dtype="complex64", out_dir=tmp_path)
+            points_per_block = h0 * h1 * n2 if first else (n0 // h0) * (n1 // h1) * tile
+            assert metadata["grid_x_override"] * points_per_block == total
+            assert metadata["warp_size"] == 64
+            assert metadata["num_warps"] * metadata["warp_size"] <= 1024
+    finally:
+        reset_profile(token)

@@ -7,6 +7,7 @@ import json
 import math
 
 from .artifacts import write_text_atomic
+from .backend_profile import current_profile
 from .metadata import _module_source, _signature
 
 
@@ -142,5 +143,8 @@ def emit_ct_kernel(*, n0, n1, n2, h0, h1, direction, first, dtype, out_dir):
                     num_warps=8, num_stages=1, batch_per_block=1,
                     grid_x_override=grid, dtype=dtype,
                     kernel_type="hcu_3d_ct_first" if first else "hcu_3d_ct_last")
+    current_profile().validate(metadata["num_warps"])
+    metadata.update(warp_size=current_profile().warp_size,
+                    profile_id=current_profile().fingerprint)
     write_text_atomic(out_dir / (name + ".json"), json.dumps(metadata, sort_keys=True))
     return metadata
