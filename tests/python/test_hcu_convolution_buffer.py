@@ -66,6 +66,9 @@ class Pointer:
     def __sub__(self, offset):
         return self + (-offset)
 
+    def to(self, dtype):
+        return Pointer(self.data.view(dtype), self.offset, self.shared)
+
 
 class TL:
     float32, float64 = np.float32, np.float64

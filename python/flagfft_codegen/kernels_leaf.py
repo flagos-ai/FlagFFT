@@ -42,6 +42,7 @@ from .kernels_common import (
     _tl_real_dtype,
     _use_single_smem_buffer,
     contiguous_batch_pack_for,
+    hcu_packed_cta_batch_pack_for,
     cooperative_stage_lanes_for,
     emitted_leaf_factors,
     four_step_col_inner_pack_for,
@@ -1298,6 +1299,7 @@ def _emit_stage_block(
     permuted_smem_store: bool = False,
     perm_inner: bool = False,
     perm_batched: bool = False,
+    packed_smem_alias: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2221,7 +2223,8 @@ def _emit_stage_block(
     smem_tail = permuted_smem_store and is_last
     shared_read = stage > 0 or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 1)
     shared_write = not is_last or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 0)
-    if (single_smem_buffer and shared_read and shared_write) or smem_tail:
+    if ((single_smem_buffer and shared_read and shared_write) or smem_tail
+            or (packed_smem_alias and is_last)):
         # Every old shared-memory input must be read before the final stage
         # reuses that buffer for a different, batch-contiguous layout.
         lines.append(f"{indent}tl.debug_barrier()")
@@ -3510,7 +3513,10 @@ def _build_leaf_kernel_source_for_io(
     from .kernels_hcu_warp import (hcu_warp_store_pack, build_hcu_warp_store,
                                    hcu_dense_wave_pack, build_hcu_dense_wave,
                                    hcu_packed_transposed_pack)
-    if io_mode == "packed_r2c" and perm_form == "outer_packed":
+    native_packed_cta = (_hcu_backend_active()
+                         and os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1")
+    packed_transpose = io_mode == "packed_r2c" and perm_form == "outer_packed"
+    if packed_transpose and not native_packed_cta:
         pack = hcu_packed_transposed_pack(plan)
         if not pack:
             raise ValueError("transposed packed real boundary requires a supported HCU wave leaf")
@@ -3574,7 +3580,8 @@ def _build_leaf_kernel_source_for_io(
     portable_exchange = _portable_leaf_backend_active()
     native_packed_r2c = (io_mode == "packed_r2c" and (
         (current_profile().backend == "cuda" and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
-        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_FUSED_PACKED_REAL") == "1")))
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_FUSED_PACKED_REAL") == "1")
+        or native_packed_cta))
     if io_mode == "packed_r2c" and not portable_exchange and not native_packed_r2c:
         raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
@@ -3641,6 +3648,7 @@ def _build_leaf_kernel_source_for_io(
             real_boundary=real_transform is not None,
             real_transform=real_transform,
         )
+        batch_pack = hcu_packed_cta_batch_pack_for(plan, io_mode) or batch_pack
     else:
         batch_pack = 1
     row_modes = {
@@ -3688,6 +3696,8 @@ def _build_leaf_kernel_source_for_io(
         four_step_n1=four_step_n1,
         four_step_n2=four_step_n2,
     )
+    packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
+                         and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
     if portable_exchange and len(factors) > 1:
         # The MetaX plugin cannot lower the warp-shuffle path, so the exchange
@@ -3785,7 +3795,8 @@ def _build_leaf_kernel_source_for_io(
         perm_tag = f"_{perm_form}" if perm_form != "outer" else ""
         kernel_name = f"r2c_permuted_store{perm_tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_r2c":
-        kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+        tag = "_transpose" if packed_transpose else ""
+        kernel_name = f"packed_r2c{tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_c2r":
         kernel_name = f"packed_c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
@@ -4084,8 +4095,11 @@ def _build_leaf_kernel_source_for_io(
 
     if native_packed_r2c and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
-        body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
-        body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+        if packed_smem_alias:
+            body.extend(["    packed_r = smem_b_r", "    packed_i = smem_b_i"])
+        else:
+            body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+            body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
 
     if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         if len(factors) < 2:
@@ -4123,6 +4137,7 @@ def _build_leaf_kernel_source_for_io(
                 permuted_smem_store=permuted_smem_store,
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
+                packed_smem_alias=packed_smem_alias,
             )
         )
 
@@ -4160,6 +4175,25 @@ def _build_leaf_kernel_source_for_io(
             "    tl.store(out_ptr + packed_nyquist * 2, packed_ar - packed_ai, mask=packed_mask & (packed_k == 0))",
             "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
         ])
+
+        if packed_transpose:
+            # Adjacent output lanes own adjacent FFT rows. Source rows may
+            # cross matrix boundaries, including a final partial CTA.
+            replacements = {
+                f"    packed_slot = packed_pos // {smem_slot_stride}":
+                    f"    packed_slot = packed_pos % {batch_pack}",
+                f"    packed_k = packed_pos % {smem_slot_stride}":
+                    f"    packed_k = packed_pos // {batch_pack}",
+                "    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_pos,)), mask=packed_mask, other=0.0)":
+                    f"    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_slot * {smem_slot_stride} + packed_k,)), mask=packed_mask, other=0.0)",
+                "    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_pos,)), mask=packed_mask, other=0.0)":
+                    f"    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_slot * {smem_slot_stride} + packed_k,)), mask=packed_mask, other=0.0)",
+                "    packed_dst = (batch_id + packed_slot) * output_distance + packed_k":
+                    f"    packed_dst = ((batch_id + packed_slot) // output_distance) * ({n+1} * output_distance) + packed_k * output_distance + (batch_id + packed_slot) % output_distance",
+                f"    packed_nyquist = (batch_id + packed_slot) * output_distance + {n}":
+                    f"    packed_nyquist = ((batch_id + packed_slot) // output_distance) * ({n+1} * output_distance) + {n} * output_distance + (batch_id + packed_slot) % output_distance",
+            }
+            body = [replacements.get(line, line) for line in body]
 
         if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
             for old_lines,new_lines in (

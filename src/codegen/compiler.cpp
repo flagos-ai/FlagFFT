@@ -2617,12 +2617,14 @@ namespace {
     const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
     if (packed && std::string(packed) == "0") return false;
     const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
-    const int64_t minimum = layout && std::string(layout) == "compact" ? 64 : 256;
+    const bool native_nd = request.origin_rank > 1 &&
+        flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false);
+    const int64_t minimum = native_nd || (layout && std::string(layout) == "compact") ? 64 : 256;
     if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
         request.requires_contiguous_copy || request.input_layout != "contiguous" ||
         request.input_strides.empty() || request.input_strides.back() != 1 ||
         request.packed_real_child || n < minimum || (n & (n - 1)) != 0 || batch < 64 ||
-        !flag_or_default("FLAGFFT_HCU_FUSED_PACKED_REAL", false)) return false;
+        !(native_nd || flag_or_default("FLAGFFT_HCU_FUSED_PACKED_REAL", false))) return false;
     // Six half-length real/imaginary buffers conservatively cover the FFT
     // and packed reconstruction, including FP64, within the queried LDS cap.
     const int64_t scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
@@ -4583,7 +4585,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_stor
     const FFTRequest &request, int64_t batch, int64_t n, int64_t span) {
   const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
   const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
-  const int64_t minimum = layout && std::string(layout) == "compact" ? 64 : 128;
+  const int64_t minimum = flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
+      (layout && std::string(layout) == "compact") ? 64 : 128;
   if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
       request.input_layout != "contiguous" || request.requires_contiguous_copy ||
       request.packed_real_child || n < minimum || n > 2048 || (n & (n - 1)) != 0 ||

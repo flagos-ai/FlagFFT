@@ -709,6 +709,9 @@ def hcu_leaf_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
             "contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
             "packed_r2c", "packed_c2r"} or not _hcu_buffer_stage_safe(plan)):
         return False
+    if (os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1"
+            and io_mode in {"packed_r2c", "packed_c2r"}):
+        return True
     # Retain the short-leaf schedule where shared storage is inexpensive.
     # The original allocation must occupy at least one quarter of the CU's
     # queried LDS capacity before screening the extra overwrite barrier.
@@ -719,6 +722,32 @@ def hcu_leaf_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
     old_bytes = 4 * lane_block_for(old_stride * pack) * scalar_bytes
     new_bytes = 2 * lane_block_for(plan.smem_size * pack) * scalar_bytes
     return old_bytes >= capacity // 4 and new_bytes <= capacity
+
+
+def hcu_packed_cta_batch_pack_for(plan: LeafPlan, io_mode: str) -> int:
+    """Fill an output transaction while retaining two LDS-resident CTAs."""
+    if not _hcu_backend_active() or os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") != "1":
+        return 0
+    if io_mode not in {"packed_r2c", "packed_c2r"}:
+        return 0
+    widths = cooperative_stage_lanes_for(plan)
+    single = hcu_leaf_single_buffer(plan, io_mode)
+    alias = single and plan.length == widths[-1] * plan.factors[-1]
+    buffers = 2 if single else 4
+    if io_mode == "packed_r2c" and not alias:
+        buffers += 2
+    scalar = _real_element_bytes(plan.dtype)
+    target = 128 // (2 * scalar)
+    capacity = (current_profile().max_dynamic_shared_memory or 65536) // 2
+    pack = 1
+    while pack * 2 <= target:
+        candidate = pack * 2
+        stride = plan.smem_size + (1 if candidate >= 4 and not single else 0)
+        shared = buffers * lane_block_for(stride * candidate) * scalar
+        if max(widths) * candidate > 512 or shared > capacity:
+            break
+        pack = candidate
+    return pack
 
 
 def hcu_convolution_single_buffer(plan: LeafPlan, io_mode: str) -> bool:

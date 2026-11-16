@@ -74,6 +74,8 @@ def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
+    if packed and os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1":
+        return 0
     if setting == "packed" and not packed:
         return 0
     lanes = hcu_dense_wave_lanes(plan, io_mode)

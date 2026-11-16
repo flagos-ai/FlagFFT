@@ -878,6 +878,9 @@ def _emit_tiled_transpose_jit_kernel(
     npu_vector_transpose: bool = False,
 ) -> dict[str, Any]:
     cuda_mode = os.environ.get("FLAGFFT_CUDA_2D_TRANSPOSE", "auto") if _declared_backend() == "cuda" else "auto"
+    hcu_mode = os.environ.get("FLAGFFT_HCU_2D_TRANSPOSE", "auto") if _hcu_backend_active() else "auto"
+    if hcu_mode not in {"auto", "register", "scalar", "coalesced"}:
+        raise ValueError("FLAGFFT_HCU_2D_TRANSPOSE must be auto, register, scalar or coalesced")
     if cuda_mode not in {"auto", "register", "scalar", "packed"}:
         raise ValueError("FLAGFFT_CUDA_2D_TRANSPOSE must be auto, register, scalar or packed")
     if cuda_mode == "packed" and dtype != "complex64":
@@ -890,7 +893,7 @@ def _emit_tiled_transpose_jit_kernel(
             n0, n1, tile_size
         )
     elif (
-        cuda_mode == "packed"
+        cuda_mode == "packed" or (hcu_mode == "coalesced" and dtype == "complex64")
         or ((_maca_backend_active() or _ix_backend_active())
             and dtype == "complex64"
             and _maca_knob("2D_TRANSPOSE") == "packed")
@@ -901,7 +904,8 @@ def _emit_tiled_transpose_jit_kernel(
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
             n0, n1, dtype, tile_size,
-            register_transpose={"register": True, "scalar": False}.get(cuda_mode),
+            register_transpose={"register": True, "scalar": False, "coalesced": True}.get(
+                hcu_mode if _hcu_backend_active() else cuda_mode),
         )
     suffix = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_tiled_transpose_n{n0}_{n1}_{suffix}"

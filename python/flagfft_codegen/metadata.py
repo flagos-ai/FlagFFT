@@ -230,6 +230,11 @@ def _metadata(
             real_boundary=real_transform is not None,
             real_transform=real_transform,
         )
+        if kernel_type in {"leaf_packed_r2c", "leaf_packed_c2r"}:
+            from .kernels_common import hcu_packed_cta_batch_pack_for
+            batch_per_block = hcu_packed_cta_batch_pack_for(
+                plan, "packed_r2c" if kernel_type == "leaf_packed_r2c" else "packed_c2r"
+            ) or batch_per_block
     else:
         batch_per_block = 1
     stage_lanes = cooperative_stage_lanes_for(plan)
