@@ -68,3 +68,11 @@ def test_accuracy_and_combined_run_are_required(run):
     assert not gate.evaluate(run, 4, 2)["passed"]
     edit(run / "manifest.json", lambda data: data["config"].update(performance_only=True))
     assert "a combined accuracy + performance run is required" in gate.evaluate(run, 4, 2)["problems"]
+
+
+def test_matrix_identity_cannot_be_replaced_by_equal_case_counts(run):
+    assert not gate.evaluate(run, 4, 2, matrix_hash="frozen")["passed"]
+    edit(run / "manifest.json", lambda data: data["config"].update(matrix_sha256="different"))
+    assert not gate.evaluate(run, 4, 2, matrix_hash="frozen")["passed"]
+    edit(run / "manifest.json", lambda data: data["config"].update(matrix_sha256="frozen"))
+    assert gate.evaluate(run, 4, 2, matrix_hash="frozen")["passed"]

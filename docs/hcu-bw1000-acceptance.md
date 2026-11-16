@@ -34,7 +34,7 @@ python tools/run_tests.py --combination full --gpus <idle-gpus> \
 python tools/check_acceptance.py <external-result-directory>
 ```
 
-Gate 同时检查 30 算子/400 case 覆盖、NumPy/platform 准确性、完整性、有效且通过
+Gate 同时检查矩阵 SHA-256、30 算子/400 case 覆盖、NumPy/platform 准确性、完整性、有效且通过
 验证的参考时延、时延与 speedup 比值一致，以及 GM/最低值门槛。性能单独运行、
 缺项、跳过、无效参考或部分矩阵均不能通过。输出另带算子等权 GM 供对照。
 
@@ -77,8 +77,10 @@ runner 已保存中断状态和全部完成项；停止后 Python 队列退出�
 | R2C FP64 | 64 | 2.7235x | 0.5506x |
 | C2R FP64 | 64 | 2.6626x | 0.5495x |
 
-这些是候选性能筛选，不能当作新默认版本验收。NumPy/hipFFT 的三幅度准确性
-验证与后续成对访存/radix/CT 筛选分别存放，待全部完成后记录最终结论。
+这些是候选性能筛选，不能当作新默认版本验收。524288 的四个 real 算子、
+FP32/FP64、batch=1/64、三幅度 `2^-20, 1, 2^20`：24/24 NumPy 和 24/24
+hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/`。
+后续成对访存/radix/CT 筛选分别存放，待全部完成后记录最终结论。
 
 ## 实现与候选边界
 

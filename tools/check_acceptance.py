@@ -5,19 +5,22 @@
 """Gate a complete accuracy + performance run, using case-weighted speedups."""
 
 import argparse
+import hashlib
 import json
 import math
 from collections import Counter
 from pathlib import Path
 
 
-def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7):
+def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7, matrix_hash=None):
     root = Path(root)
     manifest = json.loads((root / "manifest.json").read_text())
     expected = {case["case_id"] for case in manifest["performance_cases"]}
     operators = manifest["operators"]
     accuracy_counts = Counter(case["op_id"] for case in manifest["cases"])
     problems, records, groups = [], {}, {}
+    if matrix_hash is not None and manifest["config"].get("matrix_sha256") != matrix_hash:
+        problems.append("matrix identity is missing or differs from the requested matrix")
     if len(expected) != expected_cases or len(operators) != expected_ops:
         problems.append("manifest does not cover the requested case/operator counts")
     if manifest["config"].get("performance_only") or manifest["config"].get("accuracy_only"):
@@ -67,6 +70,7 @@ def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7):
         problems.append(f"{len(below)} cases are below the per-case floor")
     operator_gm = math.exp(sum(math.log(group["geomean"]) for group in groups.values()) / len(groups)) if groups else None
     return {"passed": not problems, "source_commit": manifest["env"].get("git_commit"),
+            "expected_matrix_sha256": matrix_hash,
             "expected_cases": expected_cases, "recorded_cases": len(records),
             "case_weighted_geomean": gm, "minimum_speedup": min(valid.values()) if valid else None,
             "operator_weighted_geomean": operator_gm,
@@ -77,6 +81,7 @@ def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result_dir", type=Path)
+    parser.add_argument("--matrix-file", type=Path, default=Path(__file__).resolve().parents[1] / "conf/test_matrix.yaml")
     parser.add_argument("--expected-cases", type=int, default=400)
     parser.add_argument("--expected-ops", type=int, default=30)
     parser.add_argument("--target", type=float, default=1.0)
@@ -85,7 +90,8 @@ def main():
     if min(args.expected_cases, args.expected_ops, args.target, args.floor) <= 0 or not all(map(math.isfinite, (args.target, args.floor))):
         parser.error("counts and thresholds must be finite and positive")
     try:
-        report = evaluate(args.result_dir, args.expected_cases, args.expected_ops, args.target, args.floor)
+        matrix_hash = hashlib.sha256(args.matrix_file.read_bytes()).hexdigest()
+        report = evaluate(args.result_dir, args.expected_cases, args.expected_ops, args.target, args.floor, matrix_hash)
     except (OSError, ValueError, KeyError, TypeError) as error:
         report = {"passed": False, "problems": [str(error)]}
     print(json.dumps(report, indent=2, allow_nan=False))
