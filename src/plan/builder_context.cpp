@@ -48,6 +48,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
          hcu_fp64_convolution_radix_cap == other.hcu_fp64_convolution_radix_cap &&
          hcu_balance_convolution == other.hcu_balance_convolution &&
+         hcu_physical_wave_cost == other.hcu_physical_wave_cost &&
          hcu_preserve_fourstep_split == other.hcu_preserve_fourstep_split &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
@@ -91,6 +92,11 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
       throw std::runtime_error("FLAGFFT_HCU_CONV_BALANCE must be 0, 1 or fp64");
     }
     context.hcu_balance_convolution = balance_value == "1" || (balance_value == "fp64" && wide);
+    const char *wave_cost = std::getenv("FLAGFFT_HCU_PHYSICAL_WAVE_COST");
+    const std::string wave_cost_value = wave_cost ? wave_cost : "0";
+    if (wave_cost_value != "0" && wave_cost_value != "1" && wave_cost_value != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_PHYSICAL_WAVE_COST must be 0, 1 or fp64");
+    context.hcu_physical_wave_cost = wave_cost_value == "1" || (wave_cost_value == "fp64" && wide);
   }
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
@@ -118,6 +124,7 @@ void PlanBuilder::set_request_context(const FFTRequest &request) {
   node_cache_.clear();
   cost_cache_.clear();
   tune_candidate_cache_.clear();
+  best_leaf_factors_cache_.clear();
 }
 
 const PlanBuilder::RequestContext &PlanBuilder::request_context() const {

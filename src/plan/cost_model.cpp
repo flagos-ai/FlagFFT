@@ -127,7 +127,12 @@ double PlanBuilder::estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t
     stage_lanes = estimated_stage_lanes(n, factors, lanes, is_double);
   }
   const int64_t active_lanes = *std::max_element(stage_lanes.begin(), stage_lanes.end());
-  const int64_t warps = choose_num_warps(active_lanes);
+  const int64_t planner_warps = choose_num_warps(active_lanes);
+  // Serialized hints use 32-thread units. The HCU emitter maps them onto
+  // 64-lane physical waves; costing 64 cooperating lanes as two waves can
+  // incorrectly favor a larger butterfly with fewer participating lanes.
+  const int64_t warps = context.hcu_physical_wave_cost
+                            ? std::max<int64_t>(1, (planner_warps + 1) / 2) : planner_warps;
   double base = 0.0;
   for (int64_t stage_lane_count : stage_lanes) {
     base += static_cast<double>(n * warps) / static_cast<double>(stage_lane_count);

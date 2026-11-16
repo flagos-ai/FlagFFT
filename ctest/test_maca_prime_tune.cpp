@@ -355,6 +355,64 @@ TEST(HcuConvolution, BalancesSupportedLeafMatricesWithoutChangingExtent) {
   }
 }
 
+TEST(PlannerContext, ReuseAgreesWithFreshBuildersAcrossPrecisionBatchAndOrigin) {
+  flagfft::PlanBuilder reused;
+  for (const char *backend : {"hcu", "cuda"}) {
+    for (const char *dtype : {"complex64", "complex128"}) {
+      for (int64_t batch : {1, 7}) {
+        for (int64_t origin : {1, 3}) {
+          for (int64_t n : {128, 256, 1024}) {
+            flagfft::FFTRequest request;
+            request.device_type = backend;
+            request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+            request.input_dtype = request.output_dtype = dtype;
+            request.input_layout = "contiguous";
+            request.origin_rank = origin;
+            request.raw_dim = 1;
+            request.batch = batch;
+            request.n = request.requested_n = request.fft_length = n;
+            request.input_shape = {batch, n};
+            request.input_strides = {n, 1};
+            flagfft::PlanBuilder fresh;
+            EXPECT_EQ(reused.build(n, request)->describe(), fresh.build(n, request)->describe());
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(HcuLeafCost, PhysicalWaveUnitsArePrecisionScopedAndInvalidateFactorChoices) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = 3;
+  request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 7;
+  flagfft::PlanBuilder builder;
+  bool changed = false;
+  for (int64_t n : {64, 128, 256, 512, 1024}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {7, n};
+    request.input_strides = {n, 1};
+    ScopedEnv original("FLAGFFT_HCU_PHYSICAL_WAVE_COST", "0");
+    const auto baseline = builder.build(n, request)->describe();
+    const auto baseline_cost = builder.cost_for(n, request);
+    {
+      ScopedEnv physical("FLAGFFT_HCU_PHYSICAL_WAVE_COST", "fp64");
+      const auto candidate = builder.build(n, request)->describe();
+      changed |= candidate != baseline;
+      EXPECT_LE(builder.cost_for(n, request), baseline_cost);
+      flagfft::PlanBuilder fresh;
+      EXPECT_EQ(candidate, fresh.build(n, request)->describe());
+    }
+    EXPECT_EQ(builder.build(n, request)->describe(), baseline);
+  }
+  EXPECT_TRUE(changed);
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;
