@@ -267,7 +267,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu") {
     cache_key += ";" + npu_performance_identity();
     if (key.perm_form == "npu_matrix_cube" || key.perm_form.rfind("npu_matrix_fourstep_", 0) == 0)
-      cache_key += ";npu-ieee-dot-partials-v1";
+      cache_key += ";npu-ieee-dot-partials-v2";
     if (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) {
       const char *group=npu_performance_env("FLAGFFT_NPU_REAL_BOUNDARY_GROUP");
       cache_key += ";npu-real-boundary-group-v5=" + std::string(group!=nullptr?group:"auto");

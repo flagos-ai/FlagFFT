@@ -3,6 +3,7 @@
 """FP32 matrix DFT axes with tiled vector exchanges for mixed four-step FFTs."""
 import json
 from pathlib import Path
+from textwrap import indent
 from .artifacts import write_text_atomic
 from .metadata import _module_source
 from .npu_ieee_matmul import ieee_matmul
@@ -147,12 +148,17 @@ def transpose_half(X,Y,D):
     tl.store(Y+batch*D*2+offset,value,(rr<{b})&(ww<{2*a})&(offset<{2*half}))
 '''
     if wide and a>=128 and b>=128:
-        p=1<<(a-1).bit_length();bp=1<<(b-1).bit_length();bm,bn=128,128
+        p=1<<(a-1).bit_length();bp=1<<(b-1).bit_length()
+        # Compensated partial sums need several live FP32 accumulators.
+        # Split the logical 128-row tile to fit 910B's 192 KiB vector UB,
+        # retaining the launcher grid and the fused twiddle/store layout.
+        bm,bn=(64 if 2*p>256 else 128),128
         body+=f'''
 @triton.jit
 def cube0_pack1(P,W,T,Y):
     batch=tl.program_id(2).to(tl.int64)
-    row=tl.program_id(0)*{bm}+tl.arange(0,{bm})
+'''
+        fused_body=f'''    row=tl.program_id(0)*128+_row_chunk*{bm}+tl.arange(0,{bm})
     word=tl.program_id(1)*{bn}+tl.arange(0,{bn})
 {ieee_matmul(2*p,bm,bn,f'P+batch*{b*2*p}+row[:,None]*{2*p}+k[None,:],row[:,None]<{b},0.',f'W+k[:,None]*{2*p}+word[None,:],word[None,:]<{2*p},0.').rstrip()}
     vr,vi=tl.split(tl.reshape(y,({bm*bn//2},2)))
@@ -169,6 +175,7 @@ def cube0_pack1(P,W,T,Y):
     tl.store(Y+dst,tl.trans(re),valid)
     tl.store(Y+{bp}+dst,tl.trans(im),valid)
 '''
+        body+=f'    for _row_chunk in range({128//bm}):\n'+indent(fused_body,'    ')
     if wide and a>=128 and b>=128:
         # Real output uses only the even columns of the complex DFT matrix.
         # Keep the operands two-dimensional and transpose the real accumulator
