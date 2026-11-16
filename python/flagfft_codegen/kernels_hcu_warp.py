@@ -159,6 +159,12 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     budget = (64 if plan.length * 8 > 64 * 128 else 32) if wide else _scalar_wave_budget(plan)
     while pack > 1 and plan.length * pack * 2 > min(pack * lanes // 64, 8) * 64 * budget:
         pack //= 2
+    if wide and target == "auto":
+        # Bound the complete CTA's live FP64 payload as well as each lane's
+        # share. Leave register space for coefficients and layout temporaries.
+        live_bytes = 2 * (profile.max_dynamic_shared_memory or 65536)
+        while pack > 1 and plan.length * pack * 16 > live_bytes:
+            pack //= 2
     while pack > 1 and ((batch // span) % pack
                        if inner else span % pack if io_mode == "permuted_store_r2c" else False):
         pack //= 2

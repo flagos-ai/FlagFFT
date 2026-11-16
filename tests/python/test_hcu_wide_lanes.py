@@ -188,7 +188,7 @@ def test_wide_permutation_keeps_native_fallback_above_one_wave_payload(monkeypat
         reset_profile(token)
 
 
-@pytest.mark.parametrize("kind,pack", [("leaf", 4), ("leaf_permuted_store", 8)])
+@pytest.mark.parametrize("kind,pack", [("leaf", 4), ("leaf_permuted_store", 4)])
 def test_periodic_coefficients_keep_large_wide_fft_inside_one_wave(tmp_path, monkeypatch, kind, pack):
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "leaves")
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
