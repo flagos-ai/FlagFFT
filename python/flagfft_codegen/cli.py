@@ -416,8 +416,8 @@ def main() -> None:
         if hcu_store_mode not in {"auto", "grouped", "smem", "wide", "cyclic"}:
             parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped, smem, wide or cyclic")
         hcu_transpose_mode = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto")
-        if hcu_transpose_mode not in {"auto", "packed", "flat"}:
-            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_MODE must be auto, packed or flat")
+        if hcu_transpose_mode not in {"auto", "packed", "flat", "resource"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_MODE must be auto, packed, flat or resource")
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
         fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto")
@@ -450,8 +450,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_FUSED_WARPS must be 1, 2, 4 or 8")
         if transpose_pair not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_PAIR must be 0 or 1")
-        if transpose_tile not in {"auto", "16", "32", "64"}:
-            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32 or 64")
+        if transpose_tile not in {"auto", "16", "32", "64", "resource"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32, 64 or resource")
         if transpose_slice_group not in {"auto", "1", "2"}:
             parser.error(
                 "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"

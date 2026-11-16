@@ -290,6 +290,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-packed-cta-v1=" + std::string(packed_cta ? packed_cta : "0");
     const char *transpose_2d = std::getenv("FLAGFFT_HCU_2D_TRANSPOSE");
     cache_key += ";hcu-2d-transpose-v1=" + std::string(transpose_2d ? transpose_2d : "auto");
+    if (key.kind == KernelKind::Transpose3D) {
+      for (const char *name : {"FLAGFFT_HCU_3D_TRANSPOSE_MODE", "FLAGFFT_HCU_3D_TRANSPOSE_TILE",
+                               "FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP"}) {
+        const char *value = std::getenv(name);
+        cache_key += ";" + std::string(name) + "=" + (value ? value : "auto");
+      }
+    }
     cache_key += ";hcu-wave-codelet-v1=" + std::string(wave_codelet ? wave_codelet : "0");
     const char *wave_budget = std::getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
     cache_key += ";hcu-wave-batched-v1;budget=" + std::string(wave_budget ? wave_budget : "64");

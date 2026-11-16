@@ -81,6 +81,7 @@ class TL:
     zeros_like = staticmethod(lambda x: tensor(np.zeros_like(x)))
     reshape = staticmethod(lambda x, s: tensor(np.reshape(x, s)))
     trans = staticmethod(lambda x: tensor(np.transpose(x)))
+    permute = staticmethod(lambda x, axes: tensor(np.transpose(x, axes)))
     join = staticmethod(lambda a, b: tensor(np.stack((a, b), axis=-1)))
     gather = staticmethod(lambda a, i, axis=0: tensor(np.take_along_axis(a, i, axis)))
     where = staticmethod(lambda c, a, b: tensor(np.where(c, a, b)))

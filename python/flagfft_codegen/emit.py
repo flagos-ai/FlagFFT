@@ -1142,7 +1142,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             tile_traversal=maca_traversal,
         )
     elif (_hcu_backend_active()
-          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "flat"
+          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") in {"flat", "resource"}
           and order in {"201", "120"}):
         # Rotating an outer axis is a single matrix transpose after merging
         # the two adjacent axes. Keep tiles contiguous across slice boundaries.
@@ -1152,9 +1152,16 @@ def _emit_tiled_transpose3d_jit_kernel(
             tile=32 if dtype == "complex64" else 16,
         )
     elif (_hcu_backend_active()
-          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "packed"):
+          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") in {"packed", "resource"}):
         tile_setting = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
-        tile = 32 if tile_setting == "auto" else int(tile_setting)
+        if tile_setting == "resource":
+            capacity = (current_profile().max_dynamic_shared_memory or 65536) // 2
+            element_bytes = 16 if dtype == "complex128" else 8
+            tile = 16
+            while tile < 64 and (tile * 2) ** 2 * element_bytes <= capacity:
+                tile *= 2
+        else:
+            tile = 32 if tile_setting == "auto" else int(tile_setting)
         (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=tile,
             packed_complex=dtype == "complex64",
