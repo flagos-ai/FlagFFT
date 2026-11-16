@@ -663,6 +663,47 @@ def _hcu_wide_permuted_store(plan: LeafPlan) -> bool:
                for i in range(1, len(plan.factors) - 1))
 
 
+def _hcu_buffer_stage_safe(plan: LeafPlan | None) -> bool:
+    if (plan is None or len(plan.factors) < 2 or plan.length <= 0
+            or plan.length & (plan.length - 1)):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    return all(plan.length == lanes[i] * plan.factors[i]
+               for i in range(1, len(plan.factors) - 1))
+
+
+def hcu_four_step_single_buffer(plan: LeafPlan | None) -> bool:
+    """An overwriting stage must read the complete FFT before its barrier."""
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER must be 0 or 1")
+    return setting == "1" and _hcu_buffer_stage_safe(plan)
+
+
+def hcu_leaf_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_LEAF_SINGLE_BUFFER must be 0 or 1")
+    if (setting != "1" or io_mode not in {
+            "contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+            "packed_r2c", "packed_c2r"} or not _hcu_buffer_stage_safe(plan)):
+        return False
+    # Retain the short-leaf schedule where shared storage is inexpensive.
+    # The original allocation must occupy at least one quarter of the CU's
+    # queried LDS capacity before screening the extra overwrite barrier.
+    pack = contiguous_batch_pack_for(plan)
+    scalar_bytes = _real_element_bytes(plan.dtype)
+    capacity = current_profile().max_dynamic_shared_memory or 65536
+    old_stride = plan.smem_size + (1 if pack >= 4 else 0)
+    old_bytes = 4 * lane_block_for(old_stride * pack) * scalar_bytes
+    new_bytes = 2 * lane_block_for(plan.smem_size * pack) * scalar_bytes
+    return old_bytes >= capacity // 4 and new_bytes <= capacity
+
+
 def permuted_store_batch_pack_for(
     plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None,
     permutation_span: int = 0, permutation_batch: int = 0, inner: bool = False,
@@ -838,7 +879,8 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
-    bytes_per_fft = 4 * plan.smem_size * _real_element_bytes(plan.dtype)
+    buffers = 2 if hcu_four_step_single_buffer(plan) else 4
+    bytes_per_fft = buffers * plan.smem_size * _real_element_bytes(plan.dtype)
     smem_pack = max(
         1,
         current_profile().shared_budget(_FOUR_STEP_PACK_SMEM_BUDGET_BYTES)
@@ -1156,6 +1198,9 @@ def _bounded_inner_pack(
     # Keep this tighter allocation bound explicit while screening IX tiles.
     buffers = 4
     padded_elements = plan.smem_size + extra_smem_elements
+    if hcu_four_step_single_buffer(plan):
+        buffers = 2
+        padded_elements = plan.smem_size
     if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
             and not _portable_leaf_backend_active()):
         buffers = 2 if len(plan.factors) == 2 else 4
@@ -1339,6 +1384,11 @@ def _use_single_smem_buffer(
     four_step_n2: int = 0,
 ) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if hcu_leaf_single_buffer(plan, io_mode):
+        return True
+    if (io_mode.startswith("four_step_") and not io_mode.endswith("_strided")
+            and hcu_four_step_single_buffer(plan)):
+        return True
     if (_hcu_wide_permuted_store(plan) and io_mode in {
             "permuted_store", "strided_permuted_store", "permuted_r2c",
             "permuted_store_r2c"}):

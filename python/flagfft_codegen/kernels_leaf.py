@@ -1357,10 +1357,16 @@ def _emit_stage_block(
     )
     hcu_cyclic_smem = (
         _hcu_backend_active() and single_smem_buffer and smem_pack > 1
-        and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
-        and io_mode in {"permuted_store", "strided_permuted_store",
-                        "permuted_r2c", "permuted_store_r2c"}
+        and ((os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
+              and io_mode in {"permuted_store", "strided_permuted_store",
+                              "permuted_r2c", "permuted_store_r2c"})
+             or (io_mode.startswith("four_step_")
+                 and os.getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER", "0") == "1")
+             or (io_mode in {"contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+                             "packed_r2c", "packed_c2r"}
+                 and os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1"))
     )
+    hcu_cyclic_slot = "inner_slot" if inner_pack > 1 else "batch_slot"
     batch_interleave = _ix_batch_smem_interleave(io_mode, portable_exchange, smem_pack)
     smem_interleave = batch_interleave or (
         _ix_backend_active() and not portable_exchange and inner_pack > 1
@@ -1551,7 +1557,7 @@ def _emit_stage_block(
         elif smem_interleave:
             lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + {interleave_slot}")
         elif hcu_cyclic_smem:
-            lines.append(f"{indent}phys{j} = ((logical_phys{j} + batch_slot) & {n - 1}) + smem_offset")
+            lines.append(f"{indent}phys{j} = ((logical_phys{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
         elif smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
@@ -1564,7 +1570,7 @@ def _emit_stage_block(
             if smem_interleave:
                 lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + {interleave_slot}")
             elif hcu_cyclic_smem:
-                lines.append(f"{indent}smem_phys{j} = ((smem_phys{j} + batch_slot) & {n - 1}) + smem_offset")
+                lines.append(f"{indent}smem_phys{j} = ((smem_phys{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
@@ -2764,7 +2770,7 @@ def _emit_stage_block(
                 if smem_interleave:
                     lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + {interleave_slot}")
                 elif hcu_cyclic_smem:
-                    lines.append(f"{indent}smem_dst{j} = ((smem_dst{j} + batch_slot) & {n - 1}) + smem_offset")
+                    lines.append(f"{indent}smem_dst{j} = ((smem_dst{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
                 elif smem_pack > 1:
                     lines.append(f"{indent}smem_dst{j} += smem_offset")
                 store_index = f"smem_dst{j}"
@@ -2772,7 +2778,7 @@ def _emit_stage_block(
                 lines.append(f"{indent}smem_dst{j} = dst{j} * {smem_pack} + {interleave_slot}")
                 store_index = f"smem_dst{j}"
             elif hcu_cyclic_smem:
-                lines.append(f"{indent}smem_dst{j} = ((dst{j} + batch_slot) & {n - 1}) + smem_offset")
+                lines.append(f"{indent}smem_dst{j} = ((dst{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
                 store_index = f"smem_dst{j}"
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
@@ -3646,6 +3652,11 @@ def _build_leaf_kernel_source_for_io(
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    if (_hcu_backend_active() and single_smem_buffer and
+            os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1" and
+            io_mode in {"contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+                        "packed_r2c", "packed_c2r"}):
+        smem_slot_stride = plan.smem_size
     if (_hcu_backend_active() and single_smem_buffer
             and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
             and io_mode in {"permuted_store", "strided_permuted_store",
