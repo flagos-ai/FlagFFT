@@ -16,8 +16,10 @@
 import math
 
 
-def strided_input_tile_shape(pack):
+def strided_input_tile_shape(pack, output_major=False):
     """Balance independent rows across the input and output fast axes."""
+    if output_major:
+        return pack, 1
     outer = 1
     while outer * outer < pack:
         outer *= 2
@@ -34,7 +36,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          packed_gather: bool = False,
                          four_step_other: int = 0, wide: bool = False,
                          table_roots: bool = False, root_period: int = 0,
-                         strided_input: bool = False) -> tuple[str, str]:
+                         strided_input: bool = False,
+                         strided_output_major: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -53,6 +56,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("periodic wave roots require supplied tables and period 4 or 8")
     if strided_input and (mode != "inner" or manual_store):
         raise ValueError("strided wave input requires an ordinary inner store")
+    if strided_output_major and not strided_input:
+        raise ValueError("output-major row tiles require strided input")
     row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
     col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
@@ -81,12 +86,13 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if table_roots: name+='_roots'
     if root_period: name+=f'_period{root_period}'
     if strided_input: name+='_stridedinput'
+    if strided_output_major: name+='_outtile'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
        f'    lane=tl.arange(0,{lane_width})[None,:]']
     if strided_input:
-        outer_tile, span_tile = strided_input_tile_shape(pack)
+        outer_tile, span_tile = strided_input_tile_shape(pack, strided_output_major)
         a += [f'    span_groups=(span+{span_tile-1})//{span_tile}',
               f'    outer_row=(pid//span_groups)*{outer_tile}+slot//{span_tile}',
               f'    span_row=(pid%span_groups)*{span_tile}+slot%{span_tile}',
@@ -413,6 +419,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         else:
             if not strided_input:
                 a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')']
+            elif strided_output_major:
+                a += [f'    if (nbatch//span)%{pack}==0:',
+                      f'        gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})']
             a+=['    stride=nbatch' if mode=='inner' else '    stride=span',
                  '    address=freq[:,None]*stride+gbase[None,:]',
                  '    mask=valid_row[None,:]' if strided_input else '    mask=(row[None,:]<nbatch)']

@@ -190,6 +190,9 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
     mode = "r2c" if io_mode == "permuted_store_r2c" else "inner" if perm_form.startswith("inner") else "outer"
     wide = plan.dtype == "complex128"
     strided = io_mode == "strided_permuted_store"
+    strided_tile = os.getenv("FLAGFFT_HCU_WAVE_STRIDED_TILE", "balanced")
+    if strided_tile not in {"balanced", "output"}:
+        raise ValueError("FLAGFFT_HCU_WAVE_STRIDED_TILE must be balanced or output")
     lanes = 64
     radix = plan.length // lanes
     chunk = min(radix, 8)
@@ -204,6 +207,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
         wide=wide, lane_width=lanes,
         root_period=_wide_root_period(plan),
         strided_input=strided,
+        strided_output_major=strided and strided_tile == "output",
     )
     batched = perm_form.endswith("_batched")
     leaf_name = "hcu_" + name + ("_batched" if batched else "") + "_leaf"
@@ -218,8 +222,12 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
             f"    gbase=cube*({plan.length}*rows_per_transform)+(local_row%span)*(rows_per_transform//span)+local_row//span", 1,
         )
         source = source.replace("    stride=nbatch", "    stride=rows_per_transform")
-        hint = f"    gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})"
-        source = source.replace(hint, f"    if (rows_per_transform//span)%{pack}==0:\n    " + hint)
+        if strided:
+            source = source.replace(f"if (nbatch//span)%{pack}==0:",
+                                    f"if (rows_per_transform//span)%{pack}==0:")
+        else:
+            hint = f"    gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})"
+            source = source.replace(hint, f"    if (rows_per_transform//span)%{pack}==0:\n    " + hint)
     aliases = [
         "    inp=in_ptr", "    out=out_ptr",
         f"    span=tl.full((),{span},tl.int64)",

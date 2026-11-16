@@ -286,6 +286,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *permuted_wide = std::getenv("FLAGFFT_HCU_3D_WARP_FP64");
     const char *strided_wave = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_INPUT");
     cache_key += ";hcu-wave-strided-input-v1=" + std::string(strided_wave ? strided_wave : "0");
+    const char *strided_tile = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_TILE");
+    cache_key += ";strided-tile=" + std::string(strided_tile ? strided_tile : "balanced");
     cache_key += ";hcu-permuted-wave-v2=" + std::string(permuted_wave ? permuted_wave : "0") +
                  ";pack=" + std::string(permuted_pack ? permuted_pack : "auto") +
                  ";fp64=" + std::string(permuted_wide ? permuted_wide : "0");

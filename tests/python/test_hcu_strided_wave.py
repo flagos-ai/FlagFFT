@@ -22,11 +22,13 @@ from test_hcu_wide_lanes import NumpyTL, Pointer
 @pytest.mark.parametrize("span", [17, 33, 65])
 @pytest.mark.parametrize("batch", [1, 3])
 @pytest.mark.parametrize("inverse", [False, True])
+@pytest.mark.parametrize("tile", ["balanced", "output"])
 def test_generated_strided_input_and_batched_store_match_numpy(
-        tmp_path, monkeypatch, n, factors, lanes, span, batch, inverse):
+        tmp_path, monkeypatch, n, factors, lanes, span, batch, inverse, tile):
     monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "1")
     monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
     monkeypatch.setenv("FLAGFFT_HCU_WAVE_STRIDED_INPUT", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_STRIDED_TILE", tile)
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
                                      max_dynamic_shared_memory=65536, policy="native"))
     outer = 3  # A CTA can cross both a span and a cube boundary.
