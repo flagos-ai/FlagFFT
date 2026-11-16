@@ -370,7 +370,7 @@ def _metadata(
         import re
         batch_per_block = int(re.search(r"_p(\d+)_", kernel_name).group(1))
         wave_lanes = int(kernel_name.split("_lanes", 1)[1].split("_", 1)[0]) if "_lanes" in kernel_name else 64
-        num_warps = min(8, batch_per_block * wave_lanes // 64)
+        num_warps = max(1, min(8, batch_per_block * wave_lanes // 64))
         profile.validate(num_warps)
         chunk = int(kernel_name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in kernel_name else plan.length // wave_lanes
         element_bytes = 16 if dtype == "complex128" else 8

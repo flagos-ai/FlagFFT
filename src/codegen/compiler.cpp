@@ -2616,10 +2616,12 @@ namespace {
   bool hcu_fused_packed_real_enabled(const FFTRequest &request, int64_t batch, int64_t n) {
     const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
     if (packed && std::string(packed) == "0") return false;
+    const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+    const int64_t minimum = layout && std::string(layout) == "compact" ? 64 : 256;
     if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
         request.requires_contiguous_copy || request.input_layout != "contiguous" ||
         request.input_strides.empty() || request.input_strides.back() != 1 ||
-        request.packed_real_child || n < 256 || (n & (n - 1)) != 0 || batch < 64 ||
+        request.packed_real_child || n < minimum || (n & (n - 1)) != 0 || batch < 64 ||
         !flag_or_default("FLAGFFT_HCU_FUSED_PACKED_REAL", false)) return false;
     // Six half-length real/imaginary buffers conservatively cover the FFT
     // and packed reconstruction, including FP64, within the queried LDS cap.
@@ -4565,9 +4567,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_store(
     const FFTRequest &request, int64_t batch, int64_t n, int64_t span) {
   const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
+  const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+  const int64_t minimum = layout && std::string(layout) == "compact" ? 64 : 128;
   if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
       request.input_layout != "contiguous" || request.requires_contiguous_copy ||
-      request.packed_real_child || n < 128 || n > 2048 || (n & (n - 1)) != 0 ||
+      request.packed_real_child || n < minimum || n > 2048 || (n & (n - 1)) != 0 ||
       span <= 0 || batch <= 0 || batch % span ||
       (packed && std::string(packed) == "0") ||
       !flag_or_default("FLAGFFT_HCU_PACKED_REAL_STORE", false) ||
@@ -4586,7 +4590,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_stor
   child.input_strides = {n / 2, 1};
   PlanBuilder builder;
   auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(n / 2, child));
-  if (!leaf) return nullptr;
+  if (!leaf || leaf->factors.size() < 2) return nullptr;
   auto key = KernelKey::leaf_r2c(triton_target_for_request(child), child.direction, child.input_dtype,
       leaf->length, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
   key.kind = KernelKind::LeafPackedR2C;

@@ -41,6 +41,16 @@ def _wide_root_period(plan):
 
 
 def hcu_dense_wave_lanes(plan, io_mode):
+    packed_layout = os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave")
+    if packed_layout not in {"wave", "compact"}:
+        raise ValueError("FLAGFFT_HCU_PACKED_WAVE_LAYOUT must be wave or compact")
+    if packed_layout == "compact" and io_mode in {"packed_r2c", "packed_c2r"}:
+        # Bound the register butterfly by scalar width, then let independent
+        # short FFTs share one queried physical wave instead of dedicating
+        # 64 threads to every half-length boundary.
+        register_radix = 16 if plan.dtype == "complex128" else 32
+        return min(current_profile().warp_size,
+                   max(current_profile().warp_size // 4, plan.length // register_radix))
     setting = os.getenv("FLAGFFT_HCU_WIDE_WAVE_LANES", "64")
     if setting not in {"64", "auto"}:
         raise ValueError("FLAGFFT_HCU_WIDE_WAVE_LANES must be 64 or auto")
@@ -54,7 +64,7 @@ def hcu_dense_wave_lanes(plan, io_mode):
 
 def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
     profile = current_profile()
-    if profile.backend != "hcu" or profile.warp_size != 64:
+    if profile.backend != "hcu" or profile.warp_size != 64 or len(plan.factors) < 2:
         return 0
     setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE", "0")
     if setting not in {"0", "1", "leaves", "packed", "fourstep_codelets"}:
@@ -88,9 +98,10 @@ def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
         # Reconstruction keeps both partner FFT values and output registers
         # live. Bound that doubled payload before selecting the wave path.
         return 0
+    minimum = 32 if packed and os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact" else 64
     if (setting == "0" or (setting == "leaves" and io_mode in _FOURSTEP_ROWS | _FOURSTEP_COLS)
             or (plan.dtype != "complex64" and not wide) or
-            not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1) or
+            not minimum <= plan.length <= 2048 or plan.length & (plan.length - 1) or
             io_mode not in {"contiguous", "contiguous_r2c", "contiguous_c2r", "packed_r2c", "packed_c2r"} | _FOURSTEP_ROWS | _FOURSTEP_COLS):
         return 0
     target = os.getenv("FLAGFFT_HCU_DENSE_WAVE_PACK", "auto")
@@ -102,21 +113,29 @@ def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
     # chunked to half the queried LDS budget; FP64 starts with fewer waves.
     live_scalars = 4 if packed else 2
     budget = _scalar_wave_budget(plan)
-    while pack > 1 and plan.length * pack * live_scalars > min(pack * lanes // 64, 8) * profile.warp_size * budget:
+    if packed and os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact":
+        # FFT values and reconstructed partner outputs coexist. Use an equal
+        # byte budget in both precisions, leaving the output LDS bound intact.
+        budget = 64 if plan.dtype == "complex128" else 128
+    while pack > 1 and plan.length * pack * live_scalars > max(1, min(pack * lanes // 64, 8)) * profile.warp_size * budget:
         pack //= 2
     return pack
 
 
 def hcu_packed_transposed_pack(plan):
     profile = current_profile()
+    compact = os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact"
+    minimum = 32 if compact else 64
     if (profile.backend != "hcu" or profile.warp_size != 64 or
             os.getenv("FLAGFFT_HCU_PACKED_REAL_STORE", "0") != "1" or
+            len(plan.factors) < 2 or
             not _root_table_enabled() or plan.dtype not in {"complex64", "complex128"} or
-            not 64 <= plan.length <= 1024 or plan.length & (plan.length - 1)):
+            not minimum <= plan.length <= 1024 or plan.length & (plan.length - 1)):
         return 0
     pack = 8 if plan.dtype == "complex128" else 16
-    budget = 32 if plan.dtype == "complex128" else 64
-    while pack > 1 and plan.length * pack * 4 > min(pack, 8) * 64 * budget:
+    lanes = hcu_dense_wave_lanes(plan, "packed_r2c")
+    budget = (64 if plan.dtype == "complex128" else 128) if compact else (32 if plan.dtype == "complex128" else 64)
+    while pack > 1 and plan.length * pack * 4 > max(1, min(pack * lanes // 64, 8)) * 64 * budget:
         pack //= 2
     return pack
 

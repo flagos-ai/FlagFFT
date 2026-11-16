@@ -71,8 +71,6 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("wide wave FFT requires supplied FP64 roots and ordinary math")
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")
-    if mode in {'packed_r2c','packed_c2r'} and lane_width!=64:
-        raise ValueError('packed real warp FFT requires a 64-lane FFT')
     if (mode in {"r2c","contiguous_r2c","packed_r2c","four_step_real_row","four_step_r2c_col"} and inverse) or (mode in {"c2r","packed_c2r","four_step_hermitian_row","four_step_c2r_col"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     sign=1 if inverse else -1
@@ -319,7 +317,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a += ['    nyquist_r=r0-i0']
         for j in range(radix):
             partner=(-j)%radix
-            a += [f'    idx=tl.broadcast_to((-lane-{int(j>0)})&63,({pack},64))',
+            a += [f'    idx=tl.broadcast_to((-lane-{int(j>0)})&{lane_width-1},({pack},{lane_width}))',
                   f'    br=tl.gather(r{partner},idx,1)',f'    bi=tl.gather(i{partner},idx,1)']
             if wide or table_roots:
                 a += [f'    packed_k=lane*{radix}+{j}',
@@ -415,7 +413,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
             if mode=='packed_r2c' and start==0:
                 a += [f'    pos=lane*{radix}',f'    address=row[:,None]*output_distance+{n}',
-                      f'    address=tl.broadcast_to(address,({pack},64))']
+                      f'    address=tl.broadcast_to(address,({pack},{lane_width}))']
                 if wide:
                     a += ['    tl.store(out+address*2,nyquist_r,valid&(pos==0))',
                           '    tl.store(out+address*2+1,0.0,valid&(pos==0))']
@@ -444,7 +442,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             else:a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
             if packed_output_transpose and start == 0:
                 a += [f'    pos=lane*{radix}',
-                      f'    nyquist_address=tl.broadcast_to(gbase[:,None]+{n}*span,({pack},64))']
+                      f'    nyquist_address=tl.broadcast_to(gbase[:,None]+{n}*span,({pack},{lane_width}))']
                 if wide:
                     a += ['    tl.store(out+nyquist_address*2,nyquist_r,valid&(pos==0))',
                           '    tl.store(out+nyquist_address*2+1,0.0,valid&(pos==0))']

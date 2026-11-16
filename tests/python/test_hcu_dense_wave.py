@@ -12,6 +12,7 @@ from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_p
 from flagfft_codegen.emit import emit_jit_kernel
 from flagfft_codegen.kernels_common import LeafPlan
 from flagfft_codegen.kernels_hcu_warp import hcu_dense_wave_pack
+from flagfft_codegen.kernels_hcu_warp import hcu_packed_transposed_pack
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +63,19 @@ def test_dense_wave_preserves_grid_distances_and_lds_budget(tmp_path, n, kind, d
 def test_dense_wave_retains_fallbacks(dtype, mode, n):
     plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype=dtype)
     assert hcu_dense_wave_pack(plan, mode) == 0
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_compact_packed_wave_keeps_single_stage_leaf_without_root_table_abi(monkeypatch, dtype):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "packed")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_STORE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "compact")
+    plan = LeafPlan(32, (32,), 1, 1, 1, (), 32, dtype=dtype)
+    assert hcu_dense_wave_pack(plan, "packed_r2c") == 0
+    assert hcu_dense_wave_pack(plan, "packed_c2r") == 0
+    assert hcu_packed_transposed_pack(plan) == 0
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])

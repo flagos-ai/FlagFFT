@@ -175,7 +175,7 @@ namespace {
   void append_hcu_wave_roots(std::pair<std::vector<Real>, std::vector<Real>> &twiddles,
                               const LeafPlanNode &leaf, const FFTRequest &request, std::size_t stage) {
     if (request.device_type != "hcu" || stage + 1 != leaf.factors.size() ||
-        leaf.length < 64 || leaf.length > 2048 || (leaf.length & (leaf.length - 1)) != 0) return;
+        leaf.length < 32 || leaf.length > 2048 || (leaf.length & (leaf.length - 1)) != 0) return;
     const auto enabled = [](const char *name) {
       const char *value = std::getenv(name);
       return value && std::string(value) == "1";

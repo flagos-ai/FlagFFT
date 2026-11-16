@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 from flagfft_codegen.emit import emit_jit_kernel
 from flagfft_codegen.kernels_ix_warp import build_ix_warp_source
+from flagfft_codegen.kernels_hcu_warp import hcu_dense_wave_lanes
+from flagfft_codegen.kernels_common import LeafPlan
 
 
 class Pointer:
@@ -24,6 +26,9 @@ class Pointer:
 
     def __add__(self, offset):
         return Pointer(self.data, self.offset + offset)
+
+    def __sub__(self, offset):
+        return self + (-offset)
 
 
 class NumpyTL:
@@ -123,10 +128,11 @@ def test_complete_wave_fourstep_pair_applies_cross_axis_twiddle_once(monkeypatch
     assert relative < (4e-15 if wide else 4e-7)
 
 
-@pytest.mark.parametrize("n", [64, 128, 1024])
+@pytest.mark.parametrize("n", [32, 64, 128, 256, 512, 1024])
+@pytest.mark.parametrize("layout", ["wave", "compact"])
 @pytest.mark.parametrize("wide", [False, True])
 @pytest.mark.parametrize("span", [1, 3, 8, 65])
-def test_packed_transposed_spectrum_matches_numpy_with_partial_planes(monkeypatch, n, wide, span):
+def test_packed_transposed_spectrum_matches_numpy_with_partial_planes(monkeypatch, n, layout, wide, span):
     pack, batch = (8 if wide else 16), 2 * span + 1
     dtype = np.float64 if wide else np.float32
     rng = np.random.default_rng(1711)
@@ -137,7 +143,14 @@ def test_packed_transposed_spectrum_matches_numpy_with_partial_planes(monkeypatc
     expected[:batch] = transformed
     expected = expected.reshape(matrices, span, n + 1).transpose(0, 2, 1).ravel()
     output = np.full(expected.shape, np.nan, dtype=np.complex128 if wide else np.complex64)
-    name, source = build_ix_warp_source(n, pack, "packed_r2c", wide=wide,
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", layout)
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64))
+    try:
+        plan = LeafPlan(n, (16, n//16), 1, 16, 1, (), n, dtype="complex128" if wide else "complex64")
+        lanes = hcu_dense_wave_lanes(plan, "packed_r2c")
+    finally:
+        reset_profile(token)
+    name, source = build_ix_warp_source(n, pack, "packed_r2c", wide=wide, lane_width=lanes,
         table_roots=not wide, local_codelet=True, output_radix_chunk=1,
         packed_output_transpose=True)
     functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
@@ -156,13 +169,46 @@ def test_packed_transposed_spectrum_matches_numpy_with_partial_planes(monkeypatc
         rtol=5e-13 if wide else 2e-5, atol=5e-11 if wide else 5e-5, equal_nan=True)
 
 
+@pytest.mark.parametrize("n", [32, 64, 128, 256, 512, 1024])
+@pytest.mark.parametrize("wide", [False, True])
+def test_compact_packed_c2r_matches_independent_numpy_inverse(monkeypatch, n, wide):
+    lanes = min(64, max(16, n//(16 if wide else 32)))
+    pack, batch = 4, 3
+    real_dtype = np.float64 if wide else np.float32
+    complex_dtype = np.complex128 if wide else np.complex64
+    real = np.random.default_rng(22).normal(size=(batch, 2*n))
+    data = np.fft.rfft(real, axis=-1).astype(complex_dtype)
+    expected = np.fft.irfft(data, n=2*n, axis=-1)*2*n
+    output = np.full((batch, 2*n), np.nan, dtype=real_dtype)
+    name, source = build_ix_warp_source(n, pack, "packed_c2r", True, wide=wide,
+        table_roots=not wide, lane_width=lanes, local_codelet=True)
+    functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
+    for function in functions:
+        function.decorator_list = []
+    roots = np.exp(2j*np.pi*np.arange(n)/n)
+    packed_roots = np.exp(-1j*np.pi*np.arange(n)/n).astype(complex_dtype)
+    namespace = {"tl": NumpyTL, "wave_tw_r_ptr": Pointer(roots.real.astype(real_dtype)),
+        "wave_tw_i_ptr": Pointer(roots.imag.astype(real_dtype)),
+        "packed_twiddle_ptr": Pointer(packed_roots.view(real_dtype))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "<compact-packed-inverse>", "exec"), namespace)
+    monkeypatch.setattr(NumpyTL, "pid", 0)
+    namespace[name](Pointer(data.view(real_dtype)), Pointer(output), 1, batch, n+1, n)
+    error = output-expected
+    relative = np.linalg.norm(error, axis=-1)/np.linalg.norm(expected, axis=-1)
+    assert np.max(relative) < (4e-15 if wide else 4e-7)
+    relative_max = np.max(np.abs(error), axis=-1)/np.max(np.abs(expected), axis=-1)
+    assert np.max(relative_max) < (6e-15 if wide else 6e-7)
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
-def test_cli_transports_the_transposed_packed_real_layout(tmp_path, monkeypatch, capsys, dtype):
+@pytest.mark.parametrize("layout", ["wave", "compact"])
+def test_cli_transports_the_transposed_packed_real_layout(tmp_path, monkeypatch, capsys, dtype, layout):
     import json
     from flagfft_codegen import cli
     monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_STORE", "1")
     monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "0")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", layout)
     device = {"backend": "hcu", "device_arch": "gfx936", "warp_size": 64,
               "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
     monkeypatch.setattr(sys, "argv", ["codegen", "--kernel", "leaf_packed_r2c",
@@ -181,6 +227,7 @@ def test_cli_transports_the_transposed_packed_real_layout(tmp_path, monkeypatch,
     assert "_transpose" in metadata["kernel_name"]
     assert "outer_packed" in metadata["module_path"]
     assert "span=output_distance" in source
+    assert ("_lanes16" in metadata["kernel_name"]) == (layout == "compact")
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
