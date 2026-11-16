@@ -23,9 +23,14 @@ def hcu_dense_wave_pack(plan, io_mode):
     if wide_setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
+    packed = io_mode in {"packed_r2c", "packed_c2r"}
+    if packed and (wide or plan.length * 4 > profile.warp_size * 64):
+        # Reconstruction keeps both partner FFT values and output registers
+        # live. Bound that doubled payload before selecting the wave path.
+        return 0
     if (setting != "1" or (plan.dtype != "complex64" and not wide) or
             not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1) or
-            io_mode not in {"contiguous", "contiguous_r2c", "contiguous_c2r"} | _FOURSTEP_ROWS | _FOURSTEP_COLS):
+            io_mode not in {"contiguous", "contiguous_r2c", "contiguous_c2r", "packed_r2c", "packed_c2r"} | _FOURSTEP_ROWS | _FOURSTEP_COLS):
         return 0
     target = os.getenv("FLAGFFT_HCU_DENSE_WAVE_PACK", "auto")
     if target not in {"auto", "1", "2", "4", "8"}:

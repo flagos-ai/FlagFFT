@@ -57,7 +57,7 @@ def test_dense_wave_preserves_grid_distances_and_lds_budget(tmp_path, n, kind, d
 @pytest.mark.parametrize("dtype,mode,n", [
     ("complex128", "contiguous", 256), ("complex64", "contiguous", 210),
     ("complex64", "strided", 256), ("complex64", "permuted_store", 256),
-    ("complex64", "packed_r2c", 256), ("complex64", "contiguous", 4096),
+    ("complex64", "packed_r2c", 2048), ("complex64", "contiguous", 4096),
 ])
 def test_dense_wave_retains_fallbacks(dtype, mode, n):
     plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype=dtype)
@@ -95,3 +95,23 @@ def test_wide_wave_uses_supplied_double_roots_and_interleaved_double_stores(tmp_
     name = metadata["kernel_name"]
     chunk = int(name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in name else n // 64
     assert 4 * 64 * chunk * 16 <= 32768
+
+
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
+@pytest.mark.parametrize("kind,direction", [("leaf_packed_r2c", "forward"), ("leaf_packed_c2r", "inverse")])
+def test_packed_wave_keeps_boundary_abi_and_payload_bound(tmp_path, n, kind, direction):
+    metadata = emit_jit_kernel(kernel=kind, length=n, factors=(16, n // 16),
+        lanes=16, num_warps=1, generic_radices=(), smem_size=n, direction=direction,
+        dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, "<hcu-packed-wave>", "exec")
+    assert metadata["kernel_name"].startswith("hcu_warp")
+    assert "packed_twiddle_ptr" in metadata["arg_names"]
+    assert "input_distance" in metadata["arg_names"]
+    assert n * 4 <= 64 * 64
+    if kind == "leaf_packed_r2c":
+        assert "input_distance%2==0" in source
+        assert "output_distance" in metadata["arg_names"]
+        assert "nyquist_r" in source
+    else:
+        assert f"output_distance={n}" in source
