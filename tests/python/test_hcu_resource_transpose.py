@@ -67,7 +67,11 @@ def test_actual_cli_accepts_resource_modes(tmp_path, monkeypatch, capsys, dtype,
         "--transpose3d-order", order, "--dtype", dtype, "--target", "hcu:gfx936:64",
         "--device-profile", json.dumps(device), "--execution-policy", "native",
         "--out-dir", str(tmp_path)])
-    cli.main()
+    token = set_profile(BackendProfile())
+    try:
+        cli.main()
+    finally:
+        reset_profile(token)
     meta = json.loads(capsys.readouterr().out)
     assert "transpose-resource" in meta["module_path"]
     assert meta["grid_x_override"] > 0
