@@ -264,9 +264,9 @@ TEST(HcuConvolution, BoundsFp64ChildButterfliesWithoutChangingPrimeExtentOrCache
     request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
     request.input_dtype = request.output_dtype = "complex64";
     ScopedEnv original("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
-    const auto baseline = builder.build(request.n, request)->describe();
+    const auto baseline = builder.build(request.requested_n, request)->describe();
     ScopedEnv bounded("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "16");
-    EXPECT_EQ(builder.build(request.n, request)->describe(), baseline);
+    EXPECT_EQ(builder.build(request.requested_n, request)->describe(), baseline);
   }
 }
 
