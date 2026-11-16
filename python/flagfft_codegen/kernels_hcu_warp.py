@@ -245,15 +245,18 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
         live_bytes = 2 * (profile.max_dynamic_shared_memory or 65536)
         while pack > 1 and plan.length * pack * 16 > live_bytes:
             pack //= 2
-    if target == "resource" and profile.multiprocessor_count is not None:
-        # One FFT occupies a complete wave. Preserve two independent CTAs
-        # per compute unit when the total row count cannot fill a wide tile.
-        wanted = max(1, batch // (2 * profile.multiprocessor_count))
-        while pack > wanted:
-            pack //= 2
     while not strided and pack > 1 and ((batch // span) % pack
                        if inner else span % pack if io_mode == "permuted_store_r2c" else False):
         pack //= 2
+    if target == "resource" and profile.multiprocessor_count is not None:
+        blocks = ((batch + pack - 1) // pack if inner or strided else
+                  (batch // span) * ((span + pack - 1) // pack))
+        # Keep the output transaction width once the grid covers every CU.
+        # Only underfilled grids trade that width for more independent CTAs.
+        if blocks < profile.multiprocessor_count:
+            wanted = max(1, batch // (2 * profile.multiprocessor_count))
+            while pack > wanted:
+                pack //= 2
     if wide and automatic and pack < 4:
         # Retain the native store when row alignment prevents a coalesced
         # FP64 real-input tile. Complex outer stores use padded plane grids.

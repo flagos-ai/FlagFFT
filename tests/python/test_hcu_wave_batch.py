@@ -37,9 +37,22 @@ def test_resource_pack_bounds_grid_without_changing_large_tiles(monkeypatch, row
     pack = hcu_warp_store_pack(plan, "permuted_store", "outer", rows, rows)
     assert pack > 0 and not pack & (pack - 1)
     assert pack <= original
-    assert pack == 1 or rows // pack >= 160
-    if rows >= 160 * original:
+    if (rows + original - 1) // original < 80:
+        assert pack == 1 or rows // pack >= 160
+    else:
         assert pack == original
+
+
+@pytest.mark.parametrize("n,factors,span,rows", [
+    (2048, (16, 16, 8), 1025, 1025), (64, (4, 4, 4), 33, 64 * 33)])
+def test_resource_pack_keeps_wide_stores_when_plane_grid_already_covers_cus(
+        monkeypatch, n, factors, span, rows):
+    plan = LeafPlan(n, factors, 1, 16, 4, (), n)
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
+    original = hcu_warp_store_pack(plan, "permuted_store", "outer", span, rows)
+    assert (rows // span) * ((span + original - 1) // original) >= 80
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_PACK", "resource")
+    assert hcu_warp_store_pack(plan, "permuted_store", "outer", span, rows) == original
 
 
 @pytest.mark.parametrize("units", [None, 0, -1, "80", True, 80])
