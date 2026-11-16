@@ -136,6 +136,10 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
 - `FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER=1`、`FLAGFFT_HCU_LEAF_SINGLE_BUFFER=1`：
   仅在所有覆盖写的中间阶段均可一次覆盖完整 FFT 时复用缓冲；每次覆盖前有
   CTA barrier，多组阶段自动回退。leaf 还根据原共享内存占用和设备容量限定范围。
+  Bluestein 的独立 FourStep prepare/pointwise/finish 阶段也必须采用一致的
+  缓冲数：原资源分组已按单缓冲计算，发射体先前只识别普通 FourStep 前缀。
+  已统一单 FFT 阶段的分配及循环地址；包含两次 FFT 的 full-leaf 不在此范围。
+  扩展源代码检查通过，仍需 large-prime 设备验证。
 - `FLAGFFT_HCU_2D_REAL_ROWS=1`：复用已有紧凑行调度，限 HCU dense 2D、
   大于现有小 RC 范围的首轴、偶数末轴；无 shape winner 表。
 - `FLAGFFT_HCU_FUSED_PACKED_REAL=1`：复用 LeafPackedR2C/C2R，按半长 FFT

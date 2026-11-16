@@ -1386,7 +1386,7 @@ def _use_single_smem_buffer(
     """Reuse one shared buffer between generated mixed-radix stages."""
     if hcu_leaf_single_buffer(plan, io_mode):
         return True
-    if (io_mode.startswith("four_step_") and not io_mode.endswith("_strided")
+    if (io_mode.startswith(("four_step_", "bluestein_four_step_")) and not io_mode.endswith("_strided")
             and hcu_four_step_single_buffer(plan)):
         return True
     if (_hcu_wide_permuted_store(plan) and io_mode in {

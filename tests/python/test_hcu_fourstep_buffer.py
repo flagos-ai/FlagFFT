@@ -32,14 +32,16 @@ def profile(monkeypatch):
     (1024, (32, 32), 32), (1024, (16, 16, 4), 64),
 ])
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
-@pytest.mark.parametrize("kind", ["four_step_row", "four_step_col"])
+@pytest.mark.parametrize("kind", ["four_step_row", "four_step_col", "bluestein_four_step_prepare_row",
+                                  "bluestein_four_step_pointwise_row", "bluestein_four_step_finish_col"])
 def test_dense_fourstep_uses_one_bounded_cyclic_buffer(tmp_path, n, factors, lanes, dtype, kind):
     plan = LeafPlan(n, factors, 1, lanes, 1, (), n, dtype=dtype)
     assert hcu_four_step_single_buffer(plan)
     metadata = emit_jit_kernel(
         kernel=kind, length=n, factors=factors, lanes=lanes, num_warps=1,
         generic_radices=(32,) if 32 in factors else (), smem_size=n,
-        direction="inverse", dtype=dtype, prime_n=0, four_step_n1=n,
+        direction="forward" if kind.startswith("bluestein_") else "inverse", dtype=dtype,
+        prime_n=n*n//2-1 if kind.startswith("bluestein_") else 0, four_step_n1=n,
         four_step_n2=n, out_dir=tmp_path,
     )
     source = Path(metadata["module_path"]).read_text()

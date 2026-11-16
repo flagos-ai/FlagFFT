@@ -1360,7 +1360,7 @@ def _emit_stage_block(
         and ((os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
               and io_mode in {"permuted_store", "strided_permuted_store",
                               "permuted_r2c", "permuted_store_r2c"})
-             or (io_mode.startswith("four_step_")
+             or (io_mode.startswith(("four_step_", "bluestein_four_step_"))
                  and os.getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER", "0") == "1")
              or (io_mode in {"contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
                              "packed_r2c", "packed_c2r"}
