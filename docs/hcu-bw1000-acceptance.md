@@ -155,6 +155,12 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   三角函数。FP64 packed wave 同样使用双精度表，候选不再经过 FP32 三角函数。
   `FLAGFFT_HCU_DENSE_WAVE_PACK` 的 16-row 实验会按每物理 lane 的活跃 payload
   自动缩小；重建按双倍 payload 计，不仅按共享内存容量放大 tile。
+- `FLAGFFT_HCU_WAVE_SCALAR_BUDGET=128` 是默认 64 以外的 FP32 寄存器预算实验，
+  用于在 LDS 分块约束下测试更宽的合并写回；FP64 仍保留原预算。该实验没有
+  设备资格，不作为默认。wave 中轴的 batched 地址按每个 cube 的行数计算，
+  即使一个 CTA 跨越两个 cube 也不混用输出 stride；保留原始参数 ABI。
+  CPU 对生成地址求值，与独立 NumPy 轴置换逐项比较，通过 batch2/3/5 和
+  不同外轴长度的验证；仍需设备数值测试。
 - 半长度实数策略首先按 FFT 工作量、原/子计划结构、布局及资源界限建立适用域，
   再经过同卡重复性能、三幅度准确性和 holdout 决定默认行为；不增加逐 case winner 表。
 - 下一轮已冻结的 half-length 策略为 `FLAGFFT_HCU_LARGE_PACKED_REAL=1`（默认 0）：

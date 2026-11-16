@@ -19,6 +19,13 @@ def _root_table_enabled():
     return setting == "1"
 
 
+def _scalar_wave_budget(plan):
+    setting = os.getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET", "64")
+    if setting not in {"64", "128"}:
+        raise ValueError("FLAGFFT_HCU_WAVE_SCALAR_BUDGET must be 64 or 128")
+    return 64 if plan.dtype == "complex128" else int(setting)
+
+
 def hcu_dense_wave_pack(plan, io_mode):
     profile = current_profile()
     if profile.backend != "hcu" or profile.warp_size != 64:
@@ -51,7 +58,8 @@ def hcu_dense_wave_pack(plan, io_mode):
     # (128 FP32 register slots in FP64). Output redistribution is separately
     # chunked to half the queried LDS budget; FP64 starts with fewer waves.
     live_scalars = 4 if packed else 2
-    while pack > 1 and plan.length * pack * live_scalars > min(pack, 8) * profile.warp_size * 64:
+    budget = _scalar_wave_budget(plan)
+    while pack > 1 and plan.length * pack * live_scalars > min(pack, 8) * profile.warp_size * budget:
         pack //= 2
     return pack
 
@@ -102,17 +110,21 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
             or os.getenv("FLAGFFT_HCU_3D_WARP_FFT", "0") != "1"
             or plan.dtype != "complex64"
             or not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1)
-            or io_mode != "permuted_store" or perm_form.endswith("_batched")
+            or io_mode != "permuted_store"
             or span <= 0 or batch <= 0):
         return 0
     inner = perm_form.startswith("inner")
+    if inner and batch % span:
+        return 0
     target = os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
     if target not in {"auto", "1", "2", "4", "8", "16", "32"}:
         raise ValueError("FLAGFFT_HCU_3D_WARP_PACK must be auto, 1, 2, 4, 8, 16 or 32")
     pack = 32 if target == "auto" else int(target)
-    # Limit the live input/output payload to 64 FP32 registers per thread.
+    # Limit the live payload per physical thread, with a bounded larger
+    # experimental budget for wider coalesced output tiles.
     # Logical FFT rows can share a wave; the physical block stays <= 512 lanes.
-    while pack > 1 and plan.length * pack * 2 > min(pack, 8) * 64 * 64:
+    budget = _scalar_wave_budget(plan)
+    while pack > 1 and plan.length * pack * 2 > min(pack, 8) * 64 * budget:
         pack //= 2
     while pack > 1 and (batch % span or (batch // span) % pack
                        if inner else span % pack):
@@ -136,7 +148,20 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
         output_radix_chunk=chunk if chunk < radix else 0,
         table_roots=_root_table_enabled(),
     )
-    leaf_name = "hcu_" + name + "_leaf"
+    batched = perm_form.endswith("_batched")
+    leaf_name = "hcu_" + name + ("_batched" if batched else "") + "_leaf"
+    if batched:
+        if "rows_per_transform" not in params or mode != "inner":
+            raise ValueError("batched HCU wave stores require the per-cube row count")
+        source = source.replace(
+            f"    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+slot",
+            f"    cube=row//rows_per_transform\n"
+            f"    local_row=row%rows_per_transform\n"
+            f"    gbase=cube*({plan.length}*rows_per_transform)+(local_row%span)*(rows_per_transform//span)+local_row//span", 1,
+        )
+        source = source.replace("    stride=nbatch", "    stride=rows_per_transform")
+        hint = f"    gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})"
+        source = source.replace(hint, f"    if (rows_per_transform//span)%{pack}==0:\n    " + hint)
     aliases = [
         "    inp=in_ptr", "    out=out_ptr",
         f"    span=tl.full((),{span},tl.int64)",
@@ -153,4 +178,5 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
     source = source.replace(
         header, f"def {leaf_name}(" + ",".join(params) + "):\n" + "\n".join(aliases), 1,
     )
+    source = source.replace("pid=tl.program_id(0)", "pid=tl.program_id(0).to(tl.int64)", 1)
     return leaf_name, source

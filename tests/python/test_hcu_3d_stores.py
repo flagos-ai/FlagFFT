@@ -178,7 +178,6 @@ def test_wave_store_retains_leaf_signature_and_bounds_output_tiles(monkeypatch, 
 @pytest.mark.parametrize("dtype,mode,form", [
     ("complex128", "permuted_store", "outer"),
     ("complex64", "strided_permuted_store", "inner"),
-    ("complex64", "permuted_store", "inner_batched"),
     ("complex64", "permuted_store_r2c", "outer"),
 ])
 def test_wave_store_preserves_unsupported_layout_fallbacks(monkeypatch, dtype, mode, form):
