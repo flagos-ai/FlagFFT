@@ -174,6 +174,7 @@ class PlanBuilder {
     bool hcu_balance_convolution = false;
     bool hcu_physical_wave_cost = false;
     bool hcu_stage_traffic_cost = false;
+    bool hcu_prime_cost_comparison = false;
     bool hcu_preserve_fourstep_split = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 

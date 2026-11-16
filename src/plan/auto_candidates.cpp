@@ -642,7 +642,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);
       const Factorization rader_factorization = factorize_supported_radices(n - 1);
-      if (rader_factorization.remainder == 1 && !rader_factorization.factors.empty()) {
+      if (rader_factorization.remainder == 1 && !rader_factorization.factors.empty() &&
+          !context.hcu_prime_cost_comparison) {
         rader_candidate_cost = std::min(rader_candidate_cost, bluestein_candidate_cost * 0.99);
       }
       candidates.push_back({rader, rader_candidate_cost, priority(rader)});

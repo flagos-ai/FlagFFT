@@ -50,6 +50,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          hcu_balance_convolution == other.hcu_balance_convolution &&
          hcu_physical_wave_cost == other.hcu_physical_wave_cost &&
          hcu_stage_traffic_cost == other.hcu_stage_traffic_cost &&
+         hcu_prime_cost_comparison == other.hcu_prime_cost_comparison &&
          hcu_preserve_fourstep_split == other.hcu_preserve_fourstep_split &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
@@ -105,6 +106,10 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
       throw std::runtime_error("FLAGFFT_HCU_STAGE_TRAFFIC_COST must be 0, 1, fp32 or fp64");
     context.hcu_stage_traffic_cost = stage_traffic_value == "1" ||
         (stage_traffic_value == "fp64" && wide) || (stage_traffic_value == "fp32" && !wide);
+    const char *prime_cost = std::getenv("FLAGFFT_HCU_PRIME_COST_COMPARISON");
+    if (prime_cost && std::string(prime_cost) != "0" && std::string(prime_cost) != "1")
+      throw std::runtime_error("FLAGFFT_HCU_PRIME_COST_COMPARISON must be 0 or 1");
+    context.hcu_prime_cost_comparison = prime_cost && std::string(prime_cost) == "1";
   }
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");

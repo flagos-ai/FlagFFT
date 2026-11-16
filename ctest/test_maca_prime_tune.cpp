@@ -448,6 +448,37 @@ TEST(HcuLeafCost, StageTrafficChangesShortLeafSchedulesAndPreservesOtherContexts
   }
 }
 
+TEST(HcuPrimeCost, SupportedConvolutionDoesNotForceRaderBelowTheEstimatedBluesteinCost) {
+  for (const char *backend : {"hcu", "cuda"}) {
+    flagfft::FFTRequest request;
+    request.device_type = backend;
+    request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+    request.origin_rank = request.raw_dim = 1;
+    request.batch = 64;
+    request.input_dtype = request.output_dtype = "complex128";
+    request.input_layout = "contiguous";
+    flagfft::PlanBuilder reused;
+    bool changed = false;
+    for (int64_t n : {23, 1009, 8191, 16381}) {
+      request.n = request.requested_n = request.fft_length = n;
+      request.input_shape = {64, n};
+      request.input_strides = {n, 1};
+      ScopedEnv original("FLAGFFT_HCU_PRIME_COST_COMPARISON", "0");
+      const auto baseline = reused.build(n, request)->describe();
+      {
+        ScopedEnv candidate("FLAGFFT_HCU_PRIME_COST_COMPARISON", "1");
+        const auto selected = reused.build(n, request)->describe();
+        flagfft::PlanBuilder fresh;
+        EXPECT_EQ(selected, fresh.build(n, request)->describe());
+        changed |= selected != baseline;
+        if (std::string(backend) != "hcu") EXPECT_EQ(selected, baseline);
+      }
+      EXPECT_EQ(reused.build(n, request)->describe(), baseline);
+    }
+    EXPECT_EQ(changed, std::string(backend) == "hcu");
+  }
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;
