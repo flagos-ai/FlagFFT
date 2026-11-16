@@ -983,7 +983,11 @@ namespace {
     const bool hcu_2d_store = request.device_type == "hcu" && request.origin_rank == 2 &&
                               flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
     const bool hcu_static = request.device_type == "hcu" && (request.origin_rank == 3 || hcu_2d_store) &&
-                            flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE", hcu_wave_static);
+                            // The automatic wave graph is qualified for 3D.
+                            // 2D compact columns retain native fused stores;
+                            // an explicit static override can screen waves.
+                            flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE",
+                                            hcu_wave_static && request.origin_rank == 3);
     if (span > 0 && (ix_static || hcu_static)) {
       key.permutation_span = span;
       if (hcu_static && flag_or_default("FLAGFFT_HCU_3D_STATIC_BATCH", hcu_wave_static)) {
