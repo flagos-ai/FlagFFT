@@ -4254,6 +4254,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_type == "cuda" && request.device_arch == "sm_80" &&
         leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
         flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
+    const char *hcu_boundary = std::getenv("FLAGFFT_HCU_BLUESTEIN_BOUNDARY");
+    const std::string hcu_boundary_mode = hcu_boundary ? hcu_boundary : "0";
+    if (request.device_type == "hcu" && hcu_boundary_mode != "0" &&
+        hcu_boundary_mode != "1" && hcu_boundary_mode != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_BLUESTEIN_BOUNDARY must be 0, 1 or fp64");
+    const bool use_hcu_boundary_leaf = request.device_type == "hcu" &&
+        request.device_arch == "gfx936" && leaf != nullptr && real_kind.empty() &&
+        batch > 1 && batch == chunk_batch &&
+        (hcu_boundary_mode == "1" ||
+         (hcu_boundary_mode == "fp64" && request.input_dtype == "complex128"));
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
@@ -4291,7 +4301,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
-    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf) {
+    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf || use_hcu_boundary_leaf) {
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinLeafNode>(
