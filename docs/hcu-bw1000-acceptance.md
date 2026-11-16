@@ -21,9 +21,14 @@
 构建脚本、环境、bundle、逐次原始 JSON/log 和 CPU 验证日志均随本地结果归档。
 禁止将远端 build 或 JIT 缓存同步回本机。
 
-远端实验使用两个源码快照：`FlagFFT-hcu-general-opt@f93314df` 跑 CT/paired-I/O；
-`FlagFFT-hcu-radix@35e1b82b` 跑 radix 与 paired-I/O 组合。两者均为本地已提交代码，
-远端只编译和运行。最终验收必须使用同一个冻结的源码、依赖和构建版本。
+远端按候选冻结独立源码快照。`FlagFFT-hcu-general-opt@f93314df` 为初始
+CT/paired-I/O，`FlagFFT-hcu-radix@35e1b82b` 为 radix 组合，
+`FlagFFT-hcu-ct-fixed@d17251ad` 修正 CT grid，`FlagFFT-hcu-buffer@21205183`
+为循环单缓冲；`FlagFFT-hcu-real@dcd67243` 为紧凑实数与短 wave，
+`FlagFFT-hcu-dense-wave@edf3a1b4` 为 FP32 连续 wave FFT，
+`FlagFFT-hcu-wide-wave@433ccf4e` 为 FP64 与显式 wave64 布局。
+源码均先在本地提交，经 bundle 同步；远端只编译和运行。
+最终验收必须使用同一个冻结的源码、依赖和构建版本。
 
 ## 验收入口
 
@@ -80,7 +85,30 @@ runner 已保存中断状态和全部完成项；停止后 Python 队列退出�
 这些是候选性能筛选，不能当作新默认版本验收。524288 的四个 real 算子、
 FP32/FP64、batch=1/64、三幅度 `2^-20, 1, 2^20`：24/24 NumPy 和 24/24
 hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/`。
-后续成对访存/radix/CT 筛选分别存放，待全部完成后记录最终结论。
+后续筛选分别保存原始结果，不用局部候选指标代替默认版本验收。
+
+### 本轮其他筛选结论
+
+- 两遍 3D CT：最初的设备 VMFault 来自 C++ 未读取新 kernel 的
+  `grid_x_override`，实际启动数多了 8 倍。已修正并保存全部故障日志。
+  修正后的两个 smoke accuracy case（各一个 `2^-20` 幅度）通过；16 个性能
+  样本中，128³ 和长轴形状约为原实现的 0.34–0.37 倍性能，256³ 为
+  0.64–0.76 倍，仅较小的一个几何有收益。拒绝作为通用默认，不增加赢家白名单。
+- Four-Step 循环单缓冲：同卡 ABBA、18 个配对样本，FlagFFT 时延改善
+  GM=1.068163x。524288 batch64 的 FP64 complex 候选约 0.715855x，
+  real 仍约 0.582–0.602x。524288 batch64 的两个 real API、两精度、三幅度，
+  12/12 NumPy 和 12/12 platform 校验通过。
+- 将循环偏移从 unit 改为按 wave 宽度推导：18 个 ABBA 配对样本，改善
+  GM=0.980198x；不启用该偏移为默认。四个实数设备校验均通过。
+- 2D 紧凑行调度：2048²、batch1、两实数 API/两精度首轮时延改善
+  1.251–1.423x，speedup 0.565–0.629x；4/4 双参考校验通过。
+  这是顺序筛选，仍需 ABBA、batch4 与矩阵外验证。
+- 融合半长叶子和 wave 偏移的组合：2D 低于仅紧凑行版本；3D 256³ FP32
+  R2C 约 0.486x，明显回退。组合保持关闭，不能把组合结果单独归因于融合叶子。
+  3D 立方体四个 real case 双参考通过，但性能尚不满足门槛。
+- 短 wave 与连续/Four-Step wave FFT：设备筛选进行中。
+  `--max-cases` 是对整个展开列表截断，**不是每算子截断**；带该参数的
+  tiny/dense smoke 只能按 manifest 的实际 case 数报告。完整验证不使用它。
 
 ## 实现与候选边界
 
@@ -94,9 +122,25 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
 - `FLAGFFT_HCU_3D_CT=1`：二次幂 FP32 3D 的两遍 Cooley-Tukey 原型。两遍 tile
   均由 8192 complex 元素预算推导，batch 使用独立地址，不是逐 shape 路由表。
   默认关闭，FP64/不支持几何保留原实现。
+- `FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER=1`、`FLAGFFT_HCU_LEAF_SINGLE_BUFFER=1`：
+  仅在所有覆盖写的中间阶段均可一次覆盖完整 FFT 时复用缓冲；每次覆盖前有
+  CTA barrier，多组阶段自动回退。leaf 还根据原共享内存占用和设备容量限定范围。
+- `FLAGFFT_HCU_2D_REAL_ROWS=1`：复用已有紧凑行调度，限 HCU dense 2D、
+  大于现有小 RC 范围的首轴、偶数末轴；无 shape winner 表。
+- `FLAGFFT_HCU_FUSED_PACKED_REAL=1`：复用 LeafPackedR2C/C2R，按半长 FFT
+  和重建共六个标量缓冲的 LDS 上界限定候选，未通过性能资格，不默认开启。
+- `FLAGFFT_HCU_SMALL_WAVE=1`：FP32、16–64 的二次幂连续叶子在一个 wave 内
+  填满 FFT 子组，保留既有距离与尾 batch 掩码；FP64/其他 I/O 方式回退。
+- `FLAGFFT_HCU_DENSE_WAVE=1`：FP32、64–2048 的二次幂连续叶子和 Four-Step
+  行列复用 wave 内 Cooley-Tukey。`FLAGFFT_HCU_DENSE_WAVE_FP64=1` 额外允许
+  FP64，使用附加在末级表后的双精度自然顺序旋转因子；保留原表前缀以供回退，
+  不使用 FP32 三角函数。输出重排按半个查询 LDS 容量分块。
+  `FLAGFFT_HCU_WAVE_LAYOUT=1` 显式规定 64 个物理 lane 属于同一 FFT，
+  减少编译器自动布局导致跨 wave 交换的可能；设备验证前均保持 opt-in。
 - 半长度实数策略首先按 FFT 工作量、原/子计划结构、布局及资源界限建立适用域，
   再经过同卡重复性能、三幅度准确性和 holdout 决定默认行为；不增加逐 case winner 表。
 
-当前 CPU 检查：574 passed、88 skipped（runner、codegen、HCU layout/CT/vector、gate）；
-远端 CPU planner target：27 个 GTest 通过。它们不代替设备数值与性能验证。
+CPU 检查：FP64 wave 提交的综合回归为 932 passed、88 skipped、10 subtests passed；
+显式布局新增后的相关回归为 349 passed。192 组默认 FP32 wave 生成源码与修改前
+逐字一致。远端 CPU planner target：27 个 GTest 通过。以上不代替设备验证。
 尚未宣告完成 1.0x / 0.7x 的最终验收。
