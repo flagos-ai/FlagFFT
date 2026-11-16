@@ -36,6 +36,7 @@ RESHAPE = "reshape"
 TRANSPOSE = "transpose"
 TRANSPOSE3D = "transpose3d"
 SMALL_3D = "small_3d"
+HCU_3D_CT = "hcu_3d_ct"
 SMALL_2D = "small_2d"
 REAL_POINTWISE = "real_pointwise"
 NPU_GROUPED_FFT = "npu_grouped_fft"
@@ -255,6 +256,10 @@ _SPECS: tuple[KernelSpec, ...] = (
     KernelSpec("fused_32_real_plane", SMALL_3D),
     KernelSpec("fused_rect_plane", SMALL_3D),
     KernelSpec("fused_16_cube", SMALL_3D),
+    KernelSpec("hcu_3d_ct_first", HCU_3D_CT,
+               requires=("transpose3d_n0", "transpose3d_n1", "transpose3d_n2", "four_step_n1", "four_step_n2")),
+    KernelSpec("hcu_3d_ct_last", HCU_3D_CT,
+               requires=("transpose3d_n0", "transpose3d_n1", "transpose3d_n2", "four_step_n1", "four_step_n2")),
     KernelSpec("fused_16_real_cube", SMALL_3D),
     KernelSpec("fused_32_plane", SMALL_3D),
     KernelSpec("fused_16_real_plane", SMALL_3D),

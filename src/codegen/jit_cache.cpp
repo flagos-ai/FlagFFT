@@ -638,6 +638,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
+    case KernelKind::Hcu3DCTFirst:
+      kernel_kind = "hcu_3d_ct_first";
+      break;
+    case KernelKind::Hcu3DCTLast:
+      kernel_kind = "hcu_3d_ct_last";
+      break;
     case KernelKind::Fused16Plane:
       kernel_kind = "fused_16_plane";
       break;
@@ -807,6 +813,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       throw std::runtime_error("NPU vector transpose requires NPU complex64");
     }
     jit_command << " --npu-vector-transpose";
+  }
+  if (key.kind == KernelKind::Hcu3DCTFirst || key.kind == KernelKind::Hcu3DCTLast) {
+    jit_command << " --transpose3d-n0 " << key.transpose3d_n0
+                << " --transpose3d-n1 " << key.transpose3d_n1
+                << " --transpose3d-n2 " << key.transpose3d_n2
+                << " --four-step-n1 " << key.four_step_n1
+                << " --four-step-n2 " << key.four_step_n2
+                << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::Transpose3D) {
     jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1

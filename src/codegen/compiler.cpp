@@ -5654,6 +5654,38 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+  if (request.device_type == "hcu" && request.input_dtype == "complex64" &&
+      request.origin_rank == 3 && flag_or_default("FLAGFFT_HCU_3D_CT", false) &&
+      n0 >= 2 && n1 >= 2 && n2 >= 4 && n2 <= 256 &&
+      (n0 & (n0 - 1)) == 0 && (n1 & (n1 - 1)) == 0 && (n2 & (n2 - 1)) == 0 &&
+      n0 * n1 * n2 > kStridedMaxElements &&
+      adaptor::max_dynamic_smem_bytes(request.device_index) >= 65536) {
+    constexpr int64_t tile_budget = 8192;
+    int64_t h0 = 1, h1 = 1;
+    while (h0 * h1 * n2 * 2 <= tile_budget && (h0 < n0 || h1 < n1)) {
+      if (n0 / h0 >= n1 / h1 && h0 < n0) h0 *= 2;
+      else h1 *= 2;
+    }
+    // The second pass keeps at least four adjacent complex values per row.
+    if ((n0 / h0) * (n1 / h1) * 4 <= tile_budget) {
+      KernelKey key;
+      key.target = triton_target_for_request(request);
+      key.direction = request.direction;
+      key.dtype = request.input_dtype;
+      key.transpose3d_n0 = n0;
+      key.transpose3d_n1 = n1;
+      key.transpose3d_n2 = n2;
+      key.four_step_n1 = h0;
+      key.four_step_n2 = h1;
+      key.kind = KernelKind::Hcu3DCTFirst;
+      auto first = compile_kernel(key);
+      key.kind = KernelKind::Hcu3DCTLast;
+      auto last = compile_kernel(key);
+      auto temp = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+      return std::make_shared<CompiledRaw3DCTNode>(
+          n0 * n1 * n2, std::move(first), std::move(last), std::move(temp));
+    }
+  }
   // Keep the backend-specific measured routes independent. The NPU fused
   // store is only selected for its explicit AIV256 screening configuration.
 #if defined(FLAGFFT_BACKEND_NPU)

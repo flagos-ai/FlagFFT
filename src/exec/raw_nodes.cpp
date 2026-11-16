@@ -4436,6 +4436,30 @@ flagfftResult CompiledRaw3DFusedRealPlaneNode::execute(adaptor::DevicePtr input,
   }
 }
 
+CompiledRaw3DCTNode::CompiledRaw3DCTNode(int64_t elements,
+                                       std::shared_ptr<JitKernel> first,
+                                       std::shared_ptr<JitKernel> last,
+                                       DeviceAllocation temp)
+    : elements(elements), first(std::move(first)), last(std::move(last)), temp(std::move(temp)) {}
+
+std::string CompiledRaw3DCTNode::describe() const {
+  return "CompiledRaw3DCT(first=" + first->execution_description() +
+         ", last=" + last->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DCTNode::execute(adaptor::DevicePtr input,
+                                          adaptor::DevicePtr output,
+                                          const RawExecutionContext &context) const {
+  try {
+    launch_perm3d(first, context.stream, input, temp.get(), elements, context.batch, 8);
+    launch_perm3d(last, context.stream, temp.get(), output, elements, context.batch, 8);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D CT execute failed: %s\n", e.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
 CompiledRaw3DStridedNode::CompiledRaw3DStridedNode(int64_t n0,
                                                    int64_t n1,
                                                    int64_t n2,

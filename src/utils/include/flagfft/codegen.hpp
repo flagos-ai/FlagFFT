@@ -1573,9 +1573,24 @@ struct CompiledRaw3DFusedRealPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 // 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
-// layout instead of permuting the cube between passes: three launches and no
-// full-cube transpose traffic.  Used when both non-contiguous axis plans are
-// plain leaves.
+// layout instead of permuting the cube between passes.
+// Experimental two-pass Cooley-Tukey with resource-bounded local tiles.
+struct CompiledRaw3DCTNode final : CompiledRawNode {
+  CompiledRaw3DCTNode(int64_t elements,
+                      std::shared_ptr<JitKernel> first,
+                      std::shared_ptr<JitKernel> last,
+                      DeviceAllocation temp);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t elements;
+  std::shared_ptr<JitKernel> first;
+  std::shared_ptr<JitKernel> last;
+  DeviceAllocation temp;
+};
+
+// Three launches and no full-cube transpose traffic, when both
+// non-contiguous axis plans are plain leaves.
 struct CompiledRaw3DStridedNode final : CompiledRawNode {
   CompiledRaw3DStridedNode(int64_t n0,
                            int64_t n1,

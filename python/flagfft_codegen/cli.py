@@ -49,6 +49,7 @@ from .kernels_npu_grouped import emit_npu_grouped_fft64
 from .kernels_npu_stockham_aiv import emit_npu_stockham_aiv
 from .artifacts import write_text_atomic
 from .registry import (
+    HCU_3D_CT,
     BLUESTEIN,
     BLUESTEIN_FOUR_STEP,
     BLUESTEIN_LEAF,
@@ -648,6 +649,13 @@ def main() -> None:
             order=args.transpose3d_order,
             dtype=args.dtype,
             out_dir=args.out_dir,
+        )
+    elif spec.family == HCU_3D_CT:
+        from .kernels_hcu_3d_ct import emit_ct_kernel
+        metadata = emit_ct_kernel(
+            n0=args.transpose3d_n0, n1=args.transpose3d_n1, n2=args.transpose3d_n2,
+            h0=args.four_step_n1, h1=args.four_step_n2, direction=args.direction,
+            first=args.kernel == "hcu_3d_ct_first", dtype=args.dtype, out_dir=args.out_dir,
         )
     elif spec.family == SMALL_2D:
         metadata = emit_fused_2d_kernel(

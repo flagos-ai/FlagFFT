@@ -250,6 +250,10 @@ std::string kernel_kind_name(KernelKind kind) {
       return "fused_2d";
     case KernelKind::NpuGroupedFFT64:
       return "npu_grouped_fft64";
+    case KernelKind::Hcu3DCTFirst:
+      return "hcu_3d_ct_first";
+    case KernelKind::Hcu3DCTLast:
+      return "hcu_3d_ct_last";
   }
   return "unknown";
 }
