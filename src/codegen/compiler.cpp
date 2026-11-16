@@ -980,8 +980,14 @@ namespace {
     const bool hcu_wave_static = request.device_type == "hcu" &&
                                   flag_or_default("FLAGFFT_HCU_3D_WARP_FFT", false) &&
                                   flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false);
+    const bool fp32_wave = request.input_dtype == "complex64" && key.kind == KernelKind::LeafPermutedStore &&
+                           key.length <= 2048;
+    const bool fp64_wave = request.input_dtype == "complex128" && key.length <= 1024 &&
+        flag_or_default("FLAGFFT_HCU_3D_WARP_FP64", false) &&
+        (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafR2CPermutedStore);
     const bool hcu_2d_store = request.device_type == "hcu" && request.origin_rank == 2 &&
-                              flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
+        key.length >= 64 && (key.length & (key.length - 1)) == 0 && (fp32_wave || fp64_wave) &&
+        flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
     const bool hcu_static = request.device_type == "hcu" && (request.origin_rank == 3 || hcu_2d_store) &&
                             // The automatic wave graph is qualified for 3D.
                             // 2D compact columns retain native fused stores;
@@ -4619,6 +4625,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_stor
   const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
   const int64_t minimum = flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
       (layout && std::string(layout) == "compact") ? 64 : 128;
+  // Below a physical wave, reconstruction and its exchange cost more than
+  // the full real leaf's fused compact store. Keep that leaf available.
+  if (layout && std::string(layout) == "resource" && n / 2 < 64) return nullptr;
   if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
       request.input_layout != "contiguous" || request.requires_contiguous_copy ||
       request.packed_real_child || n < minimum || n > 2048 || (n & (n - 1)) != 0 ||
@@ -5742,6 +5751,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
                                 ? complex_dtype_for(request.input_dtype)
                                 : request.input_dtype;
   KernelKey key = KernelKey::transpose3d(target, dtype, n0, n1, n2, order);
+  if (request.device_type == "hcu" &&
+      (request.real_transform || !request.real_transform_kind.empty() ||
+       !request.origin_real_transform_kind.empty())) key.perm_form = "compact_spectrum";
   if (npu_table) {
     key.perm_form = "npu_table_loop";
   }

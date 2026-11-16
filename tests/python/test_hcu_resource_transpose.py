@@ -18,12 +18,14 @@ from test_hcu_convolution_buffer import Pointer, TL, Trace, tensor
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("order", ["021", "210", "201", "120"])
+@pytest.mark.parametrize("compact", [0, 1])
 def test_resource_transpose_matches_numpy_bits_across_batches(
-        tmp_path, monkeypatch, dtype, order):
+        tmp_path, monkeypatch, dtype, order, compact):
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
                                      max_dynamic_shared_memory=65536, policy="native"))
     monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "resource")
     monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "resource")
+    monkeypatch.setenv("FLAGFFT_HCU_TRANSPOSE_COMPACT", str(compact))
     shape, batches = (9, 33, 65), 2
     try:
         meta = _emit_tiled_transpose3d_jit_kernel(n0=shape[0], n1=shape[1], n2=shape[2],
@@ -44,7 +46,8 @@ def test_resource_transpose_matches_numpy_bits_across_batches(
     code = compile(ast.fix_missing_locations(ast.Module(body=functions, type_ignores=[])),
                    "<hcu-resource-transpose>", "exec")
     for batch in range(batches):
-        for pid in range(meta["grid_x_override"]):
+        grid_x = meta["grid_x_override"] or (np.prod(shape)+1023)//1024
+        for pid in range(grid_x):
             runtime = type("Runtime", (TL,), {"load": staticmethod(Trace.load),
                 "store": staticmethod(Trace.store),
                 "program_id": staticmethod(lambda axis: tensor((pid, 0, batch)[axis]))})
@@ -74,5 +77,5 @@ def test_actual_cli_accepts_resource_modes(tmp_path, monkeypatch, capsys, dtype,
         reset_profile(token)
     meta = json.loads(capsys.readouterr().out)
     assert "transpose-resource" in meta["module_path"]
-    assert meta["grid_x_override"] > 0
+    assert meta["grid_x_override"] >= 0
     assert meta["arg_names"] == ["in_ptr", "out_ptr", "nbatch"]

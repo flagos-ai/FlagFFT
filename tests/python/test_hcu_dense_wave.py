@@ -79,6 +79,30 @@ def test_compact_packed_wave_keeps_single_stage_leaf_without_root_table_abi(monk
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("n,factors,lanes,compact", [(32, (8, 4), 4, True),
+    (64, (8, 8), 8, True), (128, (16, 8), 16, True),
+    (256, (16, 16), 16, False), (512, (8, 8, 8), 64, False)])
+def test_resource_inverse_subgroups_preserve_native_large_boundaries(
+        tmp_path, monkeypatch, dtype, n, factors, lanes, compact):
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "resource")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_CTA", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "packed")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_CTA_MAX_PACK", "1")
+    metadata = emit_jit_kernel(kernel="leaf_packed_c2r", length=n, factors=factors,
+        lanes=lanes, num_warps=2, generic_radices=(), smem_size=n,
+        direction="inverse", dtype=dtype, prime_n=0, four_step_n1=0,
+        four_step_n2=0, out_dir=tmp_path)
+    assert metadata["kernel_name"].startswith("hcu_warp") == compact
+    assert metadata["batch_per_block"] == 1
+    assert metadata["arg_names"][2] == "packed_twiddle_ptr"
+    if compact:
+        assert "_lanes16" in metadata["kernel_name"]
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_fourstep_codelets_only_replace_supported_local_butterflies(monkeypatch, dtype):
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "fourstep_codelets")
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")

@@ -759,6 +759,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << "FLAGFFT_CUDA_PERMUTE_BATCH=" << key.cuda_permute_batch << " ";
   }
   if (key.target.rfind("hcu:", 0) == 0) {
+    if (key.kind == KernelKind::Transpose3D)
+      jit_command << "FLAGFFT_HCU_TRANSPOSE_COMPACT="
+                  << (key.perm_form == "compact_spectrum" ? "1 " : "0 ");
     jit_command << "FLAGFFT_HCU_PACKED_CTA_MAX_PACK="
                 << (key.hcu_packed_max_pack > 0 ? std::to_string(key.hcu_packed_max_pack) : "auto")
                 << " ";

@@ -1152,7 +1152,9 @@ def _emit_tiled_transpose3d_jit_kernel(
             tile=32 if dtype == "complex64" else 16,
         )
     elif (_hcu_backend_active()
-          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") in {"packed", "resource"}):
+          and (os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "packed"
+               or (os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "resource"
+                   and os.getenv("FLAGFFT_HCU_TRANSPOSE_COMPACT", "0") == "1"))):
         tile_setting = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
         if tile_setting == "resource":
             capacity = (current_profile().max_dynamic_shared_memory or 65536) // 2
@@ -1249,7 +1251,7 @@ def _emit_tiled_transpose3d_jit_kernel(
                 )
             if dtype == "complex64":
                 transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
-                if transpose_tile == "auto":
+                if transpose_tile in {"auto", "resource"}:
                     tile = (
                         16
                         if (n0, n1, n2, order)

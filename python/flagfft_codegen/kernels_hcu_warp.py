@@ -40,11 +40,17 @@ def _wide_root_period(plan):
     return int(setting) if plan.dtype == "complex128" else 0
 
 
+def _resource_compact_inverse(plan, io_mode):
+    return (os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "resource"
+            and io_mode == "packed_c2r" and 32 <= plan.length <= 2 * current_profile().warp_size)
+
+
 def hcu_dense_wave_lanes(plan, io_mode):
     packed_layout = os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave")
     if packed_layout not in {"wave", "compact", "resource"}:
         raise ValueError("FLAGFFT_HCU_PACKED_WAVE_LAYOUT must be wave, compact or resource")
-    if packed_layout == "compact" and io_mode in {"packed_r2c", "packed_c2r"}:
+    if ((packed_layout == "compact" and io_mode in {"packed_r2c", "packed_c2r"})
+            or _resource_compact_inverse(plan, io_mode)):
         # Bound the register butterfly by scalar width, then let independent
         # short FFTs share one queried physical wave instead of dedicating
         # 64 threads to every half-length boundary.
@@ -74,7 +80,8 @@ def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
-    if packed and os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1":
+    compact_inverse = _resource_compact_inverse(plan, io_mode)
+    if packed and os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1" and not compact_inverse:
         return 0
     if setting == "packed" and not packed:
         return 0
@@ -100,7 +107,8 @@ def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
         # Reconstruction keeps both partner FFT values and output registers
         # live. Bound that doubled payload before selecting the wave path.
         return 0
-    minimum = 32 if packed and os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact" else 64
+    minimum = 32 if packed and (os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact"
+                               or compact_inverse) else 64
     if (setting == "0" or (setting == "leaves" and io_mode in _FOURSTEP_ROWS | _FOURSTEP_COLS)
             or (plan.dtype != "complex64" and not wide) or
             not minimum <= plan.length <= 2048 or plan.length & (plan.length - 1) or
@@ -115,12 +123,18 @@ def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
     # chunked to half the queried LDS budget; FP64 starts with fewer waves.
     live_scalars = 4 if packed else 2
     budget = _scalar_wave_budget(plan)
-    if packed and os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact":
+    if packed and (os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "compact" or compact_inverse):
         # FFT values and reconstructed partner outputs coexist. Use an equal
         # byte budget in both precisions, leaving the output LDS bound intact.
         budget = 64 if plan.dtype == "complex128" else 128
     while pack > 1 and plan.length * pack * live_scalars > max(1, min(pack * lanes // 64, 8)) * profile.warp_size * budget:
         pack //= 2
+    if compact_inverse:
+        maximum = os.getenv("FLAGFFT_HCU_PACKED_CTA_MAX_PACK", "auto")
+        if maximum != "auto":
+            if maximum not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_HCU_PACKED_CTA_MAX_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+            pack = min(pack, int(maximum))
     return pack
 
 
