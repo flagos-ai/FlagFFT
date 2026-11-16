@@ -65,9 +65,11 @@ def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7):
         problems.append("case-weighted geometric mean is below target")
     if below:
         problems.append(f"{len(below)} cases are below the per-case floor")
+    operator_gm = math.exp(sum(math.log(group["geomean"]) for group in groups.values()) / len(groups)) if groups else None
     return {"passed": not problems, "source_commit": manifest["env"].get("git_commit"),
             "expected_cases": expected_cases, "recorded_cases": len(records),
             "case_weighted_geomean": gm, "minimum_speedup": min(valid.values()) if valid else None,
+            "operator_weighted_geomean": operator_gm,
             "target_geomean": target, "per_case_floor": floor,
             "operators": groups, "below_floor": below, "problems": problems}
 
