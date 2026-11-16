@@ -369,11 +369,12 @@ def _metadata(
     if kernel_name.startswith("hcu_warp"):
         import re
         batch_per_block = int(re.search(r"_p(\d+)_", kernel_name).group(1))
-        num_warps = min(8, batch_per_block)
+        wave_lanes = int(kernel_name.split("_lanes", 1)[1].split("_", 1)[0]) if "_lanes" in kernel_name else 64
+        num_warps = min(8, batch_per_block * wave_lanes // 64)
         profile.validate(num_warps)
-        chunk = int(kernel_name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in kernel_name else plan.length // 64
+        chunk = int(kernel_name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in kernel_name else plan.length // wave_lanes
         element_bytes = 16 if dtype == "complex128" else 8
-        if batch_per_block * 64 * chunk * element_bytes > profile.max_dynamic_shared_memory:
+        if batch_per_block * wave_lanes * chunk * element_bytes > profile.max_dynamic_shared_memory:
             raise ValueError("HCU wave FFT output tile exceeds shared-memory capacity")
         if kernel_type in {"four_step_row", "four_step_col", "four_step_real_row",
                            "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"}:

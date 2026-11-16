@@ -271,6 +271,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-wave-root-table-v1=" + std::string(wave_roots ? wave_roots : "0");
     const char *wave_budget = std::getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
     cache_key += ";hcu-wave-batched-v1;budget=" + std::string(wave_budget ? wave_budget : "64");
+    const char *wide_lanes = std::getenv("FLAGFFT_HCU_WIDE_WAVE_LANES");
+    cache_key += ";hcu-wide-wave-lanes-v1=" + std::string(wide_lanes ? wide_lanes : "64");
   }
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");

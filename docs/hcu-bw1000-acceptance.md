@@ -171,6 +171,12 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   已用到 256 VGPR 且有 112 字节 private segment，因此不能仅凭 LDS 合法就选择。
   FP32 packed 边界另按重建需要的双倍活跃 payload 限制在 64 个标量/物理 lane。
   设备验证前均保持 opt-in。
+- `FLAGFFT_HCU_WIDE_WAVE_LANES=auto`：FP64 连续叶子按每个逻辑 lane 的
+  输入字节预算选择 64 或 128 个逻辑 lane，后者由两个物理 wave 协作；默认
+  `64` 保留较大叶子的原生回退。FourStep 和 packed 边界保留 64-lane ABI。
+  发射和 metadata 同时调整 warp 数与输出分块，CPU 直接执行生成的 2048 点
+  数学代码，C2C 正反向、R2C/C2R、尾 batch=3 与 NumPy 对照通过。
+  此候选针对 FP64 单 wave 的寄存器溢出，尚待设备资格验证。
 - `FLAGFFT_HCU_WAVE_ROOT_TABLE=1`：FP32 wave 路径也复用自然顺序旋转因子表，
   FourStep 行读取已有跨维度系数，packed 边界读取已有实数重建表，移除设备端
   三角函数。FP64 packed wave 同样使用双精度表，候选不再经过 FP32 三角函数。

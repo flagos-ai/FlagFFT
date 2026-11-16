@@ -26,6 +26,18 @@ def _scalar_wave_budget(plan):
     return 64 if plan.dtype == "complex128" else int(setting)
 
 
+def hcu_dense_wave_lanes(plan, io_mode):
+    setting = os.getenv("FLAGFFT_HCU_WIDE_WAVE_LANES", "64")
+    if setting not in {"64", "auto"}:
+        raise ValueError("FLAGFFT_HCU_WIDE_WAVE_LANES must be 64 or auto")
+    if (setting == "auto" and plan.dtype == "complex128"
+            and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}):
+        # Spread a wide scalar payload over two waves before increasing the
+        # rows per CTA. A single-wave 2048-point FP64 FFT spills on gfx936.
+        return 128 if plan.length * 8 > 64 * 128 else 64
+    return 64
+
+
 def hcu_dense_wave_pack(plan, io_mode):
     profile = current_profile()
     if profile.backend != "hcu" or profile.warp_size != 64:
@@ -38,7 +50,8 @@ def hcu_dense_wave_pack(plan, io_mode):
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
-    if wide and not packed and plan.length * 8 > profile.warp_size * 128:
+    lanes = hcu_dense_wave_lanes(plan, io_mode)
+    if wide and not packed and plan.length * 8 > lanes * 128:
         # Account for input/output redistribution and 64-bit scalar width.
         # Larger tiles exceeded 256 VGPRs and spilled on the queried target.
         return 0
@@ -59,7 +72,7 @@ def hcu_dense_wave_pack(plan, io_mode):
     # chunked to half the queried LDS budget; FP64 starts with fewer waves.
     live_scalars = 4 if packed else 2
     budget = _scalar_wave_budget(plan)
-    while pack > 1 and plan.length * pack * live_scalars > min(pack, 8) * profile.warp_size * budget:
+    while pack > 1 and plan.length * pack * live_scalars > min(pack * lanes // 64, 8) * profile.warp_size * budget:
         pack //= 2
     return pack
 
@@ -71,13 +84,14 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
     fourstep = row or io_mode in _FOURSTEP_COLS
     other = n2 if row else n1
     mode = {"contiguous_r2c": "contiguous_r2c", "contiguous_c2r": "c2r"}.get(io_mode, io_mode)
-    radix = plan.length // 64
+    lanes = hcu_dense_wave_lanes(plan, io_mode)
+    radix = plan.length // lanes
     chunk = radix
     shared_limit = current_profile().max_dynamic_shared_memory // 2
     wide = plan.dtype == "complex128"
     root_table = _root_table_enabled()
     complex_bytes = 16 if wide else 8
-    while chunk > 1 and pack * 64 * chunk * complex_bytes > shared_limit:
+    while chunk > 1 and pack * lanes * chunk * complex_bytes > shared_limit:
         chunk //= 2
     name, source = build_ix_warp_source(
         plan.length, pack, mode, plan.direction == "inverse",
@@ -85,6 +99,7 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
         four_step_other=other if fourstep else 0,
         wide=wide,
         table_roots=root_table and not wide,
+        lane_width=lanes,
     )
     leaf_name = "hcu_" + name + "_dense"
     aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
