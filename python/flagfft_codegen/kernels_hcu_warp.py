@@ -19,18 +19,21 @@ def hcu_dense_wave_pack(plan, io_mode):
     setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE", "0")
     if setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0 or 1")
-    if (setting != "1" or plan.dtype != "complex64" or
+    wide_setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "0")
+    if wide_setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
+    wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
+    if (setting != "1" or (plan.dtype != "complex64" and not wide) or
             not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1) or
             io_mode not in {"contiguous", "contiguous_r2c", "contiguous_c2r"} | _FOURSTEP_ROWS | _FOURSTEP_COLS):
         return 0
     target = os.getenv("FLAGFFT_HCU_DENSE_WAVE_PACK", "auto")
     if target not in {"auto", "1", "2", "4", "8"}:
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_PACK must be auto, 1, 2, 4 or 8")
-    pack = 8 if target == "auto" else int(target)
-    # At most 64 live FP32 payload registers per physical thread. Output
-    # redistribution is separately chunked to half the queried LDS budget.
-    while pack > 1 and plan.length * pack * 2 > pack * profile.warp_size * 64:
-        pack //= 2
+    pack = (4 if wide else 8) if target == "auto" else int(target)
+    # The supported lengths bound each lane to 64 scalar payload values
+    # (128 FP32 register slots in FP64). Output redistribution is separately
+    # chunked to half the queried LDS budget; FP64 starts with fewer waves.
     return pack
 
 
@@ -44,15 +47,22 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
     radix = plan.length // 64
     chunk = radix
     shared_limit = current_profile().max_dynamic_shared_memory // 2
-    while chunk > 1 and pack * 64 * chunk * 8 > shared_limit:
+    wide = plan.dtype == "complex128"
+    complex_bytes = 16 if wide else 8
+    while chunk > 1 and pack * 64 * chunk * complex_bytes > shared_limit:
         chunk //= 2
     name, source = build_ix_warp_source(
         plan.length, pack, mode, plan.direction == "inverse",
         output_radix_chunk=chunk if chunk < radix else 0,
         four_step_other=other if fourstep else 0,
+        wide=wide,
     )
     leaf_name = "hcu_" + name + "_dense"
     aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
+    if wide:
+        last = len(plan.factors) - 1
+        aliases.extend([f"    wave_tw_r_ptr=tw{last}_r_ptr+{plan.length}",
+                        f"    wave_tw_i_ptr=tw{last}_i_ptr+{plan.length}"])
     for distance in ("input_distance", "output_distance"):
         if distance not in params:
             aliases.append(f"    {distance}={plan.length}")

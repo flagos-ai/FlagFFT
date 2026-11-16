@@ -62,3 +62,36 @@ def test_dense_wave_preserves_grid_distances_and_lds_budget(tmp_path, n, kind, d
 def test_dense_wave_retains_fallbacks(dtype, mode, n):
     plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype=dtype)
     assert hcu_dense_wave_pack(plan, mode) == 0
+
+
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("kind,direction", [
+    ("leaf", "forward"), ("leaf", "inverse"),
+    ("leaf_r2c", "forward"), ("leaf_c2r", "inverse"),
+    ("four_step_row", "forward"), ("four_step_col", "inverse"),
+    ("four_step_real_row", "forward"), ("four_step_r2c_col", "forward"),
+    ("four_step_hermitian_row", "inverse"), ("four_step_c2r_col", "inverse"),
+])
+def test_wide_wave_uses_supplied_double_roots_and_interleaved_double_stores(tmp_path, monkeypatch, n, kind, direction):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
+    fourstep = kind.startswith("four_step_")
+    metadata = emit_jit_kernel(kernel=kind, length=n, factors=(16, n // 16),
+        lanes=16, num_warps=1, generic_radices=(), smem_size=n, direction=direction,
+        dtype="complex128", prime_n=0, four_step_n1=n if fourstep else 0,
+        four_step_n2=n if fourstep else 0, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    compile(source, "<hcu-wide-wave>", "exec")
+    assert metadata["num_warps"] == 4
+    assert metadata["batch_per_block"] == (1 if fourstep else 4)
+    assert metadata["inner_pack"] == (4 if fourstep else 1)
+    assert f"wave_tw_r_ptr=tw1_r_ptr+{n}" in source
+    assert f"wave_tw_i_ptr=tw1_i_ptr+{n}" in source
+    assert "tl.uint32" not in source and "tl.float32" not in source
+    assert "tl.cos(" not in source and "tl.sin(" not in source
+    if kind in {"leaf_c2r", "four_step_c2r_col"}:
+        assert "tl.store(out+address,z,mask)" in source or "tl.store(ptr+address,tl.trans(z),mask)" in source
+    else:
+        assert "tl.join(" in source and "address[:,:,None]*2" in source
+    name = metadata["kernel_name"]
+    chunk = int(name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in name else n // 64
+    assert 4 * 64 * chunk * 16 <= 32768

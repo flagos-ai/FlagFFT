@@ -263,7 +263,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-small-wave-v1=" + std::string(small_wave ? small_wave : "0");
     const char *dense_wave = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
     const char *dense_wave_pack = std::getenv("FLAGFFT_HCU_DENSE_WAVE_PACK");
-    cache_key += ";hcu-dense-wave-v1=" + std::string(dense_wave ? dense_wave : "0") +
+    const char *dense_wave_fp64 = std::getenv("FLAGFFT_HCU_DENSE_WAVE_FP64");
+    cache_key += ";hcu-dense-wave-v2=" + std::string(dense_wave ? dense_wave : "0") +
+                 ";fp64=" + std::string(dense_wave_fp64 ? dense_wave_fp64 : "0") +
                  ";pack=" + std::string(dense_wave_pack ? dense_wave_pack : "auto");
   }
   if (musa_1d_batch_policy_) {

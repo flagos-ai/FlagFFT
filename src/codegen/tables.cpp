@@ -390,6 +390,25 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
     if (is_double) {
       auto twiddles =
           build_stage_twiddles_d(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);
+      const char *dense_wave = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
+      const char *dense_wave_fp64 = std::getenv("FLAGFFT_HCU_DENSE_WAVE_FP64");
+      if (request.device_type == "hcu" && dense_wave && std::string(dense_wave) == "1" &&
+          dense_wave_fp64 && std::string(dense_wave_fp64) == "1" &&
+          stage + 1 == leaf.factors.size() && leaf.length >= 64 && leaf.length <= 2048 &&
+          (leaf.length & (leaf.length - 1)) == 0) {
+        // Retain the existing N-element stage-table prefix for every native
+        // fallback. Wave-local FP64 FFTs use the appended natural-order roots,
+        // avoiding repeated device transcendental evaluation and FP32 angles.
+        constexpr long double kPiLong = 3.141592653589793238462643383279502884L;
+        const long double sign = request.direction == "inverse" ? 1.0L : -1.0L;
+        twiddles.first.reserve(static_cast<std::size_t>(2 * leaf.length));
+        twiddles.second.reserve(static_cast<std::size_t>(2 * leaf.length));
+        for (int64_t k = 0; k < leaf.length; ++k) {
+          const long double angle = sign * 2.0L * kPiLong * k / leaf.length;
+          twiddles.first.push_back(static_cast<double>(std::cos(angle)));
+          twiddles.second.push_back(static_cast<double>(std::sin(angle)));
+        }
+      }
       tables.push_back(adaptor::Memory::from_doubles(twiddles.first));
       tables.push_back(adaptor::Memory::from_doubles(twiddles.second));
     } else {
