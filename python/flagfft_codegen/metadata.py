@@ -359,6 +359,13 @@ def _metadata(
                 ) from exc
             profile.validate(num_warps)
     warp_pack = 0
+    if kernel_name.startswith("hcu_small_wave_"):
+        import re
+        batch_per_block = int(re.search(r"_p(\d+)_", kernel_name).group(1))
+        num_warps = 1
+        profile.validate(num_warps)
+        if batch_per_block * plan.length != profile.warp_size:
+            raise ValueError("small HCU FFT rows must exactly fill one wave")
     if kernel_name.startswith("hcu_warp"):
         import re
         batch_per_block = int(re.search(r"_p(\d+)_", kernel_name).group(1))

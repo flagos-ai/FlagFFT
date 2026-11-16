@@ -3489,6 +3489,10 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("a static permutation span requires a permuted-store leaf")
     if permutation_batch < 0 or (permutation_batch and not permutation_span):
         raise ValueError("a static permutation batch requires a positive span")
+    from .kernels_hcu_small import small_wave_pack, build_small_wave
+    short_pack = small_wave_pack(plan, io_mode)
+    if short_pack:
+        return build_small_wave(plan, io_mode, _leaf_kernel_params_for_io(plan, io_mode=io_mode), short_pack)
     from .kernels_hcu_warp import hcu_warp_store_pack, build_hcu_warp_store
     hcu_warp_pack = hcu_warp_store_pack(
         plan, io_mode, kernel_perm_form, permutation_span, permutation_batch,
@@ -3537,10 +3541,11 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    cuda_packed_r2c = (io_mode == "packed_r2c" and current_profile().backend == "cuda"
-        and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
-    if io_mode == "packed_r2c" and not portable_exchange and not cuda_packed_r2c:
-        raise ValueError("packed R2C leaf requires the portable exchange path")
+    native_packed_r2c = (io_mode == "packed_r2c" and (
+        (current_profile().backend == "cuda" and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_FUSED_PACKED_REAL") == "1")))
+    if io_mode == "packed_r2c" and not portable_exchange and not native_packed_r2c:
+        raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
@@ -4046,7 +4051,7 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
-    if cuda_packed_r2c and not portable_exchange:
+    if native_packed_r2c and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
         body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
         body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")

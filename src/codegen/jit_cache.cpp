@@ -259,6 +259,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-leaf-single-buffer-v1=" + std::string(leaf_buffer ? leaf_buffer : "0");
     const char *cyclic_skew = std::getenv("FLAGFFT_HCU_CYCLIC_SKEW");
     cache_key += ";hcu-cyclic-skew-v1=" + std::string(cyclic_skew ? cyclic_skew : "unit");
+    const char *small_wave = std::getenv("FLAGFFT_HCU_SMALL_WAVE");
+    cache_key += ";hcu-small-wave-v1=" + std::string(small_wave ? small_wave : "0");
   }
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
