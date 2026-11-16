@@ -28,6 +28,7 @@ class Pointer:
 
 class NumpyTL:
     pid = 0
+    pid1 = 0
     float64 = np.float64
     float32 = np.float32
     uint32 = np.uint32
@@ -41,10 +42,11 @@ class NumpyTL:
     reshape = staticmethod(np.reshape)
     join = staticmethod(lambda a, b: np.stack((a, b), axis=-1))
     trans = staticmethod(np.transpose)
+    minimum = staticmethod(np.minimum)
 
     @staticmethod
     def program_id(axis):
-        return NumpyTL.pid
+        return NumpyTL.pid if axis == 0 else NumpyTL.pid1
 
     @staticmethod
     def multiple_of(value, hint):
@@ -81,6 +83,44 @@ class NumpyTL:
         assert np.broadcast_shapes(shape, np.shape(value), np.shape(mask)) == shape
         index, value, valid = np.broadcast_arrays(ptr.offset, value, mask)
         ptr.data[index[valid]] = value[valid]
+
+
+@pytest.mark.parametrize("axes", [(64, 128), (512, 1024), (1024, 512)])
+@pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parametrize("inverse", [False, True])
+def test_complete_wave_fourstep_pair_applies_cross_axis_twiddle_once(monkeypatch, axes, wide, inverse):
+    n1, n2 = axes
+    real_dtype = np.float64 if wide else np.float32
+    complex_dtype = np.complex128 if wide else np.complex64
+    rng = np.random.default_rng(177)
+    data = (rng.normal(size=n1*n2) + 1j*rng.normal(size=n1*n2)).astype(complex_dtype)
+    expected = np.fft.ifft(data)*len(data) if inverse else np.fft.fft(data)
+    intermediate = np.full_like(data, np.nan)
+    output = np.full_like(data, np.nan)
+    sign = 1 if inverse else -1
+    # The shared table ABI stores contiguous n1 coefficients per input column.
+    cross = np.exp(sign*2j*np.pi*np.arange(n2)[:, None]*np.arange(n1)[None, :]/(n1*n2)).astype(complex_dtype)
+    for n, other, mode, src, dst in ((n1, n2, "four_step_row", data, intermediate),
+                                     (n2, n1, "four_step_col", intermediate, output)):
+        pack = 4 if wide else 8
+        name, source = build_ix_warp_source(n, pack, mode, inverse,
+            wide=wide, table_roots=not wide, four_step_other=other,
+            local_codelet=True, output_radix_chunk=1)
+        functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
+        for function in functions:
+            function.decorator_list = []
+        roots = np.exp(sign*2j*np.pi*np.arange(n)/n)
+        namespace = {"tl": NumpyTL, "wave_tw_r_ptr": Pointer(roots.real.astype(real_dtype)),
+            "wave_tw_i_ptr": Pointer(roots.imag.astype(real_dtype)),
+            "twiddle_ptr": Pointer(cross.ravel().view(real_dtype))}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "<wave-fourstep-pair>", "exec"), namespace)
+        for pid in range((other+pack-1)//pack):
+            monkeypatch.setattr(NumpyTL, "pid", pid)
+            namespace[name](Pointer(src.view(real_dtype)), Pointer(dst.view(real_dtype)), 1, 1, n1*n2, n1*n2)
+    np.testing.assert_allclose(output, expected,
+        rtol=2e-12 if wide else 2e-4, atol=5e-10 if wide else 2e-3)
+    relative = np.linalg.norm(output-expected)/np.linalg.norm(expected)
+    assert relative < (4e-15 if wide else 4e-7)
 
 
 @pytest.mark.parametrize("n", [64, 128, 1024])

@@ -52,7 +52,7 @@ def hcu_dense_wave_lanes(plan, io_mode):
     return 64
 
 
-def hcu_dense_wave_pack(plan, io_mode):
+def hcu_dense_wave_pack(plan, io_mode, n1=0, n2=0):
     profile = current_profile()
     if profile.backend != "hcu" or profile.warp_size != 64:
         return 0
@@ -67,9 +67,16 @@ def hcu_dense_wave_pack(plan, io_mode):
     if setting == "packed" and not packed:
         return 0
     lanes = hcu_dense_wave_lanes(plan, io_mode)
-    if setting == "fourstep_codelets" and (
-            io_mode not in _FOURSTEP_ROWS | _FOURSTEP_COLS or
-            not _native_wave_codelet() or plan.length // lanes not in {16, 32}):
+    fourstep = io_mode in _FOURSTEP_ROWS | _FOURSTEP_COLS
+    if fourstep:
+        # Wave rows apply the cross-axis twiddle at their output, while wave
+        # columns consume it there. Replacing just one pass would either omit
+        # or repeat that twiddle. Admit the entire pair before either emitter.
+        axis_limit = 1024 if plan.dtype == "complex128" else 2048
+        if not all(64 <= axis <= axis_limit and not axis & (axis - 1) for axis in (n1, n2)):
+            return 0
+    if setting == "fourstep_codelets" and (not fourstep or not _native_wave_codelet()
+                                           or max(n1, n2) // 64 not in {16, 32}):
         return 0
     byte_budget = 256 if (_wide_root_period(plan) and lanes == 64 and
         io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}) else 128

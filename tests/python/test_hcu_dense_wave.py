@@ -72,10 +72,26 @@ def test_fourstep_codelets_only_replace_supported_local_butterflies(monkeypatch,
     for n in (64, 128, 256, 512, 1024, 2048):
         plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype=dtype)
         assert hcu_dense_wave_pack(plan, "contiguous") == 0
-        selected = hcu_dense_wave_pack(plan, "four_step_col")
+        selected = hcu_dense_wave_pack(plan, "four_step_col", n, n)
         assert bool(selected) == (n >= 1024 and (dtype == "complex64" or n <= 1024))
     monkeypatch.setenv("FLAGFFT_HCU_WAVE_CODELET", "0")
     assert hcu_dense_wave_pack(plan, "four_step_col") == 0
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("axes", [(512, 1024), (1024, 512), (32, 1024), (1024, 32),
+                                  (1024, 2048), (2048, 1024), (128, 1536)])
+def test_wave_fourstep_admits_both_twiddle_contract_sides_together(monkeypatch, dtype, axes):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "fourstep_codelets")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_CODELET", "1")
+    choices = []
+    for axis, mode in zip(axes, ("four_step_row", "four_step_col")):
+        plan = LeafPlan(axis, (16, axis // 16), 1, 16, 1, (), axis, dtype=dtype)
+        choices.append(bool(hcu_dense_wave_pack(plan, mode, *axes)))
+    assert choices[0] == choices[1]
+    limit = 1024 if dtype == "complex128" else 2048
+    assert choices[0] == all(64 <= axis <= limit and not axis & (axis - 1) for axis in axes)
 
 
 @pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])

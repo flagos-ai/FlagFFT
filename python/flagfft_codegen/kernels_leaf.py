@@ -3514,7 +3514,7 @@ def _build_leaf_kernel_source_for_io(
             raise ValueError("transposed packed real boundary requires a supported HCU wave leaf")
         return build_hcu_dense_wave(plan, io_mode,
             _leaf_kernel_params_for_io(plan, io_mode=io_mode), pack, packed_transpose=True)
-    dense_wave_pack = hcu_dense_wave_pack(plan, io_mode)
+    dense_wave_pack = hcu_dense_wave_pack(plan, io_mode, four_step_n1, four_step_n2)
     if dense_wave_pack:
         return build_hcu_dense_wave(
             plan, io_mode, _leaf_kernel_params_for_io(
