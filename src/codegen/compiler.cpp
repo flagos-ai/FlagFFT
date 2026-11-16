@@ -2717,16 +2717,34 @@ namespace {
     PlanNodePtr plan;
   };
 
+  bool hcu_large_packed_real_enabled(const PlanNodePtr &original_plan,
+                                     const FFTRequest &request, int64_t batch) {
+    const int64_t n = request.requested_n;
+    // Amortise the extra reconstruction launch by total work, rather than
+    // recognising benchmark lengths or one batch count. The child topology
+    // is checked after construction, before this policy can replace a plan.
+    return request.device_type == "hcu" && request.device_arch == "gfx936" &&
+        request.origin_rank == 1 && request.raw_dim == 1 && !request.packed_real_child &&
+        !request.requires_contiguous_copy && request.input_layout == "contiguous" &&
+        !request.input_strides.empty() && request.input_strides.back() == 1 &&
+        request.fft_length == n && n > 0 && n % 2 == 0 && batch > 0 &&
+        n >= 65536 / batch + (65536 % batch != 0) &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
+        flag_or_default("FLAGFFT_HCU_LARGE_PACKED_REAL", false);
+  }
+
   std::optional<PackedRealChild> select_packed_real_child(const PlanNodePtr &original_plan,
                                                           const FFTRequest &request,
                                                           int64_t batch,
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
+    const bool hcu_large_packed = hcu_large_packed_real_enabled(original_plan, request, batch);
     const bool cuda_fused = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && request.raw_dim == 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
+                       hcu_large_packed ||
                        hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
@@ -2852,6 +2870,14 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (hcu_large_packed && !(setting && std::string(setting) == "1")) {
+      const auto fourstep = std::dynamic_pointer_cast<FourStepPlanNode>(child_plan);
+      const bool leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan) != nullptr;
+      const bool two_leaf = fourstep &&
+          std::dynamic_pointer_cast<LeafPlanNode>(fourstep->row_plan) &&
+          std::dynamic_pointer_cast<LeafPlanNode>(fourstep->col_plan);
+      if (!leaf && !two_leaf) return std::nullopt;
+    }
     if (hcu_fused_packed_real_enabled(request, batch, n) &&
         !(setting && std::string(setting) == "1") &&
         !std::dynamic_pointer_cast<LeafPlanNode>(child_plan)) return std::nullopt;

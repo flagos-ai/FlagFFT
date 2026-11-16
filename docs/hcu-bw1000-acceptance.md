@@ -147,6 +147,11 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   设备验证前均保持 opt-in。
 - 半长度实数策略首先按 FFT 工作量、原/子计划结构、布局及资源界限建立适用域，
   再经过同卡重复性能、三幅度准确性和 holdout 决定默认行为；不增加逐 case winner 表。
+- 下一轮已冻结的 half-length 策略为 `FLAGFFT_HCU_LARGE_PACKED_REAL=1`（默认 0）：
+  HCU gfx936、公开 dense 1D、偶数长度、原计划为 FourStep、总工作量
+  `batch*N >= 65536`，半长子计划必须为 Leaf 或两个 Leaf 的 FourStep。
+  它保留 `FLAGFFT_PACKED_REAL=0` 的显式关闭及已有布局回退。
+  该条件在 large holdout 执行前固定；holdout 不能用来重新选择阈值。
 
 CPU 检查：FP64 wave 提交的综合回归为 932 passed、88 skipped、10 subtests passed；
 显式布局新增后的相关回归为 349 passed。192 组默认 FP32 wave 生成源码与修改前
