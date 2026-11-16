@@ -1768,7 +1768,8 @@ def _emit_stage_block(
                         f"{indent}packed_q_ptr{j} = in_ptr + (input_batch_base + packed_q{j}) * 2",
                     ]
                 )
-                if _ix_backend_active() and _packed_maca_fp32_complex_io(dtype):
+                if ((_ix_backend_active() and _packed_maca_fp32_complex_io(dtype))
+                        or (_hcu_backend_active() and _hcu_vector_io(dtype))):
                     for ptr,dest in ((f"packed_x_ptr{j}",f"packed_xr{j}, packed_xi{j}"),
                                      (f"packed_q_ptr{j}",f"packed_qr{j}, packed_qi{j}"),
                                      (f"packed_twiddle_ptr + packed_k{j} * 2",f"packed_wr{j}, packed_wi{j}")):
@@ -4198,7 +4199,8 @@ def _build_leaf_kernel_source_for_io(
             }
             body = [replacements.get(line, line) for line in body]
 
-        if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
+        if ((_ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype))
+                or (_hcu_backend_active() and _hcu_vector_io(plan.dtype))):
             for old_lines,new_lines in (
                 (["    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
                   "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)"],

@@ -46,15 +46,16 @@ def test_resource_selected_transpose_preserves_the_common_leaf_abi(
     (64, (8, 8), 8), (128, (16, 8), 16), (128, (8, 4, 4), 16),
     (256, (16, 16), 16), (512, (8, 8, 8), 64), (1024, (16, 8, 8), 128)])
 @pytest.mark.parametrize("span,maximum", [(0, "auto"), (0, "1"), (3, "auto"), (65, "auto")])
+@pytest.mark.parametrize("vector", ["0", "fp32"])
 def test_generated_packed_cta_matches_numpy_across_matrix_and_cta_tails(
-        tmp_path, monkeypatch, dtype, n, factors, lanes, span, maximum):
+        tmp_path, monkeypatch, dtype, n, factors, lanes, span, maximum, vector):
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
                                      max_dynamic_shared_memory=65536, policy="native"))
     monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_CTA", "1")
     monkeypatch.setenv("FLAGFFT_HCU_PACKED_CTA_MAX_PACK", maximum)
     monkeypatch.setenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "1")
     monkeypatch.setenv("FLAGFFT_HCU_LEAF_PACKING", "wave")
-    monkeypatch.setenv("FLAGFFT_HCU_VECTOR_IO", "0")
+    monkeypatch.setenv("FLAGFFT_HCU_VECTOR_IO", vector)
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "packed")
     try:
         plan = LeafPlan(n, factors, 1, lanes, 4, (), n, dtype=dtype)

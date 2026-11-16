@@ -66,8 +66,12 @@ class Pointer:
     def __sub__(self, offset):
         return self + (-offset)
 
+    def __getitem__(self, index):
+        return Pointer(self.data, self.offset[index], self.shared)
+
     def to(self, dtype):
-        return Pointer(self.data.view(dtype), self.offset, self.shared)
+        offset = self.offset * self.data.dtype.itemsize // np.dtype(dtype).itemsize
+        return Pointer(self.data.view(dtype), offset, self.shared)
 
 
 class TL:
@@ -83,6 +87,7 @@ class TL:
     trans = staticmethod(lambda x: tensor(np.transpose(x)))
     permute = staticmethod(lambda x, axes: tensor(np.transpose(x, axes)))
     join = staticmethod(lambda a, b: tensor(np.stack((a, b), axis=-1)))
+    split = staticmethod(lambda a: (tensor(a[..., 0]), tensor(a[..., 1])))
     gather = staticmethod(lambda a, i, axis=0: tensor(np.take_along_axis(a, i, axis)))
     where = staticmethod(lambda c, a, b: tensor(np.where(c, a, b)))
     minimum = staticmethod(lambda a, b: tensor(np.minimum(a, b)))
@@ -95,7 +100,7 @@ class TL:
     @staticmethod
     def cast(value, dtype, bitcast=False):
         if isinstance(value, Pointer):
-            return Pointer(value.data.view(dtype), value.offset, value.shared)
+            return value.to(dtype)
         a = np.asarray(value)
         return tensor(a.view(dtype) if bitcast else a.astype(dtype))
 

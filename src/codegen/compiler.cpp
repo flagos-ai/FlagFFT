@@ -4630,9 +4630,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_stor
   const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
   const int64_t minimum = flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
       (layout && std::string(layout) == "compact") ? 64 : 128;
-  // Below a physical wave, reconstruction and its exchange cost more than
-  // the full real leaf's fused compact store. Keep that leaf available.
-  if (layout && std::string(layout) == "resource" && n / 2 < 64) return nullptr;
+  // Short half FFTs need enough row groups to cover the device. Otherwise
+  // the full real leaf avoids the reconstruction and shared exchange.
+  if (request.device_type == "hcu" && layout &&
+      std::string(layout) == "resource" && n / 2 < 64) {
+    const auto facts = nlohmann::json::parse(adaptor::device_capabilities_json());
+    const auto units = facts.find("multiprocessor_count");
+    const int64_t group = 128 / complex_element_bytes(request.input_dtype);
+    if (units == facts.end() || !units->is_number_integer() ||
+        batch / group < 2 * units->get<int64_t>()) return nullptr;
+  }
   if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
       request.input_layout != "contiguous" || request.requires_contiguous_copy ||
       request.packed_real_child || n < minimum || n > 2048 || (n & (n - 1)) != 0 ||
