@@ -4,6 +4,8 @@
 """Bitwise oracle for the two structural 3D transpose routes and partial tiles."""
 
 import ast
+import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -50,3 +52,23 @@ def test_resource_transpose_matches_numpy_bits_across_batches(
             exec(code, namespace)
             namespace[meta["kernel_name"]](Pointer(data), Pointer(output), batches)
     np.testing.assert_array_equal(output.view(bits), data_bits.transpose(0, *(a+1 for a in axes), 4))
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("order", ["021", "201"])
+def test_actual_cli_accepts_resource_modes(tmp_path, monkeypatch, capsys, dtype, order):
+    from flagfft_codegen import cli
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "resource")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "resource")
+    device = {"backend": "hcu", "device_arch": "gfx936", "warp_size": 64,
+              "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
+    monkeypatch.setattr(sys, "argv", ["codegen", "--kernel", "transpose3d",
+        "--transpose3d-n0", "9", "--transpose3d-n1", "33", "--transpose3d-n2", "65",
+        "--transpose3d-order", order, "--dtype", dtype, "--target", "hcu:gfx936:64",
+        "--device-profile", json.dumps(device), "--execution-policy", "native",
+        "--out-dir", str(tmp_path)])
+    cli.main()
+    meta = json.loads(capsys.readouterr().out)
+    assert "transpose-resource" in meta["module_path"]
+    assert meta["grid_x_override"] > 0
+    assert meta["arg_names"] == ["in_ptr", "out_ptr", "nbatch"]
