@@ -491,16 +491,19 @@ def _profile_batch_pack_for(plan: LeafPlan) -> int:
     profile = current_profile()
     lane_block = lane_block_for(plan.lanes)
     target_threads = profile.leaf_target_threads
+    buffers = 4
     if profile.backend == "hcu" and profile.device_arch == "gfx936":
         packing = os.getenv("FLAGFFT_HCU_LEAF_PACKING", "resource")
-        if packing not in {"resource", "wave", "two_waves"}:
-            raise ValueError("FLAGFFT_HCU_LEAF_PACKING must be resource, wave or two_waves")
+        if packing not in {"resource", "wave", "two_waves", "four_waves"}:
+            raise ValueError("FLAGFFT_HCU_LEAF_PACKING must be resource, wave, two_waves or four_waves")
         if packing != "resource" and len(plan.factors) > 1:
             # Count the lanes actually participating in the emitted stages.
             # Fill a physical wave before adding blocks for otherwise idle
             # lanes; retain the shared-memory bound below for both precisions.
             lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=plan.lanes))
-            target_threads = profile.warp_size * (2 if packing == "two_waves" else 1)
+            target_threads = profile.warp_size * {"wave": 1, "two_waves": 2, "four_waves": 4}[packing]
+            if os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1" and _hcu_buffer_stage_safe(plan):
+                buffers = 2
 
     def pack_for(target_threads):
         thread_pack = max(1, target_threads // lane_block)
@@ -509,7 +512,7 @@ def _profile_batch_pack_for(plan: LeafPlan) -> int:
             thread_pack = min(thread_pack, 4)
         if len(plan.factors) <= 1:
             return thread_pack
-        bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+        bytes_per_fft = buffers * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
         smem_pack = max(
             1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
         )
