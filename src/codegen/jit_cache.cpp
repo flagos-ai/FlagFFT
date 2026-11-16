@@ -275,8 +275,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-wide-wave-lanes-v1=" + std::string(wide_lanes ? wide_lanes : "64");
     const char *permuted_wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
     const char *permuted_pack = std::getenv("FLAGFFT_HCU_3D_WARP_PACK");
+    const char *permuted_wide = std::getenv("FLAGFFT_HCU_3D_WARP_FP64");
     cache_key += ";hcu-permuted-wave-v2=" + std::string(permuted_wave ? permuted_wave : "0") +
-                 ";pack=" + std::string(permuted_pack ? permuted_pack : "auto");
+                 ";pack=" + std::string(permuted_pack ? permuted_pack : "auto") +
+                 ";fp64=" + std::string(permuted_wide ? permuted_wide : "0");
   }
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");

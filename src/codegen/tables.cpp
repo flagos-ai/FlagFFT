@@ -182,7 +182,8 @@ namespace {
     };
     const bool dense = enabled("FLAGFFT_HCU_DENSE_WAVE");
     const bool requested = std::is_same_v<Real, double>
-        ? dense && enabled("FLAGFFT_HCU_DENSE_WAVE_FP64")
+        ? (dense && enabled("FLAGFFT_HCU_DENSE_WAVE_FP64")) ||
+          (enabled("FLAGFFT_HCU_3D_WARP_FFT") && enabled("FLAGFFT_HCU_3D_WARP_FP64"))
         : enabled("FLAGFFT_HCU_WAVE_ROOT_TABLE") &&
           (dense || enabled("FLAGFFT_HCU_3D_WARP_FFT"));
     if (!requested) return;

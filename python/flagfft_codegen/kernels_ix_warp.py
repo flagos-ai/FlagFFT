@@ -45,9 +45,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
         raise ValueError("unsupported IX warp FFT I/O mode")
     four_step=mode in row_modes|col_modes
-    if wide and (mode not in {"contiguous", "contiguous_r2c", "c2r", "packed_r2c", "packed_c2r"}|row_modes|col_modes
+    if wide and (mode not in {"contiguous", "contiguous_r2c", "c2r", "packed_r2c", "packed_c2r", "outer", "inner", "r2c"}|row_modes|col_modes
                  or recurrence or fast_math or manual_store or packed_gather or local_codelet):
-        raise ValueError("wide wave FFT requires dense I/O and supplied FP64 root tables")
+        raise ValueError("wide wave FFT requires supplied FP64 roots and ordinary math")
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")
     if mode in {'packed_r2c','packed_c2r'} and lane_width!=64:
@@ -374,7 +374,10 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                  '    mask=(row[None,:]<nbatch)']
             if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
             if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
-            a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
+            if wide_complex:
+                a += ['    z=tl.join(tl.trans(zr),tl.trans(zi))',
+                      '    tl.store(out+address[:,:,None]*2+tl.arange(0,2)[None,None,:],z,mask[:,:,None])']
+            else:a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,tl.trans(z),mask)']
     return _finish_warp_source(name,a,fast_math,radix if local_codelet else 0,False)
 
 

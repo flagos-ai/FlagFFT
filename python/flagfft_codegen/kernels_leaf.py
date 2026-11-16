@@ -3518,7 +3518,7 @@ def _build_leaf_kernel_source_for_io(
         return build_hcu_warp_store(
             plan, kernel_perm_form, _leaf_kernel_params_for_io(
                 plan, io_mode=io_mode, batched_permutation=batched_permutation),
-            hcu_warp_pack, permutation_span, permutation_batch,
+            hcu_warp_pack, permutation_span, permutation_batch, io_mode,
         )
     bluestein_real_kind = ""
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):

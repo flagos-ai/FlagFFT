@@ -1,7 +1,7 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""HCU wave-local complex FFT stores, retaining the native leaf ABI."""
+"""HCU cooperative complex FFT stores, retaining the native leaf ABI."""
 
 import os
 
@@ -121,11 +121,16 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
 
 def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     profile = current_profile()
+    wide_setting = os.getenv("FLAGFFT_HCU_3D_WARP_FP64", "0")
+    if profile.backend == "hcu" and wide_setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_3D_WARP_FP64 must be 0 or 1")
+    wide = plan.dtype == "complex128" and wide_setting == "1"
     if (profile.backend != "hcu" or profile.warp_size != 64
             or os.getenv("FLAGFFT_HCU_3D_WARP_FFT", "0") != "1"
-            or plan.dtype != "complex64"
+            or (plan.dtype != "complex64" and not wide)
             or not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1)
-            or io_mode != "permuted_store"
+            or (wide and plan.length * 8 > profile.warp_size * 128)
+            or (io_mode != "permuted_store" and not (wide and io_mode == "permuted_store_r2c"))
             or span <= 0 or batch <= 0):
         return 0
     inner = perm_form.startswith("inner")
@@ -134,34 +139,43 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     target = os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto")
     if target not in {"auto", "1", "2", "4", "8", "16", "32"}:
         raise ValueError("FLAGFFT_HCU_3D_WARP_PACK must be auto, 1, 2, 4, 8, 16 or 32")
-    pack = 32 if target == "auto" else int(target)
+    pack = (16 if wide else 32) if target == "auto" else int(target)
     # Limit the live payload per physical thread, with a bounded larger
     # experimental budget for wider coalesced output tiles.
     # Logical FFT rows can share a wave; the physical block stays <= 512 lanes.
-    budget = _scalar_wave_budget(plan)
-    while pack > 1 and plan.length * pack * 2 > min(pack, 8) * 64 * budget:
+    lanes = 64
+    budget = 32 if wide else _scalar_wave_budget(plan)
+    while pack > 1 and plan.length * pack * 2 > min(pack * lanes // 64, 8) * 64 * budget:
         pack //= 2
     while pack > 1 and (batch % span or (batch // span) % pack
                        if inner else span % pack):
         pack //= 2
+    if wide and target == "auto" and pack < 4:
+        # Retain the native store when row alignment prevents a coalesced
+        # FP64 tile. This also leaves odd-span and short-row fallbacks intact.
+        return 0
     return pack
 
 
-def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
+def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="permuted_store"):
     # The wave-local radix decomposition is independent of the IX launcher.
     # Use ordinary Triton math and keep HCU's existing argument signature.
     from .kernels_ix_warp import build_ix_warp_source
 
-    mode = "inner" if perm_form.startswith("inner") else "outer"
-    radix = plan.length // 64
+    mode = "r2c" if io_mode == "permuted_store_r2c" else "inner" if perm_form.startswith("inner") else "outer"
+    wide = plan.dtype == "complex128"
+    lanes = 64
+    radix = plan.length // lanes
     chunk = min(radix, 8)
     shared_limit = min(current_profile().max_dynamic_shared_memory // 2, 32768)
-    while chunk > 1 and pack * 64 * chunk * 8 > shared_limit:
+    complex_bytes = 16 if wide else 8
+    while chunk > 1 and pack * lanes * chunk * complex_bytes > shared_limit:
         chunk //= 2
     name, source = build_ix_warp_source(
         plan.length, pack, mode, plan.direction == "inverse",
         output_radix_chunk=chunk if chunk < radix else 0,
-        table_roots=_root_table_enabled(),
+        table_roots=_root_table_enabled() and not wide,
+        wide=wide, lane_width=lanes,
     )
     batched = perm_form.endswith("_batched")
     leaf_name = "hcu_" + name + ("_batched" if batched else "") + "_leaf"
@@ -184,7 +198,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
         f"    input_distance=tl.full((),{plan.length},tl.int64)",
         f"    output_distance=tl.full((),{plan.length},tl.int64)",
     ]
-    if _root_table_enabled():
+    if wide or _root_table_enabled():
         last = len(plan.factors) - 1
         aliases.extend([f"    wave_tw_r_ptr=tw{last}_r_ptr+{plan.length}",
                         f"    wave_tw_i_ptr=tw{last}_i_ptr+{plan.length}"])
