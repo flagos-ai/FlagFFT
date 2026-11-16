@@ -19,7 +19,8 @@ from test_hcu_convolution_buffer import Pointer, TL, Trace, tensor
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("n,factors,lanes", [(32, (8, 4), 4),
-    (128, (8, 4, 4), 16), (1024, (16, 8, 8), 32)])
+    (64, (8, 8), 8), (128, (16, 8), 16), (128, (8, 4, 4), 16),
+    (256, (16, 16), 16), (512, (8, 8, 8), 64), (1024, (16, 8, 8), 128)])
 @pytest.mark.parametrize("span", [0, 3, 65])
 def test_generated_packed_cta_matches_numpy_across_matrix_and_cta_tails(
         tmp_path, monkeypatch, dtype, n, factors, lanes, span):
