@@ -87,13 +87,13 @@ _IX_BATCH_INTERLEAVE_MODES = {
 }
 
 
-def _hcu_vector_io() -> bool:
+def _hcu_vector_io(dtype: str) -> bool:
     if not _hcu_backend_active():
         return False
     setting = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
     if setting not in {"0", "1", "packed"}:
         raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0, 1 or packed")
-    return setting != "0"
+    return setting == "1" or (setting == "packed" and dtype == "complex64")
 
 
 def _packed_hcu_fp32_complex_io(dtype: str) -> bool:
@@ -113,7 +113,7 @@ def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
     return setting == "1" and not portable and pack > 1 and io_mode in _IX_BATCH_INTERLEAVE_MODES
 
 
-def _portable_complex_vector_io() -> bool:
+def _portable_complex_vector_io(dtype: str = "complex64") -> bool:
     """Whether to vectorize complex IO without backend inline assembly.
 
     The scalar form issues two 4-byte accesses per complex element, which is
@@ -126,7 +126,7 @@ def _portable_complex_vector_io() -> bool:
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
         or (_npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1")
         or (_ix_backend_active() and _maca_knob("VEC_IO", "0") == "packed")
-        or _hcu_vector_io()
+        or _hcu_vector_io(dtype)
     )
 
 
@@ -186,7 +186,7 @@ def _emit_vectorized_complex_load(
             f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
             f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
         ]
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io(dtype):
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
             f"{indent}{pair} = tl.load(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
@@ -227,7 +227,7 @@ def _emit_vectorized_complex_store(
             f"{indent}tl.store(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), {pair}, "
             f"mask={mask})",
         ]
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io(dtype):
         return [
             f"{indent}tl.store(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
             f"tl.join({r_name}, {i_name}), mask={mask}[:, None])",
@@ -1513,7 +1513,7 @@ def _emit_stage_block(
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vector_io_allowed = not _non_nvidia_backend_active() or (
-        _portable_complex_vector_io()
+        _portable_complex_vector_io(dtype)
         and (_maca_knob("VEC_IO", "0") != "packed" or dtype == "complex64")
     )
     vectorized_four_step_complex_io = (
@@ -1536,7 +1536,7 @@ def _emit_stage_block(
             and _packed_maca_fp32_complex_io(dtype))
         or vectorized_four_step_complex_io
     ) and vector_io_allowed and (
-        not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io()
+        not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io(dtype)
     )
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
@@ -3863,7 +3863,7 @@ def _build_leaf_kernel_source_for_io(
         body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
     if permutation_batch:
         body.append(f"    nbatch = tl.full((), {permutation_batch}, tl.int64)")
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io(plan.dtype):
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     from .target import ix_ct_single_default_enabled
     static_single = (

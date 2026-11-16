@@ -1206,6 +1206,13 @@ def _bounded_inner_pack(
         buffers = 2 if len(plan.factors) == 2 else 4
         padded_elements = lane_block_for(plan.smem_size)
     bytes_per_fft = buffers * padded_elements * _real_element_bytes(plan.dtype)
+    if (_hcu_backend_active() and _is_double_dtype(plan.dtype)
+            and os.getenv("FLAGFFT_HCU_VECTOR_IO", "0") == "1"):
+        # The paired FP64 tensor can require a layout-exchange tile in
+        # addition to TLE's explicit FFT buffers. Reserve one complex value
+        # per logical lane instead of filling all LDS with those buffers.
+        active = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
+        bytes_per_fft += 2 * lane_block_for(active) * _real_element_bytes(plan.dtype)
     return _floor_power_of_two(
         max(1, min(pack, profile.max_dynamic_shared_memory // bytes_per_fft))
     )

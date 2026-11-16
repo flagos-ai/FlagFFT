@@ -252,7 +252,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (adaptor::backend_name() == "hcu") {
     const char *vector_io = std::getenv("FLAGFFT_HCU_VECTOR_IO");
-    cache_key += ";hcu-vector-io-v1=" + std::string(vector_io ? vector_io : "0");
+    cache_key += ";hcu-vector-io-v2=" + std::string(vector_io ? vector_io : "0");
     const char *single_buffer = std::getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER");
     cache_key += ";hcu-fourstep-single-buffer-v1=" + std::string(single_buffer ? single_buffer : "0");
     const char *leaf_buffer = std::getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
