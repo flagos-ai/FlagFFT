@@ -16,11 +16,12 @@ from flagfft_codegen.emit import emit_jit_kernel
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("kernel", ["leaf_permuted_store", "leaf_r2c_permuted_store"])
 @pytest.mark.parametrize("n,factors,lanes", [(256, (16, 16), 16),
     (1024, (16, 16, 4), 64), (2048, (16, 16, 8), 128)])
 @pytest.mark.parametrize("rows", [1, 3, 7, 65, 1025, 4100])
 def test_emitted_final_store_never_selects_rows_beyond_the_requested_batch(
-        tmp_path, monkeypatch, dtype, n, factors, lanes, rows):
+        tmp_path, monkeypatch, dtype, kernel, n, factors, lanes, rows):
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
                                      max_dynamic_shared_memory=65536, policy="native"))
     monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
@@ -28,7 +29,7 @@ def test_emitted_final_store_never_selects_rows_beyond_the_requested_batch(
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "0")
     monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "0")
     try:
-        metadata = emit_jit_kernel(kernel="leaf_permuted_store", length=n,
+        metadata = emit_jit_kernel(kernel=kernel, length=n,
             factors=factors, lanes=lanes, num_warps=4, generic_radices=(), smem_size=n,
             direction="forward", dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0,
             perm_form="outer", out_dir=tmp_path)

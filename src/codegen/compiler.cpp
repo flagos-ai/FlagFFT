@@ -7841,10 +7841,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
   const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-  if (request.device_type == "ix" && request.device_arch == "71" &&
+  const bool hcu_row_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
+      request.origin_rank == 2 && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && n0 > 1 && n1 > 1 && n1 % 2 == 0 &&
+      flag_or_default("FLAGFFT_HCU_2D_REAL_ROW_STORE", false);
+  if (((request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
-      ix_row_leaf && ix_col_leaf && flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) {
+      flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) || hcu_row_store) &&
+      ix_row_leaf && ix_col_leaf) {
     // Keep the compact spectrum transposed between two FFT passes. Each
     // outer store stays inside its own matrix, including the odd half width.
     auto key = KernelKey::leaf_r2c_permuted_store(
