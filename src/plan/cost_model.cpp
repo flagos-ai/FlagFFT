@@ -199,7 +199,18 @@ double PlanBuilder::bluestein_cost(int64_t n, int64_t conv_length) {
 
 double PlanBuilder::rader_cost(int64_t n) {
   int64_t conv_length = n - 1;
-  return 3.0 * cost_for(conv_length) + static_cast<double>(n + 3 * conv_length);
+  double cost = 3.0 * cost_for(conv_length) + static_cast<double>(n + 3 * conv_length);
+  if (request_context().hcu_prime_cost_comparison &&
+      std::dynamic_pointer_cast<FourStepPlanNode>(build_auto_node(conv_length, false))) {
+    // Separate Rader boundaries gather and scatter through index tables.
+    // Charge their loss of contiguous transfers using the same 128-byte I/O
+    // budget as HCU's permuted stores. A fused leaf keeps its existing cost.
+    const bool wide = request_context().input_dtype == "complex128" ||
+                      request_context().input_dtype == "float64";
+    const double elements_per_transfer = 128.0 / (wide ? 16.0 : 8.0);
+    cost += 2.0 * static_cast<double>(conv_length) * (elements_per_transfer - 1.0);
+  }
+  return cost;
 }
 
 int PlanBuilder::priority(const PlanNodePtr &node) {
