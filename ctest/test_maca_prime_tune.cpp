@@ -112,6 +112,12 @@ TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
     auto baseline = builder.build(8191, request)->describe();
     ScopedEnv candidate("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "8");
     EXPECT_EQ(builder.build(8191, request)->describe(), baseline);
+    request.n = request.requested_n = request.fft_length = 524287;
+    request.input_shape = {3, 524287};
+    request.input_strides = {524287, 1};
+    auto large_candidate = builder.build(524287, request)->describe();
+    ScopedEnv reset("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+    EXPECT_EQ(builder.build(524287, request)->describe(), large_candidate);
   }
 }
 
