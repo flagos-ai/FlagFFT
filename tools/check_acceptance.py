@@ -25,6 +25,8 @@ def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7, m
         problems.append("manifest does not cover the requested case/operator counts")
     if manifest["config"].get("performance_only") or manifest["config"].get("accuracy_only"):
         problems.append("a combined accuracy + performance run is required")
+    if manifest["env"].get("capture_full_batch") is not True:
+        problems.append("accuracy must execute each requested batch without capture chunking")
     for op in operators:
         op_id = op["id"]
         for phase in ("accuracy", "platform_accuracy", "performance"):
@@ -40,6 +42,16 @@ def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7, m
                     any(result.get(k, 0) for k in ("failed", "errors", "missing", "skipped"))):
                 problems.append(f"{op_id}: {phase} is not complete and passing")
             if phase != "performance":
+                expected_accuracy = {case["case_id"]: case for case in manifest["cases"] if case["op_id"] == op_id}
+                actual_accuracy = result.get("cases", {})
+                if set(actual_accuracy) != set(expected_accuracy):
+                    problems.append(f"{op_id}: {phase} case identity mismatch")
+                for key, case in actual_accuracy.items():
+                    requested = expected_accuracy.get(key, {}).get("batch")
+                    capture = case.get("capture_batch", {})
+                    if (case.get("status") != "Passed" or requested is None or
+                            capture.get("requested") != requested or capture.get("execution") != requested):
+                        problems.append(f"{key}: {phase} did not pass with the requested full batch")
                 continue
             op_speeds = []
             for key, case in result.get("cases", {}).items():
@@ -70,6 +82,7 @@ def evaluate(root, expected_cases=400, expected_ops=30, target=1.0, floor=0.7, m
         problems.append(f"{len(below)} cases are below the per-case floor")
     operator_gm = math.exp(sum(math.log(group["geomean"]) for group in groups.values()) / len(groups)) if groups else None
     return {"passed": not problems, "source_commit": manifest["env"].get("git_commit"),
+            "full_batch_capture": manifest["env"].get("capture_full_batch") is True,
             "expected_matrix_sha256": matrix_hash,
             "expected_cases": expected_cases, "recorded_cases": len(records),
             "case_weighted_geomean": gm, "minimum_speedup": min(valid.values()) if valid else None,

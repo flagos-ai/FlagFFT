@@ -33,7 +33,7 @@ CT/paired-I/O，`FlagFFT-hcu-radix@35e1b82b` 为 radix 组合，
 ## 验收入口
 
 ```bash
-python tools/run_tests.py --combination full --gpus <idle-gpus> \
+FLAGFFT_NUMPY_CAPTURE_FULL_BATCH=1 python tools/run_tests.py --combination full --gpus <idle-gpus> \
   --build-dir <matching-build> --output-dir <external-result-directory> \
   --warmup 10 --iters 100 --timeout 600 --color never
 python tools/check_acceptance.py <external-result-directory>
@@ -42,6 +42,10 @@ python tools/check_acceptance.py <external-result-directory>
 Gate 同时检查矩阵 SHA-256、30 算子/400 case 覆盖、NumPy/platform 准确性、完整性、有效且通过
 验证的参考时延、时延与 speedup 比值一致，以及 GM/最低值门槛。性能单独运行、
 缺项、跳过、无效参考或部分矩阵均不能通过。输出另带算子等权 GM 供对照。
+此外要求完整 batch 模式及每个准确性 case 的实际 `capture_batch` 与请求 batch
+一致。默认 capture 会遍历全部输入，但为节省设备资源将它们分块并按较小 batch
+创建计划；这不等同于验证 batch64 的计划路径。此前未设置该开关的筛选结果只作
+分块数值证据，正式验收不复用这些 accuracy 结果。
 
 矩阵外验证使用 `--matrix-file`。已有 discovery/holdout 配置已移植；另外冻结
 `conf/test_matrix_hcu_large_holdout.yaml`，SHA-256 为
@@ -109,6 +113,10 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
 - 短 wave 与连续/Four-Step wave FFT：设备筛选进行中。
   `--max-cases` 是对整个展开列表截断，**不是每算子截断**；带该参数的
   tiny/dense smoke 只能按 manifest 的实际 case 数报告。完整验证不使用它。
+- 显式 wave64 布局：当前 FlagTree 0.7 HCU 后端拒绝 `gpu.set_layout`。
+  四个实数 case 均在编译阶段失败，失败日志完整保留；`185d3590` 已撤回实现。
+  后续 FP64 自动布局实验仍使用冻结的 `433ccf4e` 快照，显式布局开关保持 0；
+  它生成的自动布局数学代码与撤回后的版本一致。
 
 ## 实现与候选边界
 
@@ -135,8 +143,8 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   行列复用 wave 内 Cooley-Tukey。`FLAGFFT_HCU_DENSE_WAVE_FP64=1` 额外允许
   FP64，使用附加在末级表后的双精度自然顺序旋转因子；保留原表前缀以供回退，
   不使用 FP32 三角函数。输出重排按半个查询 LDS 容量分块。
-  `FLAGFFT_HCU_WAVE_LAYOUT=1` 显式规定 64 个物理 lane 属于同一 FFT，
-  减少编译器自动布局导致跨 wave 交换的可能；设备验证前均保持 opt-in。
+  FP32 packed 边界另按重建需要的双倍活跃 payload 限制在 64 个标量/物理 lane。
+  设备验证前均保持 opt-in。
 - 半长度实数策略首先按 FFT 工作量、原/子计划结构、布局及资源界限建立适用域，
   再经过同卡重复性能、三幅度准确性和 holdout 决定默认行为；不增加逐 case winner 表。
 

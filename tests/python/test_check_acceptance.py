@@ -16,8 +16,8 @@ spec.loader.exec_module(gate)
 
 @pytest.fixture
 def run(tmp_path):
-    cases = [{"case_id": str(i), "op_id": "a" if i == 0 else "b"} for i in range(4)]
-    manifest = {"env": {"git_commit": "frozen-source"}, "config": {},
+    cases = [{"case_id": str(i), "op_id": "a" if i == 0 else "b", "batch": 3} for i in range(4)]
+    manifest = {"env": {"git_commit": "frozen-source", "capture_full_batch": True}, "config": {},
                 "operators": [{"id": "a"}, {"id": "b"}],
                 "cases": cases, "performance_cases": cases}
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
@@ -27,6 +27,8 @@ def run(tmp_path):
         directory = tmp_path / op_id
         directory.mkdir()
         result = {"status": "Passed", "total": len(selected), "passed": len(selected)}
+        result["cases"] = {case["case_id"]: {**case, "status": "Passed",
+                           "capture_batch": {"requested": 3, "execution": 3}} for case in selected}
         for phase in ("accuracy", "platform_accuracy"):
             (directory / (phase + "_result.json")).write_text(json.dumps(result))
         speedup = 0.8 if op_id == "a" else 1.2
@@ -76,3 +78,20 @@ def test_matrix_identity_cannot_be_replaced_by_equal_case_counts(run):
     assert not gate.evaluate(run, 4, 2, matrix_hash="frozen")["passed"]
     edit(run / "manifest.json", lambda data: data["config"].update(matrix_sha256="frozen"))
     assert gate.evaluate(run, 4, 2, matrix_hash="frozen")["passed"]
+
+
+@pytest.mark.parametrize("phase", ["accuracy", "platform_accuracy"])
+@pytest.mark.parametrize("change", [
+    lambda data: data["cases"]["0"].pop("capture_batch"),
+    lambda data: data["cases"]["0"]["capture_batch"].update(execution=1),
+    lambda data: data["cases"]["0"].update(status="Failed"),
+    lambda data: data["cases"].update(other=data["cases"].pop("0")),
+])
+def test_gate_rejects_reduced_batches_and_wrong_accuracy_cases(run, phase, change):
+    edit(run / f"a/{phase}_result.json", change)
+    assert not gate.evaluate(run, 4, 2)["passed"]
+
+
+def test_gate_requires_full_batch_manifest(run):
+    edit(run / "manifest.json", lambda data: data["env"].update(capture_full_batch=False))
+    assert not gate.evaluate(run, 4, 2)["passed"]
