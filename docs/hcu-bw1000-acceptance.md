@@ -147,6 +147,10 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   素数卷积及其他后端保留原路线。
   混合长度扩展在原 acceptance 340200 FP64 使用 `[28,18]` / `[27,25]`
   大寄存器蝶形的证据下加入，不依赖 holdout 结果；尚待设备资格验证。
+  `FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT=1` 另外隔离全局行列分解与局部蝶形：
+  使用独立的未限 radix 的 cost/node cache 选择原分解，再对两个叶子限制 radix。
+  只覆盖原有支持的公开 1D 域；非两个叶子的计划回退原策略，默认 0。
+  它用于检查混合长度的回退是否来自分解变化，不引入逐长度路由表。
 - `FLAGFFT_HCU_3D_CT=1`：二次幂 FP32 3D 的两遍 Cooley-Tukey 原型。两遍 tile
   均由 8192 complex 元素预算推导，batch 使用独立地址，不是逐 shape 路由表。
   默认关闭，FP64/不支持几何保留原实现。

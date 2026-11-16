@@ -35,6 +35,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          ix_ct_batch == other.ix_ct_batch &&
          ix_fourstep_preset == other.ix_fourstep_preset &&
          hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
+         hcu_preserve_fourstep_split == other.hcu_preserve_fourstep_split &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
 
@@ -54,6 +55,12 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
       throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8 or 16");
     }
     context.hcu_fourstep_radix_cap = value == "auto" ? 0 : std::stoi(value);
+    const char *preserve = std::getenv("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT");
+    const std::string preserve_value = preserve ? preserve : "0";
+    if (preserve_value != "0" && preserve_value != "1") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0 or 1");
+    }
+    context.hcu_preserve_fourstep_split = preserve_value == "1";
   }
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
@@ -472,6 +479,28 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     const int64_t n2 = n / n1;
     return std::make_shared<FourStepPlanNode>(n, n1, n2,
                                               build_auto_node(n1, false), build_auto_node(n2, false));
+  }
+  const auto &context = request_context();
+  if (context.hcu_preserve_fourstep_split && context.hcu_fourstep_radix_cap &&
+      context.origin_rank == 1 && n == context.requested_n && n >= 65536 &&
+      factorize_supported_radices(n).remainder == 1) {
+    // Choose the memory decomposition with the original cost model, then
+    // bound register butterflies independently. A separate builder keeps
+    // capped and uncapped node/cost caches isolated without mutating env.
+    PlanBuilder split_builder;
+    split_builder.request_context_ = context;
+    split_builder.request_context_->hcu_fourstep_radix_cap = 0;
+    auto original = split_builder.build_auto_node(n, true);
+    auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(original);
+    if (pair && std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan) &&
+        std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan)) {
+      const auto row_factors = select_leaf_factors(pair->n1);
+      const auto col_factors = select_leaf_factors(pair->n2);
+      if (should_use_leaf(pair->n1, row_factors) && should_use_leaf(pair->n2, col_factors)) {
+        return std::make_shared<FourStepPlanNode>(n, pair->n1, pair->n2,
+            make_leaf_plan(pair->n1, row_factors), make_leaf_plan(pair->n2, col_factors));
+      }
+    }
   }
   return build_auto_node(n, true);
 }

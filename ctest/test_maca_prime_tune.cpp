@@ -132,6 +132,52 @@ TEST(HcuFourStep, MixedRegisterStagesPreserveProductsAndIrreduciblePrimes) {
   }
 }
 
+TEST(HcuFourStep, BoundedLeavesCanRetainTheUncappedMemoryDecomposition) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_layout = "contiguous";
+  flagfft::PlanBuilder builder;
+  for (const char *dtype : {"complex64", "complex128"}) {
+    request.input_dtype = request.output_dtype = dtype;
+    for (int64_t batch : {1, 7, 64}) {
+      request.batch = batch;
+      for (int64_t n : {65536, 90000, 129600, 340200, 524288, 663000}) {
+        request.n = request.requested_n = request.fft_length = n;
+        request.input_shape = {batch, n};
+        request.input_strides = {n, 1};
+        ScopedEnv preserve("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", "1");
+        ScopedEnv original("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+        auto reference = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(n, request));
+        ASSERT_NE(reference, nullptr);
+        const auto original_description = reference->describe();
+        {
+          ScopedEnv bounded("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "16");
+          auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(n, request));
+          ASSERT_NE(pair, nullptr);
+          EXPECT_EQ(pair->n1, reference->n1);
+          EXPECT_EQ(pair->n2, reference->n2);
+          for (const auto &child : {pair->row_plan, pair->col_plan}) {
+            auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+            ASSERT_NE(leaf, nullptr);
+            int64_t product = 1;
+            for (int64_t radix : leaf->factors) {
+              product *= radix;
+              if (radix > 16) {
+                for (int64_t divisor = 2; divisor <= radix / divisor; ++divisor)
+                  EXPECT_NE(radix % divisor, 0);
+              }
+            }
+            EXPECT_EQ(product, leaf->length);
+          }
+        }
+        EXPECT_EQ(builder.build(n, request)->describe(), original_description);
+      }
+    }
+  }
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;
