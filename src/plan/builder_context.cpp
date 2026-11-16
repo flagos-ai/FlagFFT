@@ -35,6 +35,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          ix_ct_batch == other.ix_ct_batch &&
          ix_fourstep_preset == other.ix_fourstep_preset &&
          hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
+         hcu_fp64_convolution_radix_cap == other.hcu_fp64_convolution_radix_cap &&
          hcu_preserve_fourstep_split == other.hcu_preserve_fourstep_split &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
@@ -61,6 +62,13 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
       throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0 or 1");
     }
     context.hcu_preserve_fourstep_split = preserve_value == "1";
+    const char *convolution = std::getenv("FLAGFFT_HCU_FP64_CONV_RADIX_CAP");
+    const std::string convolution_value = convolution ? convolution : "auto";
+    if (convolution_value != "auto" && convolution_value != "8" && convolution_value != "16") {
+      throw std::runtime_error("FLAGFFT_HCU_FP64_CONV_RADIX_CAP must be auto, 8 or 16");
+    }
+    context.hcu_fp64_convolution_radix_cap =
+        convolution_value == "auto" ? 0 : std::stoi(convolution_value);
   }
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");

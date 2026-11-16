@@ -151,6 +151,27 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   return best;
 }
 
+PlanNodePtr PlanBuilder::build_convolution_fft(int64_t length) {
+  const auto &context = request_context();
+  const bool wide = context.input_dtype == "complex128" || context.input_dtype == "float64";
+  if (context.hcu_fp64_convolution_radix_cap && wide && length >= 65536 &&
+      factorize_supported_radices(length).remainder == 1) {
+    // The convolution extent and prime algorithm are already selected.
+    // Bound its FFT's local butterflies in an isolated planning context;
+    // do not change the public prime request or process-wide settings.
+    PlanBuilder convolution_builder;
+    convolution_builder.request_context_ = context;
+    auto &child = *convolution_builder.request_context_;
+    child.origin_rank = 1;
+    child.requested_n = length;
+    child.hcu_fourstep_radix_cap = context.hcu_fp64_convolution_radix_cap;
+    child.hcu_fp64_convolution_radix_cap = 0;
+    child.hcu_preserve_fourstep_split = false;
+    return convolution_builder.build_auto_node(length, false);
+  }
+  return build_auto_node(length, false);
+}
+
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
   const auto &context = request_context();
@@ -178,7 +199,7 @@ PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
                              ? std::make_shared<FourStepPlanNode>(
                                    conv_length, 1024, 1024,
                                    build_auto_node(1024, false), build_auto_node(1024, false))
-                             : build_auto_node(conv_length, false);
+                             : build_convolution_fft(conv_length);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 
@@ -203,7 +224,7 @@ PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
                               ? std::make_shared<FourStepPlanNode>(
                                     n - 1, n1, n2,
                                     build_auto_node(n1, false), build_auto_node(n2, false))
-                              : build_auto_node(n - 1, false);
+                              : build_convolution_fft(n - 1);
   return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 

@@ -218,6 +218,58 @@ TEST(HcuFourStep, BoundedLeavesCanRetainTheUncappedMemoryDecomposition) {
   }
 }
 
+TEST(HcuConvolution, BoundsFp64ChildButterfliesWithoutChangingPrimeExtentOrCachePolicy) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 64;
+  ScopedEnv public_cap("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {131071, 524287}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {64, n};
+    request.input_strides = {n, 1};
+    ScopedEnv original("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
+    auto baseline = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(n, request));
+    ASSERT_NE(baseline, nullptr);
+    const auto original_description = baseline->describe();
+    {
+      ScopedEnv bounded("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "16");
+      auto candidate = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(n, request));
+      ASSERT_NE(candidate, nullptr);
+      EXPECT_EQ(candidate->length, baseline->length);
+      EXPECT_EQ(candidate->conv_length, baseline->conv_length);
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(candidate->fft_plan);
+      ASSERT_NE(pair, nullptr);
+      EXPECT_EQ(pair->n1 * pair->n2, candidate->conv_length);
+      for (const auto &child : {pair->row_plan, pair->col_plan}) {
+        auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+        ASSERT_NE(leaf, nullptr);
+        int64_t product = 1;
+        for (int64_t radix : leaf->factors) {
+          EXPECT_LE(radix, 16);
+          product *= radix;
+        }
+        EXPECT_EQ(product, leaf->length);
+      }
+      EXPECT_NE(candidate->describe(), original_description);
+    }
+    EXPECT_EQ(builder.build(n, request)->describe(), original_description);
+  }
+  for (const char *backend : {"hcu", "cuda"}) {
+    request.device_type = backend;
+    request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+    request.input_dtype = request.output_dtype = "complex64";
+    ScopedEnv original("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
+    const auto baseline = builder.build(request.n, request)->describe();
+    ScopedEnv bounded("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "16");
+    EXPECT_EQ(builder.build(request.n, request)->describe(), baseline);
+  }
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;
