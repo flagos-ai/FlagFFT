@@ -259,6 +259,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-fourstep-packing-v1=" + std::string(packing ? packing : "resource");
     const char *leaf_buffer = std::getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
     cache_key += ";hcu-leaf-single-buffer-v1=" + std::string(leaf_buffer ? leaf_buffer : "0");
+    const char *leaf_packing = std::getenv("FLAGFFT_HCU_LEAF_PACKING");
+    cache_key += ";hcu-leaf-packing-v1=" + std::string(leaf_packing ? leaf_packing : "resource");
     const char *cyclic_skew = std::getenv("FLAGFFT_HCU_CYCLIC_SKEW");
     cache_key += ";hcu-cyclic-skew-v1=" + std::string(cyclic_skew ? cyclic_skew : "unit");
     const char *small_wave = std::getenv("FLAGFFT_HCU_SMALL_WAVE");
