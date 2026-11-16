@@ -747,6 +747,11 @@ def hcu_packed_cta_batch_pack_for(plan: LeafPlan, io_mode: str) -> int:
         if max(widths) * candidate > 512 or shared > capacity:
             break
         pack = candidate
+    maximum = os.getenv("FLAGFFT_HCU_PACKED_CTA_MAX_PACK", "auto")
+    if maximum != "auto":
+        if maximum not in {"1", "2", "4", "8", "16", "32"}:
+            raise ValueError("FLAGFFT_HCU_PACKED_CTA_MAX_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        pack = min(pack, int(maximum))
     return pack
 
 

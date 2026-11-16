@@ -106,6 +106,22 @@ TEST(HcuPackedCTA, BoundsReconstructionButterfliesWithoutLengthTables) {
   EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, leaf), leaf.factors);
 }
 
+TEST(HcuPackedCTA, KeepsWaveAndDeviceGridParallelism) {
+  for (int64_t units : {32, 80, 120}) for (int64_t lanes : {4, 16, 64, 128}) {
+    for (int64_t rows : {1, 64, 127, 4096, 65536}) {
+      const int64_t pack = flagfft::hcu_packed_grid_pack_limit(rows, units, lanes);
+      EXPECT_GT(pack, 0);
+      EXPECT_LE(pack, 16);
+      EXPECT_EQ(pack & (pack - 1), 0);
+      EXPECT_GE(pack * lanes, std::min<int64_t>(64, lanes * 16));
+      if (rows >= 2 * units * std::max<int64_t>(1, 64/lanes))
+        EXPECT_GE((rows + pack - 1) / pack, 2 * units);
+    }
+  }
+  EXPECT_EQ(flagfft::hcu_packed_grid_pack_limit(64, 80, 64), 1);
+  EXPECT_EQ(flagfft::hcu_packed_grid_pack_limit(64, 0, 64), 0);
+}
+
 TEST(HcuWave3D, SelectsOnlySupportedDenseSinglePrecisionC2CGeometry) {
   flagfft::FFTRequest request;
   request.device_type = "hcu";

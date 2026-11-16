@@ -752,6 +752,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << "FLAGFFT_CUDA_PERMUTE_BATCH=" << key.cuda_permute_batch << " ";
   }
   if (key.target.rfind("hcu:", 0) == 0) {
+    jit_command << "FLAGFFT_HCU_PACKED_CTA_MAX_PACK="
+                << (key.hcu_packed_max_pack > 0 ? std::to_string(key.hcu_packed_max_pack) : "auto")
+                << " ";
     jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
                 << (key.hcu_3d_middle_batch_pack > 0
                         ? std::to_string(key.hcu_3d_middle_batch_pack)

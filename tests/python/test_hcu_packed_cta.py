@@ -18,15 +18,40 @@ from test_hcu_convolution_buffer import Pointer, TL, Trace, tensor
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
-@pytest.mark.parametrize("n,factors,lanes", [(32, (8, 4), 4),
-    (64, (8, 8), 8), (128, (16, 8), 16), (128, (8, 4, 4), 16),
-    (256, (16, 16), 16), (512, (8, 8, 8), 64), (1024, (16, 8, 8), 128)])
-@pytest.mark.parametrize("span", [0, 3, 65])
-def test_generated_packed_cta_matches_numpy_across_matrix_and_cta_tails(
-        tmp_path, monkeypatch, dtype, n, factors, lanes, span):
+@pytest.mark.parametrize("n,factors,lanes,wave", [(128, (16, 8), 16, False),
+    (1024, (16, 8, 8), 128, True)])
+def test_resource_selected_transpose_preserves_the_common_leaf_abi(
+        tmp_path, monkeypatch, dtype, n, factors, lanes, wave):
     token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
                                      max_dynamic_shared_memory=65536, policy="native"))
     monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_CTA", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "resource")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_STORE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "1")
+    try:
+        meta = emit_jit_kernel(kernel="leaf_packed_r2c", length=n, factors=factors,
+            lanes=lanes, num_warps=4, generic_radices=(), smem_size=n, direction="forward",
+            dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0,
+            perm_form="outer_packed", out_dir=tmp_path)
+    finally:
+        reset_profile(token)
+    assert meta["kernel_name"].startswith("hcu_warp") == wave
+    assert meta["arg_names"][:3] == ["in_ptr", "out_ptr", "packed_twiddle_ptr"]
+    assert meta["arg_names"][-3:] == ["input_distance", "output_distance", "nbatch"]
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("n,factors,lanes", [(32, (8, 4), 4),
+    (64, (8, 8), 8), (128, (16, 8), 16), (128, (8, 4, 4), 16),
+    (256, (16, 16), 16), (512, (8, 8, 8), 64), (1024, (16, 8, 8), 128)])
+@pytest.mark.parametrize("span,maximum", [(0, "auto"), (0, "1"), (3, "auto"), (65, "auto")])
+def test_generated_packed_cta_matches_numpy_across_matrix_and_cta_tails(
+        tmp_path, monkeypatch, dtype, n, factors, lanes, span, maximum):
+    token = set_profile(BackendProfile(backend="hcu", device_arch="gfx936", warp_size=64,
+                                     max_dynamic_shared_memory=65536, policy="native"))
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_CTA", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_CTA_MAX_PACK", maximum)
     monkeypatch.setenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "1")
     monkeypatch.setenv("FLAGFFT_HCU_LEAF_PACKING", "wave")
     monkeypatch.setenv("FLAGFFT_HCU_VECTOR_IO", "0")

@@ -26,6 +26,18 @@
 
 namespace flagfft {
 
+int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t active_lanes) {
+  if (batch <= 0 || compute_units <= 0 || active_lanes <= 0) return 0;
+  // Leave two blocks per CU before grouping rows, while filling the physical
+  // wave for short FFTs. A transposed boundary separately retains its wider
+  // output-transaction grouping.
+  const int64_t requested = std::max<int64_t>(64 / active_lanes,
+      std::max<int64_t>(1, batch / compute_units / 2));
+  int64_t pack = 1;
+  while (pack <= requested / 2) pack *= 2;
+  return std::min<int64_t>(pack, 16);
+}
+
 std::vector<int64_t> hcu_packed_cta_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
   const char *setting = std::getenv("FLAGFFT_HCU_PACKED_REAL_CTA");
   if (request.device_type != "hcu" || request.device_arch != "gfx936" ||

@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 // The in-process kernel cache is keyed by KernelKey::repr().  A key entering
 // the cache must describe every dimension that reaches the generator;
@@ -29,6 +30,22 @@ TEST(KernelKeyRepr, TiledTransposeDistinguishesDimensions) {
   const auto forward = flagfft::KernelKey::tiled_transpose("corex:71:64", "complex64", 46189, 48);
   const auto inverse = flagfft::KernelKey::tiled_transpose("corex:71:64", "complex64", 48, 46189);
   EXPECT_NE(forward.repr(), inverse.repr());
+}
+
+TEST(KernelKeyRepr, HcuPackedRowGroupingSeparatesCompiledEntries) {
+  auto single = flagfft::KernelKey::leaf("hcu:gfx936:64", "inverse", "complex128",
+      512, {8, 8, 8}, 64, 2, {}, 512);
+  single.kind = flagfft::KernelKind::LeafPackedC2R;
+  single.hcu_packed_max_pack = 1;
+  auto grouped = single;
+  grouped.hcu_packed_max_pack = 4;
+  std::unordered_map<flagfft::KernelKey, int, flagfft::KernelKeyHash> cache;
+  cache[single] = 11;
+  cache[grouped] = 29;
+  EXPECT_EQ(cache.size(), 2);
+  EXPECT_EQ(cache[single], 11);
+  EXPECT_EQ(cache[grouped], 29);
+  EXPECT_NE(single.repr(), grouped.repr());
 }
 
 TEST(KernelKeyRepr, SameKindDifferentFieldsDiffer) {

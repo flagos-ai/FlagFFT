@@ -791,6 +791,7 @@ bool KernelKey::operator==(const KernelKey &other) const {
          npu_batch_pack == other.npu_batch_pack &&
          hcu_full_smem == other.hcu_full_smem &&
          hcu_3d_middle_batch_pack == other.hcu_3d_middle_batch_pack &&
+         hcu_packed_max_pack == other.hcu_packed_max_pack &&
          cuda_permute_span == other.cuda_permute_span && cuda_permute_batch == other.cuda_permute_batch;
 }
 
@@ -816,6 +817,7 @@ std::string KernelKey::repr() const {
       << ";npu_batch_pack=" << npu_batch_pack
       << ";hcu_full_smem=" << hcu_full_smem
       << ";hcu_3d_middle_batch_pack=" << hcu_3d_middle_batch_pack
+      << ";hcu_packed_max_pack=" << hcu_packed_max_pack
       << ";cuda_permute_span=" << cuda_permute_span << ";cuda_permute_batch=" << cuda_permute_batch;
   if (permutation_span > 0) out << ";permutation_span=" << permutation_span;
   if (permutation_batch > 0) out << ";permutation_batch=" << permutation_batch;
@@ -858,6 +860,7 @@ std::size_t KernelKeyHash::operator()(const KernelKey &key) const {
   hash_value(seed, key.npu_batch_pack);
   hash_value(seed, key.hcu_full_smem);
   hash_value(seed, key.hcu_3d_middle_batch_pack);
+  hash_value(seed, key.hcu_packed_max_pack);
   hash_value(seed, key.cuda_permute_span);
   hash_value(seed, key.cuda_permute_batch);
   return seed;

@@ -42,8 +42,8 @@ def _wide_root_period(plan):
 
 def hcu_dense_wave_lanes(plan, io_mode):
     packed_layout = os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave")
-    if packed_layout not in {"wave", "compact"}:
-        raise ValueError("FLAGFFT_HCU_PACKED_WAVE_LAYOUT must be wave or compact")
+    if packed_layout not in {"wave", "compact", "resource"}:
+        raise ValueError("FLAGFFT_HCU_PACKED_WAVE_LAYOUT must be wave, compact or resource")
     if packed_layout == "compact" and io_mode in {"packed_r2c", "packed_c2r"}:
         # Bound the register butterfly by scalar width, then let independent
         # short FFTs share one queried physical wave instead of dedicating

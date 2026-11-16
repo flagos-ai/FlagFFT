@@ -3516,7 +3516,10 @@ def _build_leaf_kernel_source_for_io(
     native_packed_cta = (_hcu_backend_active()
                          and os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1")
     packed_transpose = io_mode == "packed_r2c" and perm_form == "outer_packed"
-    if packed_transpose and not native_packed_cta:
+    wave_transpose = (native_packed_cta and packed_transpose
+        and os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "resource"
+        and hcu_packed_cta_batch_pack_for(plan, io_mode) < (8 if plan.dtype == "complex128" else 16))
+    if packed_transpose and (not native_packed_cta or wave_transpose):
         pack = hcu_packed_transposed_pack(plan)
         if not pack:
             raise ValueError("transposed packed real boundary requires a supported HCU wave leaf")

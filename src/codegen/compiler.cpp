@@ -2632,18 +2632,35 @@ namespace {
     const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
     if (packed && std::string(packed) == "0") return false;
     const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
-    const bool native_nd = request.origin_rank > 1 &&
+    const bool native_cta = n / 2 <= 1024 &&
         flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false);
+    const bool native_public = native_cta && request.origin_rank <= 1 &&
+        flag_or_default("FLAGFFT_HCU_PACKED_CTA_PUBLIC", false);
+    const bool native_nd = native_cta && (request.origin_rank > 1 || native_public);
     const int64_t minimum = native_nd || (layout && std::string(layout) == "compact") ? 64 : 256;
     if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
         request.requires_contiguous_copy || request.input_layout != "contiguous" ||
         request.input_strides.empty() || request.input_strides.back() != 1 ||
-        request.packed_real_child || n < minimum || (n & (n - 1)) != 0 || batch < 64 ||
+        request.packed_real_child || n < minimum || (n & (n - 1)) != 0 || batch < (native_public ? 1 : 64) ||
         !(native_nd || flag_or_default("FLAGFFT_HCU_FUSED_PACKED_REAL", false))) return false;
     // Six half-length real/imaginary buffers conservatively cover the FFT
     // and packed reconstruction, including FP64, within the queried LDS cap.
     const int64_t scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
     return n / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
+  }
+
+  void mark_hcu_packed_grid(KernelKey &key, const FFTRequest &request,
+                            int64_t batch, const LeafPlanNode &leaf) {
+    if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+        !flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
+        key.perm_form == "outer_packed") return;
+    const auto facts = nlohmann::json::parse(adaptor::device_capabilities_json());
+    const auto units = facts.find("multiprocessor_count");
+    if (units == facts.end() || !units->is_number_integer()) return;
+    int64_t lanes = leaf.lanes;
+    if (leaf.length >= 128)
+      for (int64_t radix : leaf.factors) lanes = std::max(lanes, leaf.length / radix);
+    key.hcu_packed_max_pack = hcu_packed_grid_pack_limit(batch, units->get<int64_t>(), lanes);
   }
 
   bool hcu_2d_compact_real_rows_enabled(const FFTRequest &request, int64_t n0, int64_t n1) {
@@ -4782,6 +4799,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
             packed_child->request.direction, packed_child->request.input_dtype,
             leaf->length,leaf->factors,leaf->lanes,leaf->num_warps,leaf->generic_radices,leaf->smem_size);
         key.kind = KernelKind::LeafPackedR2C;
+        mark_hcu_packed_grid(key, packed_child->request, batch, *leaf);
         return std::make_shared<CompiledRawR2CLeafNode>(n,compile_kernel(key),
             build_raw_leaf_tables(*leaf,packed_child->request),build_raw_packed_real_twiddle(request,n));
       }
@@ -4979,6 +4997,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             leaf->generic_radices,
             leaf->smem_size);
         key.kind = KernelKind::LeafPackedC2R;
+        mark_hcu_packed_grid(key, packed_child->request, batch, *leaf);
         mark_ix_warp_fft(key,request);
         return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
             n,
