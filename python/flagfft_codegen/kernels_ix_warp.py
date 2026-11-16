@@ -64,7 +64,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("unsupported IX warp FFT I/O mode")
     four_step=mode in row_modes|col_modes
     if wide and (mode not in {"contiguous", "contiguous_r2c", "c2r", "packed_r2c", "packed_c2r", "outer", "inner", "r2c"}|row_modes|col_modes
-                 or recurrence or fast_math or manual_store or packed_gather or local_codelet):
+                 or recurrence or fast_math or manual_store or packed_gather):
         raise ValueError("wide wave FFT requires supplied FP64 roots and ordinary math")
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")

@@ -64,6 +64,20 @@ def test_dense_wave_retains_fallbacks(dtype, mode, n):
     assert hcu_dense_wave_pack(plan, mode) == 0
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_fourstep_codelets_only_replace_supported_local_butterflies(monkeypatch, dtype):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "fourstep_codelets")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_CODELET", "1")
+    for n in (64, 128, 256, 512, 1024, 2048):
+        plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype=dtype)
+        assert hcu_dense_wave_pack(plan, "contiguous") == 0
+        selected = hcu_dense_wave_pack(plan, "four_step_col")
+        assert bool(selected) == (n >= 1024 and (dtype == "complex64" or n <= 1024))
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_CODELET", "0")
+    assert hcu_dense_wave_pack(plan, "four_step_col") == 0
+
+
 @pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
 @pytest.mark.parametrize("kind,direction", [
     ("leaf", "forward"), ("leaf", "inverse"),

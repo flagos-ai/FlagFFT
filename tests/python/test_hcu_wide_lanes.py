@@ -3,6 +3,7 @@
 
 """Execute the emitted wide FFT arithmetic against an independent NumPy FFT."""
 
+import ast
 import sys
 from pathlib import Path
 
@@ -86,7 +87,8 @@ class NumpyTL:
                                           ("contiguous_r2c", False), ("c2r", True),
                                           ("packed_r2c", False), ("packed_c2r", True)])
 @pytest.mark.parametrize("period", [0, 4, 8])
-def test_two_wave_generated_fft_matches_numpy_with_masked_tail(mode, inverse, period):
+@pytest.mark.parametrize("codelet", [False, True])
+def test_two_wave_generated_fft_matches_numpy_with_masked_tail(mode, inverse, period, codelet):
     packed = mode.startswith("packed_")
     n, batch, pack = (1024 if packed else 2048), 3, 4
     rng = np.random.default_rng(716)
@@ -107,15 +109,18 @@ def test_two_wave_generated_fft_matches_numpy_with_masked_tail(mode, inverse, pe
     output = np.full(expected.shape, np.nan, dtype=expected.dtype)
     name, source = build_ix_warp_source(n, pack, mode, inverse, wide=True,
                                       lane_width=64 if packed or period else 128,
-                                      output_radix_chunk=4, root_period=period)
-    source = "\n".join(line for line in source.splitlines()
-                       if not line.startswith(("import ", "@triton.jit")))
+                                      output_radix_chunk=4, root_period=period,
+                                      local_codelet=codelet)
+    functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
+    for function in functions:
+        function.decorator_list = []
+    cpu_module = ast.Module(body=functions, type_ignores=[])
     roots = np.exp((1j if inverse else -1j) * 2 * np.pi * np.arange(n) / n)
     namespace = {"tl": NumpyTL, "wave_tw_r_ptr": Pointer(roots.real.copy()),
                  "wave_tw_i_ptr": Pointer(roots.imag.copy())}
     packed_roots = np.exp(-1j * np.pi * np.arange(n) / n)
     namespace["packed_twiddle_ptr"] = Pointer(packed_roots.view(np.float64))
-    exec(compile(source, "<emitted-wide-fft>", "exec"), namespace)
+    exec(compile(cpu_module, "<emitted-wide-fft>", "exec"), namespace)
     namespace[name](Pointer(data.view(np.float64)), Pointer(output.view(np.float64)),
                     1, batch, input_distance, output_distance)
     np.testing.assert_allclose(output, expected, rtol=5e-13, atol=5e-11)

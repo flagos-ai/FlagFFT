@@ -181,7 +181,8 @@ namespace {
       return value && std::string(value) == "1";
     };
     const char *dense_mode = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
-    const bool dense = dense_mode && (std::string(dense_mode) == "1" || std::string(dense_mode) == "leaves");
+    const bool dense = dense_mode && (std::string(dense_mode) == "1" || std::string(dense_mode) == "leaves" ||
+                                      std::string(dense_mode) == "fourstep_codelets");
     const bool requested = std::is_same_v<Real, double>
         ? (dense && enabled("FLAGFFT_HCU_DENSE_WAVE_FP64")) ||
           (enabled("FLAGFFT_HCU_3D_WARP_FFT") && enabled("FLAGFFT_HCU_3D_WARP_FP64"))

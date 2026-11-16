@@ -19,6 +19,13 @@ def _root_table_enabled():
     return setting == "1"
 
 
+def _native_wave_codelet():
+    setting = os.getenv("FLAGFFT_HCU_WAVE_CODELET", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_WAVE_CODELET must be 0 or 1")
+    return setting == "1"
+
+
 def _scalar_wave_budget(plan):
     setting = os.getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET", "64")
     if setting not in {"64", "128"}:
@@ -50,14 +57,18 @@ def hcu_dense_wave_pack(plan, io_mode):
     if profile.backend != "hcu" or profile.warp_size != 64:
         return 0
     setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE", "0")
-    if setting not in {"0", "1", "leaves"}:
-        raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0, 1 or leaves")
+    if setting not in {"0", "1", "leaves", "fourstep_codelets"}:
+        raise ValueError("FLAGFFT_HCU_DENSE_WAVE must be 0, 1, leaves or fourstep_codelets")
     wide_setting = os.getenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "0")
     if wide_setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
     lanes = hcu_dense_wave_lanes(plan, io_mode)
+    if setting == "fourstep_codelets" and (
+            io_mode not in _FOURSTEP_ROWS | _FOURSTEP_COLS or
+            not _native_wave_codelet() or plan.length // lanes not in {16, 32}):
+        return 0
     byte_budget = 256 if (_wide_root_period(plan) and lanes == 64 and
         io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r"}) else 128
     if wide and not packed and plan.length * 8 > lanes * byte_budget:
@@ -111,6 +122,7 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
         table_roots=root_table and not wide,
         lane_width=lanes,
         root_period=_wide_root_period(plan),
+        local_codelet=_native_wave_codelet(),
     )
     leaf_name = "hcu_" + name + "_dense"
     aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
@@ -208,6 +220,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
         root_period=_wide_root_period(plan),
         strided_input=strided,
         strided_output_major=strided and strided_tile == "output",
+        local_codelet=_native_wave_codelet(),
     )
     batched = perm_form.endswith("_batched")
     leaf_name = "hcu_" + name + ("_batched" if batched else "") + "_leaf"
