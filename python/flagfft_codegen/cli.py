@@ -407,6 +407,10 @@ def main() -> None:
                 f"-row-pack-{fourstep_row_pack}-col-pack-{fourstep_col_pack}"
             )
     if profile.backend == "hcu":
+        vector_io = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
+        if vector_io not in {"0", "1"}:
+            parser.error("FLAGFFT_HCU_VECTOR_IO must be 0 or 1")
+        profile_dir += f"-hcu-vector-io-{vector_io}"
         hcu_store_mode = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto")
         if hcu_store_mode not in {"auto", "grouped", "smem", "wide", "cyclic"}:
             parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped, smem, wide or cyclic")
@@ -508,6 +512,12 @@ def main() -> None:
             profile_dir += f"-sg{transpose_slice_group}"
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
+        # Experimental policies must neither overwrite each other's artifacts
+        # nor exceed the filesystem's 255-byte component limit. Include all
+        # HCU overrides, including modes resolved inside the emitters.
+        overrides = {k: v for k, v in os.environ.items() if k.startswith("FLAGFFT_HCU_")}
+        identity = json.dumps([profile_dir, overrides], sort_keys=True).encode()
+        profile_dir = profile.fingerprint + "-hcu-" + hashlib.sha256(identity).hexdigest()[:20]
     args.out_dir = args.out_dir / profile_dir
     if profile.backend == "hcu" and hcu_store_mode != "auto":
         # A separate component also keeps long, existing HCU profile names

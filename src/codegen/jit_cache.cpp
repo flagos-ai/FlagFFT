@@ -250,6 +250,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 ";ix-fourstep-preset=" + std::to_string(ix_fourstep_preset_) +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (adaptor::backend_name() == "hcu") {
+    const char *vector_io = std::getenv("FLAGFFT_HCU_VECTOR_IO");
+    cache_key += ";hcu-vector-io-v1=" + std::string(vector_io ? vector_io : "0");
+  }
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
     const char *batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");

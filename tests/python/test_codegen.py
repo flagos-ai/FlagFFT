@@ -1327,11 +1327,13 @@ def test_hcu_c2r_cube_middle_pack8_is_narrow_and_overridable(tmp_path, monkeypat
     assert overridden["batch_per_block"] == 4
 
 
+@pytest.mark.parametrize("vector_io", ["0", "1"])
 def test_hcu_c2r_cube_perm_form_is_supported_by_jit_cli(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, vector_io
 ) -> None:
     from flagfft_codegen import cli
 
+    monkeypatch.setenv("FLAGFFT_HCU_VECTOR_IO", vector_io)
     monkeypatch.delenv("FLAGFFT_HCU_3D_MIDDLE_PACK", raising=False)
     monkeypatch.setattr(
         sys,
@@ -1376,6 +1378,7 @@ def test_hcu_c2r_cube_perm_form_is_supported_by_jit_cli(
     cli.main()
 
     assert "permuted_store_inner_middle_c2r_cube" in capsys.readouterr().out
+    assert all(len(path.name.encode()) < 80 for path in tmp_path.iterdir())
 
 
 

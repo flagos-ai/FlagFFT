@@ -87,6 +87,15 @@ _IX_BATCH_INTERLEAVE_MODES = {
 }
 
 
+def _hcu_vector_io() -> bool:
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0 or 1")
+    return setting == "1"
+
+
 def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
     if not _ix_backend_active():
         return False
@@ -109,6 +118,7 @@ def _portable_complex_vector_io() -> bool:
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
         or (_npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1")
         or (_ix_backend_active() and _maca_knob("VEC_IO", "0") == "packed")
+        or _hcu_vector_io()
     )
 
 
@@ -1501,7 +1511,9 @@ def _emit_stage_block(
         or (io_mode in {"contiguous_r2c","packed_c2r"} and _ix_backend_active()
             and _packed_maca_fp32_complex_io(dtype))
         or vectorized_four_step_complex_io
-    ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
+    ) and vector_io_allowed and (
+        not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io()
+    )
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
         and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
