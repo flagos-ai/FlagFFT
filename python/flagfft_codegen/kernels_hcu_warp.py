@@ -12,6 +12,13 @@ _FOURSTEP_ROWS = {"four_step_row", "four_step_real_row", "four_step_hermitian_ro
 _FOURSTEP_COLS = {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"}
 
 
+def _root_table_enabled():
+    setting = os.getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_WAVE_ROOT_TABLE must be 0 or 1")
+    return setting == "1"
+
+
 def hcu_dense_wave_pack(plan, io_mode):
     profile = current_profile()
     if profile.backend != "hcu" or profile.warp_size != 64:
@@ -24,6 +31,10 @@ def hcu_dense_wave_pack(plan, io_mode):
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
+    if wide and not packed and plan.length * 8 > profile.warp_size * 128:
+        # Account for input/output redistribution and 64-bit scalar width.
+        # Larger tiles exceeded 256 VGPRs and spilled on the queried target.
+        return 0
     if packed and plan.length * 4 > profile.warp_size * 64:
         # Reconstruction keeps both partner FFT values and output registers
         # live. Bound that doubled payload before selecting the wave path.
@@ -56,6 +67,7 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
     chunk = radix
     shared_limit = current_profile().max_dynamic_shared_memory // 2
     wide = plan.dtype == "complex128"
+    root_table = _root_table_enabled()
     complex_bytes = 16 if wide else 8
     while chunk > 1 and pack * 64 * chunk * complex_bytes > shared_limit:
         chunk //= 2
@@ -64,10 +76,11 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
         output_radix_chunk=chunk if chunk < radix else 0,
         four_step_other=other if fourstep else 0,
         wide=wide,
+        table_roots=root_table and not wide,
     )
     leaf_name = "hcu_" + name + "_dense"
     aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
-    if wide:
+    if wide or root_table:
         last = len(plan.factors) - 1
         aliases.extend([f"    wave_tw_r_ptr=tw{last}_r_ptr+{plan.length}",
                         f"    wave_tw_i_ptr=tw{last}_i_ptr+{plan.length}"])
@@ -121,6 +134,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
     name, source = build_ix_warp_source(
         plan.length, pack, mode, plan.direction == "inverse",
         output_radix_chunk=chunk if chunk < radix else 0,
+        table_roots=_root_table_enabled(),
     )
     leaf_name = "hcu_" + name + "_leaf"
     aliases = [
@@ -130,6 +144,10 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
         f"    input_distance=tl.full((),{plan.length},tl.int64)",
         f"    output_distance=tl.full((),{plan.length},tl.int64)",
     ]
+    if _root_table_enabled():
+        last = len(plan.factors) - 1
+        aliases.extend([f"    wave_tw_r_ptr=tw{last}_r_ptr+{plan.length}",
+                        f"    wave_tw_i_ptr=tw{last}_i_ptr+{plan.length}"])
     header = f"def {name}(inp,out,span,nbatch,input_distance,output_distance):"
     assert header in source
     source = source.replace(

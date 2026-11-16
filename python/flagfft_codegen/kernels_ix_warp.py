@@ -24,7 +24,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          local_codelet: bool = False, manual_store: bool = False,
                          output_radix_chunk: int = 0, lane_width: int = 64,
                          packed_gather: bool = False,
-                         four_step_other: int = 0, wide: bool = False) -> tuple[str, str]:
+                         four_step_other: int = 0, wide: bool = False,
+                         table_roots: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -64,6 +65,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if lane_width!=64: name+=f'_lanes{lane_width}'
     if packed_gather: name+='_pairgather'
     if wide: name+='_f64'
+    if table_roots: name+='_roots'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -136,10 +138,13 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   f'    pair=tl.load(ip+row[:,None]*input_distance+{n}-pos,valid,0)',
                   '    qr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                   '    qi=-tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)',
-                  '    xi=tl.where(pos==0,0.0,xi)','    qi=tl.where(pos==0,0.0,qi)',
-                  f'    angle=pos*{-math.pi/n:.17g}',
-                  '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
-                  '    dr=xr-qr','    di=xi-qi',
+                  '    xi=tl.where(pos==0,0.0,xi)','    qi=tl.where(pos==0,0.0,qi)']
+            if table_roots:
+                a += ['    wr=tl.load(packed_twiddle_ptr+pos*2)',
+                      '    wi=tl.load(packed_twiddle_ptr+pos*2+1)']
+            else:a += [f'    angle=pos*{-math.pi/n:.17g}',
+                       '    wr=tl.cos(angle)','    wi=tl.sin(angle)']
+            a += ['    dr=xr-qr','    di=xi-qi',
                   f'    x{j}r=xr+qr-(di*wr-dr*wi)',
                   f'    x{j}i=xi+qi+(dr*wr+di*wi)']
         elif mode=='packed_r2c':
@@ -210,7 +215,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                     a += [f'    ar=r{lo}',f'    ai=i{lo}',f'    r{lo}=ar+tr',f'    i{lo}=ai+ti',
                           f'    r{hi}=ar-tr',f'    i{hi}=ai-ti']
     for j in range(1,radix):
-        if wide:
+        if wide or table_roots:
             a += [f'    root_index=(lane*{j})%{n}',
                   '    wr=tl.load(wave_tw_r_ptr+root_index)',
                   '    wi=tl.load(wave_tw_i_ptr+root_index)']
@@ -240,7 +245,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a += [f'    idx=tl.broadcast_to(lane^{half},({pack},{lane_width}))',f'    high=(lane&{half})!=0']
         if half==1: a += ['    wr=1.0','    wi=0.0']
         elif half==2: a += ['    wr=tl.where((lane&1)==0,1.0,0.0)',f'    wi=tl.where((lane&1)==0,0.0,{float(sign)})']
-        elif wide:
+        elif wide or table_roots:
             a += [f'    root_index=(lane&{half-1})*{n//(2*half)}',
                   '    wr=tl.load(wave_tw_r_ptr+root_index)',
                   '    wi=tl.load(wave_tw_i_ptr+root_index)']
@@ -261,7 +266,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             partner=(-j)%radix
             a += [f'    idx=tl.broadcast_to((-lane-{int(j>0)})&63,({pack},64))',
                   f'    br=tl.gather(r{partner},idx,1)',f'    bi=tl.gather(i{partner},idx,1)']
-            if wide:
+            if wide or table_roots:
                 a += [f'    packed_k=lane*{radix}+{j}',
                       '    wr=tl.load(packed_twiddle_ptr+packed_k*2)',
                       '    wi=tl.load(packed_twiddle_ptr+packed_k*2+1)']
@@ -273,7 +278,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         for j in range(radix):a += [f'    r{j}=post_r{j}',f'    i{j}=post_i{j}']
     if mode in row_modes:
         for j in range(radix):
-            if wide:
+            if wide or table_roots:
                 a += [f'    root_index=(row[:,None]*{n}+lane*{radix}+{j})*2',
                       '    wr=tl.load(twiddle_ptr+root_index,valid,0.0)',
                       '    wi=tl.load(twiddle_ptr+root_index+1,valid,0.0)']

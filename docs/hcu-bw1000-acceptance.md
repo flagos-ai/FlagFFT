@@ -146,8 +146,15 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   行列复用 wave 内 Cooley-Tukey。`FLAGFFT_HCU_DENSE_WAVE_FP64=1` 额外允许
   FP64，使用附加在末级表后的双精度自然顺序旋转因子；保留原表前缀以供回退，
   不使用 FP32 三角函数。输出重排按半个查询 LDS 容量分块。
+  FP64 普通 wave 叶子另按输入/输出重排的寄存器预算回退大 tile：2048 点实测
+  已用到 256 VGPR 且有 112 字节 private segment，因此不能仅凭 LDS 合法就选择。
   FP32 packed 边界另按重建需要的双倍活跃 payload 限制在 64 个标量/物理 lane。
   设备验证前均保持 opt-in。
+- `FLAGFFT_HCU_WAVE_ROOT_TABLE=1`：FP32 wave 路径也复用自然顺序旋转因子表，
+  FourStep 行读取已有跨维度系数，packed 边界读取已有实数重建表，移除设备端
+  三角函数。FP64 packed wave 同样使用双精度表，候选不再经过 FP32 三角函数。
+  `FLAGFFT_HCU_DENSE_WAVE_PACK` 的 16-row 实验会按每物理 lane 的活跃 payload
+  自动缩小；重建按双倍 payload 计，不仅按共享内存容量放大 tile。
 - 半长度实数策略首先按 FFT 工作量、原/子计划结构、布局及资源界限建立适用域，
   再经过同卡重复性能、三幅度准确性和 holdout 决定默认行为；不增加逐 case winner 表。
 - 下一轮已冻结的 half-length 策略为 `FLAGFFT_HCU_LARGE_PACKED_REAL=1`（默认 0）：
@@ -156,7 +163,8 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
   它保留 `FLAGFFT_PACKED_REAL=0` 的显式关闭及已有布局回退。
   该条件在 large holdout 执行前固定；holdout 不能用来重新选择阈值。
 
-CPU 检查：FP64 wave 提交的综合回归为 932 passed、88 skipped、10 subtests passed；
-显式布局新增后的相关回归为 349 passed。192 组默认 FP32 wave 生成源码与修改前
-逐字一致。远端 CPU planner target：27 个 GTest 通过。以上不代替设备验证。
+CPU 检查：packed wave 提交的综合回归为 965 passed、88 skipped、10 subtests passed；
+root-table 与寄存器回退新增后的相关回归为 367 passed。192 组默认 FP32 wave
+生成源码与扩展前逐字一致。远端 CPU planner target（含混合 radix）：28 个 GTest
+通过。以上不代替设备验证。
 尚未宣告完成 1.0x / 0.7x 的最终验收。

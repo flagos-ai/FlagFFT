@@ -64,7 +64,7 @@ def test_dense_wave_retains_fallbacks(dtype, mode, n):
     assert hcu_dense_wave_pack(plan, mode) == 0
 
 
-@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024, 2048])
+@pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
 @pytest.mark.parametrize("kind,direction", [
     ("leaf", "forward"), ("leaf", "inverse"),
     ("leaf_r2c", "forward"), ("leaf_c2r", "inverse"),
@@ -95,6 +95,13 @@ def test_wide_wave_uses_supplied_double_roots_and_interleaved_double_stores(tmp_
     name = metadata["kernel_name"]
     chunk = int(name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in name else n // 64
     assert 4 * 64 * chunk * 16 <= 32768
+
+
+def test_wide_redistribution_keeps_native_fallback_above_register_budget(monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
+    plan = LeafPlan(2048, (16, 16, 8), 1, 128, 2, (), 2048, dtype="complex128")
+    assert hcu_dense_wave_pack(plan, "contiguous") == 0
+    assert hcu_dense_wave_pack(plan, "four_step_row") == 0
 
 
 @pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
@@ -129,3 +136,37 @@ def test_wider_row_packs_bound_the_physical_register_payload(monkeypatch, n, mod
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_PACK", "16")
     plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype="complex64")
     assert hcu_dense_wave_pack(plan, mode) == expected
+
+
+@pytest.mark.parametrize("kind,direction", [("leaf", "forward"), ("leaf", "inverse"),
+    ("four_step_row", "forward"), ("four_step_col", "inverse"),
+    ("four_step_real_row", "forward"), ("four_step_hermitian_row", "inverse"),
+    ("leaf_packed_r2c", "forward"), ("leaf_packed_c2r", "inverse")])
+def test_fp32_wave_table_roots_remove_device_trigonometry(tmp_path, monkeypatch, kind, direction):
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    fourstep = kind.startswith("four_step_")
+    metadata = emit_jit_kernel(kernel=kind, length=512, factors=(16, 32),
+        lanes=16, num_warps=1, generic_radices=(32,), smem_size=512, direction=direction,
+        dtype="complex64", prime_n=0, four_step_n1=512 if fourstep else 0,
+        four_step_n2=512 if fourstep else 0, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert "_roots_" in metadata["kernel_name"]
+    assert "wave_tw_r_ptr=tw1_r_ptr+512" in source
+    assert "tl.cos(" not in source and "tl.sin(" not in source
+    assert "tl.uint32" in source
+    compile(source, "<hcu-fp32-table-roots>", "exec")
+
+
+def test_permuted_wave_uses_the_same_supplied_root_abi(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "0")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    metadata = emit_jit_kernel(kernel="leaf_permuted_store", length=512, factors=(16, 32),
+        lanes=16, num_warps=1, generic_radices=(32,), smem_size=512, direction="forward",
+        dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0,
+        permutation_span=128, permutation_batch=16384, out_dir=tmp_path)
+    source = Path(metadata["module_path"]).read_text()
+    assert "_roots_" in metadata["kernel_name"]
+    assert "wave_tw_r_ptr=tw1_r_ptr+512" in source
+    assert "tl.cos(" not in source and "tl.sin(" not in source
+    compile(source, "<hcu-permuted-table-roots>", "exec")
