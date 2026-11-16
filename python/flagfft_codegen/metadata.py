@@ -374,6 +374,11 @@ def _metadata(
         chunk = int(kernel_name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in kernel_name else plan.length // 64
         if batch_per_block * 64 * chunk * 8 > profile.max_dynamic_shared_memory:
             raise ValueError("HCU wave FFT output tile exceeds shared-memory capacity")
+        if kernel_type in {"four_step_row", "four_step_col", "four_step_real_row",
+                           "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"}:
+            inner_pack = batch_per_block
+            batch_per_block = 1
+            tle_fused_twiddle = True
     if kernel_name.startswith("ix_warp"):
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()

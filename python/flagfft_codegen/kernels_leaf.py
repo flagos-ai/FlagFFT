@@ -3493,7 +3493,16 @@ def _build_leaf_kernel_source_for_io(
     short_pack = small_wave_pack(plan, io_mode)
     if short_pack:
         return build_small_wave(plan, io_mode, _leaf_kernel_params_for_io(plan, io_mode=io_mode), short_pack)
-    from .kernels_hcu_warp import hcu_warp_store_pack, build_hcu_warp_store
+    from .kernels_hcu_warp import (hcu_warp_store_pack, build_hcu_warp_store,
+                                   hcu_dense_wave_pack, build_hcu_dense_wave)
+    dense_wave_pack = hcu_dense_wave_pack(plan, io_mode)
+    if dense_wave_pack:
+        return build_hcu_dense_wave(
+            plan, io_mode, _leaf_kernel_params_for_io(
+                plan, io_mode=io_mode, include_four_step_twiddle=io_mode in {
+                    "four_step_row", "four_step_real_row", "four_step_hermitian_row"}),
+            dense_wave_pack, four_step_n1, four_step_n2,
+        )
     hcu_warp_pack = hcu_warp_store_pack(
         plan, io_mode, kernel_perm_form, permutation_span, permutation_batch,
     )

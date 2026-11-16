@@ -261,6 +261,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";hcu-cyclic-skew-v1=" + std::string(cyclic_skew ? cyclic_skew : "unit");
     const char *small_wave = std::getenv("FLAGFFT_HCU_SMALL_WAVE");
     cache_key += ";hcu-small-wave-v1=" + std::string(small_wave ? small_wave : "0");
+    const char *dense_wave = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
+    const char *dense_wave_pack = std::getenv("FLAGFFT_HCU_DENSE_WAVE_PACK");
+    cache_key += ";hcu-dense-wave-v1=" + std::string(dense_wave ? dense_wave : "0") +
+                 ";pack=" + std::string(dense_wave_pack ? dense_wave_pack : "auto");
   }
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
