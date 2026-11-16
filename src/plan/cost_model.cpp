@@ -145,6 +145,14 @@ double PlanBuilder::estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t
     }
   }
   const int64_t real_bytes = is_double ? 8 : 4;
+  if (context.hcu_stage_traffic_cost && factors.size() > 1) {
+    // Each boundary between register butterflies writes and reads one full
+    // complex FFT through LDS. Express those bytes in 64-lane, 32-bit wave
+    // transfers so the arithmetic-only score also accounts for extra stages.
+    // This is a resource model, independent of the public shape and batch.
+    base += static_cast<double>(factors.size() - 1) * 4.0 *
+            static_cast<double>(n) * real_bytes / (64.0 * 4.0);
+  }
   const int64_t shared_bytes = 4 * ceil_power_of_two(n) * real_bytes;
   constexpr int64_t kFullResidencySharedBytes = 64 * 1024;
   const double shared_pressure =

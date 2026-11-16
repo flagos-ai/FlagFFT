@@ -413,6 +413,41 @@ TEST(HcuLeafCost, PhysicalWaveUnitsArePrecisionScopedAndInvalidateFactorChoices)
   EXPECT_TRUE(changed);
 }
 
+TEST(HcuLeafCost, StageTrafficChangesShortLeafSchedulesAndPreservesOtherContexts) {
+  for (const char *backend : {"hcu", "cuda"}) {
+    for (const char *dtype : {"complex64", "complex128"}) {
+      flagfft::FFTRequest request;
+      request.device_type = backend;
+      request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+      request.origin_rank = 3;
+      request.raw_dim = 1;
+      request.input_dtype = request.output_dtype = dtype;
+      request.input_layout = "contiguous";
+      request.batch = 7;
+      flagfft::PlanBuilder builder;
+      bool changed = false;
+      for (int64_t n : {64, 128, 256, 512}) {
+        request.n = request.requested_n = request.fft_length = n;
+        request.input_shape = {7, n};
+        request.input_strides = {n, 1};
+        ScopedEnv original("FLAGFFT_HCU_STAGE_TRAFFIC_COST", "0");
+        const auto baseline = builder.build(n, request)->describe();
+        {
+          ScopedEnv candidate("FLAGFFT_HCU_STAGE_TRAFFIC_COST", "fp32");
+          const auto selected = builder.build(n, request)->describe();
+          changed |= selected != baseline;
+          flagfft::PlanBuilder fresh;
+          EXPECT_EQ(selected, fresh.build(n, request)->describe());
+          if (std::string(backend) != "hcu" || std::string(dtype) != "complex64")
+            EXPECT_EQ(selected, baseline);
+        }
+        EXPECT_EQ(builder.build(n, request)->describe(), baseline);
+      }
+      EXPECT_EQ(changed, std::string(backend) == "hcu" && std::string(dtype) == "complex64");
+    }
+  }
+}
+
 TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
   for (const char *backend : {"hcu", "cuda"}) {
     flagfft::FFTRequest request;
