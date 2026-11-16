@@ -1467,6 +1467,10 @@ def _emit_stage_block(
             "    current_batch = " + ("perm_base + batch_slot * perm_span" if perm_inner else "batch_id + batch_slot"),
             f"    smem_offset = batch_slot * {exchange_slot_stride}",
             f"    base_lane_mask = (lane < {current_lanes}) & (current_batch < nbatch)",
+            # The original mask used FFT-major lanes. Uniform stage lanes
+            # skip the cooperative-mask refresh below, so update it here
+            # after changing to slot-major lanes, including partial CTAs.
+            "    lane_mask = base_lane_mask",
             "    perm_i0_vector = current_batch // perm_span",
             "    perm_i1_vector = current_batch - perm_i0_vector * perm_span",
         ])
