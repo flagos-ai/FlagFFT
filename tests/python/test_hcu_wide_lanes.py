@@ -171,7 +171,11 @@ def test_cli_transports_the_transposed_packed_real_layout(tmp_path, monkeypatch,
         "--perm-form", "outer_packed", "--target", "hcu:gfx936:64",
         "--device-profile", json.dumps(device), "--execution-policy", "native",
         "--out-dir", str(tmp_path)])
-    cli.main()
+    token = set_profile(BackendProfile())
+    try:
+        cli.main()
+    finally:
+        reset_profile(token)
     metadata = json.loads(capsys.readouterr().out)
     source = Path(metadata["module_path"]).read_text()
     assert "_transpose" in metadata["kernel_name"]

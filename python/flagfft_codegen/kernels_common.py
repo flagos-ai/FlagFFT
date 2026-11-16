@@ -733,6 +733,15 @@ def permuted_store_batch_pack_for(
         # Aim for a cache-line-sized contiguous output run, bounded by the
         # actual rounded allocation for one real/imaginary shared buffer.
         target = 128 // (2 * _real_element_bytes(plan.dtype))
+        fill = os.getenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE", "0")
+        if fill not in {"0", "1"}:
+            raise ValueError("FLAGFFT_HCU_PERMUTED_FILL_WAVE must be 0 or 1")
+        if fill == "1" and profile.policy != "legacy":
+            active = lane_block_for(max(cooperative_stage_lanes_for(plan)))
+            # A cache-line-sized output run can still leave half a physical
+            # wave idle on a short wide-precision leaf. Fill those lanes
+            # before adding waves; the existing LDS/thread bounds still win.
+            target = max(target, profile.warp_size // active)
         setting = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
         if setting != "auto":
             if setting not in {"1", "2", "4", "8", "16", "32"}:

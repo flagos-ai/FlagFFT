@@ -18,6 +18,7 @@ from flagfft_codegen.emit import emit_jit_kernel
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("kernel", ["leaf_permuted_store", "leaf_r2c_permuted_store"])
 @pytest.mark.parametrize("n,factors,lanes", [(256, (16, 16), 16),
+    (16, (4, 4), 4), (32, (8, 4), 8),
     (1024, (16, 16, 4), 64), (2048, (16, 16, 8), 128)])
 @pytest.mark.parametrize("rows", [1, 3, 7, 65, 1025, 4100])
 def test_emitted_final_store_never_selects_rows_beyond_the_requested_batch(
@@ -26,6 +27,7 @@ def test_emitted_final_store_never_selects_rows_beyond_the_requested_batch(
                                      max_dynamic_shared_memory=65536, policy="native"))
     monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
     monkeypatch.setenv("FLAGFFT_HCU_3D_DIRECT_STORE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE", "1")
     monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "0")
     monkeypatch.setenv("FLAGFFT_HCU_3D_WARP_FFT", "0")
     try:

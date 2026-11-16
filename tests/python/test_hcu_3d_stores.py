@@ -9,7 +9,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-from flagfft_codegen.kernels_common import LeafPlan
+from flagfft_codegen.kernels_common import (LeafPlan, cooperative_stage_lanes_for,
+                                           permuted_store_batch_pack_for)
 from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
 
 
@@ -28,6 +29,29 @@ def emit(dtype, mode="permuted_store", form="outer"):
     _, source = _build_leaf_kernel_source_for_io(plan, io_mode=mode, perm_form=form)
     compile(source, "<hcu-store-layout>", "exec")
     return source
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+@pytest.mark.parametrize("n,factors,lanes", [(16, (4, 4), 4), (32, (8, 4), 8),
+    (64, (4, 4, 4), 16), (256, (16, 16), 16)])
+def test_permuted_fill_wave_uses_idle_lanes_and_keeps_explicit_resource_limits(
+        monkeypatch, dtype, n, factors, lanes):
+    monkeypatch.setenv("FLAGFFT_HCU_3D_STORE_MODE", "cyclic")
+    monkeypatch.setenv("FLAGFFT_HCU_3D_PACK", "auto")
+    plan = LeafPlan(n, factors, 1, lanes, 1, (), n, dtype=dtype)
+    monkeypatch.setenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE", "0")
+    original = permuted_store_batch_pack_for(plan)
+    monkeypatch.setenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE", "1")
+    pack = permuted_store_batch_pack_for(plan)
+    active = max(cooperative_stage_lanes_for(plan))
+    assert pack >= original
+    assert active * pack >= 64
+    assert active * pack <= 512
+    assert n * pack * 2 * (8 if dtype == "complex128" else 4) <= 65536
+    if active * original >= 64:
+        assert pack == original
+    monkeypatch.setenv("FLAGFFT_HCU_3D_PACK", "1")
+    assert permuted_store_batch_pack_for(plan) == 1
 
 
 @pytest.mark.parametrize("form,span,rows", [
