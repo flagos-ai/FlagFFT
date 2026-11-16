@@ -123,6 +123,9 @@ hipFFT 参考准确性全部通过，记录在 `20261116_152600_packed_accuracy/
 - `FLAGFFT_HCU_VECTOR_IO=1`：复用可移植的复数成对 load/store，覆盖 dense leaf
   和 Four-Step 行列。默认 0；没有增加尺寸白名单。HCU artifact identity 使用
   有界哈希，避免配置目录超出 255 字节，并隔离所有 HCU 环境开关。
+  `packed` 候选在相同 I/O 范围内将 FP32 复数按位装入一次 64 位访问，保持
+  每个复数一个逻辑 lane；FP64 仍使用成对张量。它不改变蝶形或地址掩码，
+  用于检查成对张量布局转换的成本，尚未取得设备性能资格。
 - `FLAGFFT_HCU_FOURSTEP_RADIX_CAP=8|16`：对公开 1D、大于等于 65536 的支持分解
   请求，二次幂子叶的指数平衡分配到有界 radix；混合长度在已有候选中限制复合
   radix 的上界，保留不可再拆的受支持素数，以减少每线程寄存器负担。默认 auto

@@ -408,8 +408,8 @@ def main() -> None:
             )
     if profile.backend == "hcu":
         vector_io = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
-        if vector_io not in {"0", "1"}:
-            parser.error("FLAGFFT_HCU_VECTOR_IO must be 0 or 1")
+        if vector_io not in {"0", "1", "packed"}:
+            parser.error("FLAGFFT_HCU_VECTOR_IO must be 0, 1 or packed")
         profile_dir += f"-hcu-vector-io-{vector_io}"
         hcu_store_mode = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto")
         if hcu_store_mode not in {"auto", "grouped", "smem", "wide", "cyclic"}:

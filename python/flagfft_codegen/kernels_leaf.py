@@ -91,9 +91,17 @@ def _hcu_vector_io() -> bool:
     if not _hcu_backend_active():
         return False
     setting = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
-    if setting not in {"0", "1"}:
-        raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0 or 1")
-    return setting == "1"
+    if setting not in {"0", "1", "packed"}:
+        raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0, 1 or packed")
+    return setting != "0"
+
+
+def _packed_hcu_fp32_complex_io(dtype: str) -> bool:
+    # Preserve one logical lane per complex element through HCU lowering.
+    # The pair tensor otherwise introduces a second layout axis at every
+    # global access. Bitcasts retain all FP32 bits without arithmetic casts.
+    return (dtype == "complex64" and _hcu_backend_active()
+            and os.getenv("FLAGFFT_HCU_VECTOR_IO", "0") == "packed")
 
 
 def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
@@ -169,7 +177,7 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
-    if _packed_maca_fp32_complex_io(dtype):
+    if _packed_maca_fp32_complex_io(dtype) or _packed_hcu_fp32_complex_io(dtype):
         pair = "_packed_pair_" + dest.split(",")[0].strip()
         real, imag = (name.strip() for name in dest.split(","))
         return [
@@ -211,7 +219,7 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
-    if _packed_maca_fp32_complex_io(dtype):
+    if _packed_maca_fp32_complex_io(dtype) or _packed_hcu_fp32_complex_io(dtype):
         pair = "_packed_store_" + r_name
         return [
             f"{indent}{pair} = tl.cast(tl.cast({r_name}, tl.uint32, bitcast=True), tl.uint64) "
