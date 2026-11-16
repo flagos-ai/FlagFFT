@@ -98,11 +98,13 @@ def test_wide_wave_uses_supplied_double_roots_and_interleaved_double_stores(tmp_
 
 
 @pytest.mark.parametrize("n", [64, 128, 256, 512, 1024])
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("kind,direction", [("leaf_packed_r2c", "forward"), ("leaf_packed_c2r", "inverse")])
-def test_packed_wave_keeps_boundary_abi_and_payload_bound(tmp_path, n, kind, direction):
+def test_packed_wave_keeps_boundary_abi_and_payload_bound(tmp_path, monkeypatch, n, dtype, kind, direction):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
     metadata = emit_jit_kernel(kernel=kind, length=n, factors=(16, n // 16),
         lanes=16, num_warps=1, generic_radices=(), smem_size=n, direction=direction,
-        dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
+        dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
     source = Path(metadata["module_path"]).read_text()
     compile(source, "<hcu-packed-wave>", "exec")
     assert metadata["kernel_name"].startswith("hcu_warp")
@@ -110,8 +112,20 @@ def test_packed_wave_keeps_boundary_abi_and_payload_bound(tmp_path, n, kind, dir
     assert "input_distance" in metadata["arg_names"]
     assert n * 4 <= 64 * 64
     if kind == "leaf_packed_r2c":
-        assert "input_distance%2==0" in source
+        if dtype == "complex64": assert "input_distance%2==0" in source
         assert "output_distance" in metadata["arg_names"]
         assert "nyquist_r" in source
     else:
         assert f"output_distance={n}" in source
+    if dtype == "complex128":
+        assert "tl.uint32" not in source and "tl.float32" not in source
+        assert "tl.cos(" not in source and "tl.sin(" not in source
+        assert "tl.load(packed_twiddle_ptr+" in source
+
+
+@pytest.mark.parametrize("n,mode,expected", [(512, "contiguous", 16), (2048, "contiguous", 8),
+                                           (512, "packed_r2c", 16), (1024, "packed_c2r", 8)])
+def test_wider_row_packs_bound_the_physical_register_payload(monkeypatch, n, mode, expected):
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_PACK", "16")
+    plan = LeafPlan(n, (16, n // 16), 1, 16, 1, (), n, dtype="complex64")
+    assert hcu_dense_wave_pack(plan, mode) == expected

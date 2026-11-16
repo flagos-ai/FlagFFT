@@ -24,7 +24,7 @@ def hcu_dense_wave_pack(plan, io_mode):
         raise ValueError("FLAGFFT_HCU_DENSE_WAVE_FP64 must be 0 or 1")
     wide = plan.dtype == "complex128" and len(plan.factors) >= 2 and wide_setting == "1"
     packed = io_mode in {"packed_r2c", "packed_c2r"}
-    if packed and (wide or plan.length * 4 > profile.warp_size * 64):
+    if packed and plan.length * 4 > profile.warp_size * 64:
         # Reconstruction keeps both partner FFT values and output registers
         # live. Bound that doubled payload before selecting the wave path.
         return 0
@@ -33,12 +33,15 @@ def hcu_dense_wave_pack(plan, io_mode):
             io_mode not in {"contiguous", "contiguous_r2c", "contiguous_c2r", "packed_r2c", "packed_c2r"} | _FOURSTEP_ROWS | _FOURSTEP_COLS):
         return 0
     target = os.getenv("FLAGFFT_HCU_DENSE_WAVE_PACK", "auto")
-    if target not in {"auto", "1", "2", "4", "8"}:
-        raise ValueError("FLAGFFT_HCU_DENSE_WAVE_PACK must be auto, 1, 2, 4 or 8")
+    if target not in {"auto", "1", "2", "4", "8", "16"}:
+        raise ValueError("FLAGFFT_HCU_DENSE_WAVE_PACK must be auto, 1, 2, 4, 8 or 16")
     pack = (4 if wide else 8) if target == "auto" else int(target)
     # The supported lengths bound each lane to 64 scalar payload values
     # (128 FP32 register slots in FP64). Output redistribution is separately
     # chunked to half the queried LDS budget; FP64 starts with fewer waves.
+    live_scalars = 4 if packed else 2
+    while pack > 1 and plan.length * pack * live_scalars > min(pack, 8) * profile.warp_size * 64:
+        pack //= 2
     return pack
 
 

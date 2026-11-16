@@ -44,7 +44,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
         raise ValueError("unsupported IX warp FFT I/O mode")
     four_step=mode in row_modes|col_modes
-    if wide and (mode not in {"contiguous", "contiguous_r2c", "c2r"}|row_modes|col_modes
+    if wide and (mode not in {"contiguous", "contiguous_r2c", "c2r", "packed_r2c", "packed_c2r"}|row_modes|col_modes
                  or recurrence or fast_math or manual_store or packed_gather or local_codelet):
         raise ValueError("wide wave FFT requires dense I/O and supplied FP64 root tables")
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
@@ -115,6 +115,20 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                 a += [f'    x{j}i=tl.where(tl.trans(position)<={n*four_step_other//2},x{j}i,-x{j}i)',
                       f'    x{j}i=tl.where((tl.trans(position)==0)|(tl.trans(position)=={n*four_step_other//2}),0.0,x{j}i)']
         elif mode=='packed_c2r':
+            if wide:
+                a += ['    offset=row[:,None]*input_distance+pos',
+                      '    xr=tl.load(inp+offset*2,valid,0.0)',
+                      '    xi=tl.load(inp+offset*2+1,valid,0.0)',
+                      f'    offset=row[:,None]*input_distance+{n}-pos',
+                      '    qr=tl.load(inp+offset*2,valid,0.0)',
+                      '    qi=-tl.load(inp+offset*2+1,valid,0.0)',
+                      '    xi=tl.where(pos==0,0.0,xi)', '    qi=tl.where(pos==0,0.0,qi)',
+                      '    wr=tl.load(packed_twiddle_ptr+pos*2)',
+                      '    wi=tl.load(packed_twiddle_ptr+pos*2+1)',
+                      '    dr=xr-qr', '    di=xi-qi',
+                      f'    x{j}r=xr+qr-(di*wr-dr*wi)',
+                      f'    x{j}i=xi+qi+(dr*wr+di*wi)']
+                continue
             a += ['    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
                   '    pair=tl.load(ip+row[:,None]*input_distance+pos,valid,0)',
                   f'    xr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
@@ -129,6 +143,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   f'    x{j}r=xr+qr-(di*wr-dr*wi)',
                   f'    x{j}i=xi+qi+(dr*wr+di*wi)']
         elif mode=='packed_r2c':
+            if wide:
+                a += ['    offset=row[:,None]*input_distance+pos*2',
+                      f'    x{j}r=tl.load(inp+offset,valid,0.0)',
+                      f'    x{j}i=tl.load(inp+offset+1,valid,0.0)']
+                continue
             # Real distances may be odd for a custom batched descriptor.
             a += ['    if input_distance%2==0:',
                   '        ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
@@ -241,10 +260,14 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         for j in range(radix):
             partner=(-j)%radix
             a += [f'    idx=tl.broadcast_to((-lane-{int(j>0)})&63,({pack},64))',
-                  f'    br=tl.gather(r{partner},idx,1)',f'    bi=tl.gather(i{partner},idx,1)',
-                  f'    angle=(lane*{radix}+{j})*{-math.pi/n:.17g}',
-                  '    wr=tl.cos(angle)','    wi=tl.sin(angle)',
-                  f'    dr=r{j}-br',f'    di=i{j}+bi',
+                  f'    br=tl.gather(r{partner},idx,1)',f'    bi=tl.gather(i{partner},idx,1)']
+            if wide:
+                a += [f'    packed_k=lane*{radix}+{j}',
+                      '    wr=tl.load(packed_twiddle_ptr+packed_k*2)',
+                      '    wi=tl.load(packed_twiddle_ptr+packed_k*2+1)']
+            else:a += [f'    angle=(lane*{radix}+{j})*{-math.pi/n:.17g}',
+                       '    wr=tl.cos(angle)','    wi=tl.sin(angle)']
+            a += [f'    dr=r{j}-br',f'    di=i{j}+bi',
                   f'    post_r{j}=0.5*(r{j}+br+wi*dr+wr*di)',
                   f'    post_i{j}=0.5*(i{j}-bi-wr*dr+wi*di)']
         for j in range(radix):a += [f'    r{j}=post_r{j}',f'    i{j}=post_i{j}']
@@ -331,8 +354,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       '    tl.store(out+address[:,:,None]*2+tl.arange(0,2)[None,None,:],z,mask[:,:,None])']
             else: a+=['    ptr=tl.cast(out,tl.pointer_type(tl.uint64))','    tl.store(ptr+address,z,mask)']
             if mode=='packed_r2c' and start==0:
-                a += [f'    pos=lane*{radix}',
-                      f'    address=row[:,None]*output_distance+{n}',
+                a += [f'    pos=lane*{radix}',f'    address=row[:,None]*output_distance+{n}']
+                if wide:
+                    a += ['    tl.store(out+address*2,nyquist_r,valid&(pos==0))',
+                          '    tl.store(out+address*2+1,0.0,valid&(pos==0))']
+                else:a += [
                       '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
                       f'    address=tl.broadcast_to(address,({pack},64))',
                       '    tl.store(ptr+address,nyquist,valid&(pos==0))']
