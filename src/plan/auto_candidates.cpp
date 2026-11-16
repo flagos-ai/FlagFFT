@@ -525,7 +525,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   if (context.device_type != "maca" && thread_local_complex && n % kThreadLocalColLength == 0) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;
-    if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
+    if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix) &&
+        !context.hcu_fourstep_radix_cap) {
       auto make_thread_local_leaf = [](int64_t local_register_radix) -> PlanNodePtr {
         const int64_t length = local_register_radix * kThreadLocalCrossRadix;
         const int64_t num_warps = local_register_radix == 32 ? 2 : 1;

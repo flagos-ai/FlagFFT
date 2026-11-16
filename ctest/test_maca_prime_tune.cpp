@@ -91,7 +91,7 @@ TEST(HcuFourStep, BalancedRegisterStagesAndPolicyCacheAreBounded) {
       }
     }
     EXPECT_EQ(descriptions.front(), descriptions.back());
-    EXPECT_NE(descriptions[1], descriptions[2]);
+    EXPECT_NE(descriptions.front(), descriptions[1]);
   }
 }
 
