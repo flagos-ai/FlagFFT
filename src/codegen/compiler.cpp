@@ -2604,6 +2604,27 @@ namespace {
                : default_form;
   }
 
+  bool hcu_fused_packed_real_enabled(const FFTRequest &request, int64_t batch, int64_t n) {
+    const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
+    if (packed && std::string(packed) == "0") return false;
+    if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+        request.requires_contiguous_copy || request.input_layout != "contiguous" ||
+        request.input_strides.empty() || request.input_strides.back() != 1 ||
+        request.packed_real_child || n < 256 || (n & (n - 1)) != 0 || batch < 64 ||
+        !flag_or_default("FLAGFFT_HCU_FUSED_PACKED_REAL", false)) return false;
+    // Six half-length real/imaginary buffers conservatively cover the FFT
+    // and packed reconstruction, including FP64, within the queried LDS cap.
+    const int64_t scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
+    return n / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
+  }
+
+  bool hcu_2d_compact_real_rows_enabled(const FFTRequest &request, int64_t n0, int64_t n1) {
+    return request.device_type == "hcu" && request.device_arch == "gfx936" &&
+        request.origin_rank == 2 && request.input_layout == "contiguous" &&
+        !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && n1 % 2 == 0 &&
+        flag_or_default("FLAGFFT_HCU_2D_REAL_ROWS", false);
+  }
+
   bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
                                            bool inverse,
                                            int64_t batch,
@@ -2615,6 +2636,8 @@ namespace {
     if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
     }
+    if (setting && std::string(setting) == "0") return false;
+    if (hcu_fused_packed_real_enabled(request, batch, length)) return true;
     if (!inverse || (request.input_dtype != "complex64" && request.input_dtype != "complex128")) {
       return false;
     }
@@ -2704,6 +2727,7 @@ namespace {
         request.origin_rank <= 1 && request.raw_dim == 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
+                       hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
     const bool disable = setting != nullptr && std::string(setting) == "0";
@@ -2828,6 +2852,9 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (hcu_fused_packed_real_enabled(request, batch, n) &&
+        !(setting && std::string(setting) == "1") &&
+        !std::dynamic_pointer_cast<LeafPlanNode>(child_plan)) return std::nullopt;
     if (use_npu_packed_mixed_real(request,n,batch) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(child_plan)) {
@@ -4629,9 +4656,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
               ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
-    if (request.device_type == "cuda" && request.device_arch == "sm_80" &&
+    if (hcu_fused_packed_real_enabled(request, batch, n) ||
+        (request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
-        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false)) {
+        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
             packed_child->request.direction, packed_child->request.input_dtype,
@@ -4813,7 +4841,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool cuda_fused_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
-    const bool use_packed_fused_leaf = cuda_fused_leaf || (request.device_type == "hcu" &&
+    const bool use_packed_fused_leaf = cuda_fused_leaf || hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
                                        batch == 256 * 256 && packed_fuse_enabled) ||
                                       ix_fused_c2r_leaf_enabled(request, batch);
@@ -7825,12 +7853,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   // the 2D schedule does not materialize a full complex row matrix merely to
   // discard its Hermitian half.  Restrict this to row plans that the existing
   // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
-  // real is deliberately disabled here until it is qualified for this layout.
+  // real is disabled for existing MACA/MUSA defaults. HCU can explicitly
+  // screen its resource-bounded fused half-length boundary in this layout.
   if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
-       musa_compact_real_rows) &&
+       musa_compact_real_rows || hcu_2d_compact_real_rows_enabled(request, n0, n1)) &&
       has_real_boundary_row_plan(node->row_plan)) {
     std::shared_ptr<CompiledRawNode> row_r2c =
-        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
+        compile_raw_r2c_node(node->row_plan, row_request, batch * n0,
+                            hcu_2d_compact_real_rows_enabled(request, n0, n1));
 
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8085,10 +8115,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
   // Symmetric MACA FP32 path.  The column inverse and compact-layout
   // transposes run first; the existing 1D C2R boundary node then consumes the
-  // compact rows directly and writes real output.  Keep packed-real disabled
-  // until its 2D row layout has a separate qualification.
+  // compact rows directly and writes real output. HCU's opt-in route also
+  // screens the fused half-length boundary; existing defaults stay unchanged.
   if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
-       musa_compact_real_rows) &&
+       musa_compact_real_rows || hcu_2d_compact_real_rows_enabled(request, n0, n1)) &&
       has_real_boundary_row_plan(node->row_plan)) {
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8107,7 +8137,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
     std::shared_ptr<CompiledRawNode> row_c2r =
-        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+        compile_raw_c2r_node(node->row_plan, row_request, batch * n0,
+                            hcu_2d_compact_real_rows_enabled(request, n0, n1));
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
     auto transpose_inv = use_musa_col_permuted_store
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
