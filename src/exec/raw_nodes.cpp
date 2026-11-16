@@ -86,10 +86,9 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
     if (raw_capture_active(context.stream) ||
         input == output)
       return inner->execute(input, output, context);
-    const bool same_npu_context = context.request.device_type != "npu" ||
-        (graph_stream == context.stream && graph_batch == context.batch &&
-         graph_input_distance == context.input_distance && graph_output_distance == context.output_distance);
-    if (graph != nullptr && graph_input == input && graph_output == output && same_npu_context) {
+    const bool same_context = graph_stream == context.stream && graph_batch == context.batch &&
+        graph_input_distance == context.input_distance && graph_output_distance == context.output_distance;
+    if (graph != nullptr && graph_input == input && graph_output == output && same_context) {
       graph->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
