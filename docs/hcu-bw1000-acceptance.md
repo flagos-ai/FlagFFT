@@ -260,3 +260,37 @@ root-table 与寄存器回退新增后的相关回归为 367 passed。192 组默
 生成源码与扩展前逐字一致。远端 CPU planner target（含混合 radix）：28 个 GTest
 通过。以上不代替设备验证。
 尚未宣告完成 1.0x / 0.7x 的最终验收。
+
+
+## 后续筛选记录（2026-11-16 夜间）
+
+`0fac7c1c` 的 FP64 卷积 radix cap=16 已完成大质数公开接口的 8/8 完整 batch
+NumPy 与 hipFFT 验证。524287 点、batch64 的 C2C/R2C/C2R，原约
+0.674/0.684/0.684x，候选为 1.120/1.118/1.112x；batch1 约 1.405–1.420x。
+该策略只在质数算法及卷积长度确定后限制子 FFT 的蝶形大小，不更换卷积长度。
+原始结果为 `20261116_152600_convolution_accuracy/` 和 `convolution_screen/`。
+
+同一版本的自动 FP32 3D wave 图已完成 16/16 双参考数值验证。256³ 和
+128×2048×64 的 C2C，batch1 约 0.752/0.834x，batch4 约 0.767/0.914x。
+FP64 wave 置换 store 虽数值通过，却使 cube 的 C2C、R2C、C2R 明显回退，
+因此不作为统一默认策略。数据见 `20261116_152600_wide_store_accuracy/`
+及 `wide_store_screen/`。
+
+`35431c76` 的 33 项远端 CPU GTest 通过，包含奇数 span 的逐平面尾 CTA
+覆盖检查。FP32 uniform FourStep 单 wave 打包实验已拒绝：同轮 batch64
+131072 点从 0.688x 回退到 0.595x，524288 点从 0.841x 回退到 0.484x。
+保留原 `resource` 打包，不因单个资源指标较低而启用候选。
+
+`f79f1ded` 起新增默认关闭的 `FLAGFFT_HCU_LEAF_PACKING=wave|two_waves|four_waves`，
+按实际 stage lanes 填充物理 wave，并由共享内存预算限制分组。
+`b1ac471c` 将安全单缓冲复用计入资源上界；不满足完整中间 stage 读取条件的
+计划继续按双缓冲核算。其效果仍待设备验证及完整候选验收。
+
+`a6e812eb` 新增默认关闭的 `FLAGFFT_HCU_FP32_ROW_TWIDDLE=1`，在完整工作集
+超过 LDS、两个子轴均不超过 1024 时，将已有 FP32 系数表的读取从列 FFT 输入
+移到行 FFT 输出，避免跨列系数访问；不使用设备近似三角函数。
+`11358358` 新增 `FLAGFFT_HCU_CONV_BALANCE=1|fp64`，只在已选卷积 FFT 为
+FourStep 时枚举可用叶子因子对，选择长宽比最小的矩阵；保持质数算法与卷积长度。
+这两项均无尺寸赢家列表，尚未取得设备性能资格。
+
+目前未完成统一配置的 400 case 完整 batch 验收，不能据筛选结果宣告达到目标。
