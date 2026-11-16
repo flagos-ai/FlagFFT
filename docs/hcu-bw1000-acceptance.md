@@ -408,3 +408,15 @@ C++ twiddle 表与 Python 发射体采用相同的 stage lane 宽度。部分分
 
 数字均保留于逐轮外部结果目录。完整验收必须重新冻结单一源提交和统一环境，
 使用实际请求 batch 的 NumPy 与 hipFFT 检查，不能复用筛选时延或拼接局部赢家。
+
+统一候选环境已整理在 `conf/hcu_bw1000.sh`，可在配置编译栈后 source；它仍为待验收
+配置，不改变库的全局默认。`3D_WARP_PACK=resource` 按查询到的 CU 数和总行数
+限制 wave FFT 分组，使小工作量保留足够独立 CTA；缺少 CU 信息时保持原自动
+分组。查询的 CU 数写入 codegen profile 指纹，避免共享不同设备的分组产物。
+175 项相关检查（含 10 个 subtest）与 1331 项 HCU/profile 回归通过。
+
+`e8296a15` 的公开一维实数 32 项性能筛选最低 **0.7317x**，1024 点 FP64 逆实数
+batch64 为 **0.7410x**。其中 1024/2048 点两精度、batch1/64 的 8 项逆实数
+完整 batch NumPy/hipFFT 校验全部通过。`47aa3fe7` 的输出分块方案 20/20
+三维逆实数完整 batch NumPy/hipFFT 校验也已全部通过。二维、三维完整性能
+筛选正在执行，以上均不能替代最终 400 项 combined 验收。
