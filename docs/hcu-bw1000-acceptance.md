@@ -294,3 +294,42 @@ FourStep 时枚举可用叶子因子对，选择长宽比最小的矩阵；保�
 这两项均无尺寸赢家列表，尚未取得设备性能资格。
 
 目前未完成统一配置的 400 case 完整 batch 验收，不能据筛选结果宣告达到目标。
+
+
+## 统一性能筛选与内存安全修复（2026-11-17 凌晨）
+
+`13aab7e2` 修复 HCU 原生融合置换写回在最后一级重新映射 lane/batch slot 后
+仍沿用旧 lane mask 的问题。2048 点、1025 行等不完整 CTA 会选中过界行；该问题
+曾导致设备 VMFault，相关旧任务已停止，失败日志保留。修复前新增地址求值检查
+33/36 失败，修复后 36/36 通过；随后扩展到 R2C 的同类写回，共 72/72 通过。
+修复后的二维 2048² 实数路径（两精度、正反向、batch1/4）8/8 完整 batch
+NumPy 与 hipFFT 检查通过，不能将修复前仅有性能数据的路径视为已取得数值资格。
+
+`20261117_002500_bulk_screen/` 用 48 次多 shape CLI 调用筛选规范矩阵的全部
+400 项。统一配置为 large-packed-real、FourStep/leaf 单缓冲、cyclic unit、
+FP32 paired I/O、FP64 radix cap=16、irreducible split 保持、FP64 卷积 cap=16、
+leaf wave packing、FP32 3D wave/root-table；二维 rows=1、col-store=0。
+400 项均取得有限正计时，没有运行错误；case 加权几何平均 **1.2781918x**，
+最低 **0.4899598x**，**19 项低于 0.7x**。这是 performance-only 筛选，
+未验证本轮全部参考结果，`baseline_valid` 明确为空，不是最终验收结果。
+
+`ebc2502f` 的紧凑二维实数调度将适用范围扩展到首轴大于一、偶数末轴的 dense
+布局，并以 `FLAGFFT_HCU_PLAN_GRAPH=real_2d` 筛选该拓扑的执行图回放，避免全局
+回放对一维质数的退化。64²、128²、2048²、两精度、正反向、batch1/4 共
+24/24 完整 batch NumPy 与 hipFFT 检查通过。性能筛选中 64² FP32 C2R 从约
+0.490x 提至 0.785x，但 R2C 约 0.662x、2048² 单 batch 仍约 0.60–0.66x，
+因此不能据此宣布达标。
+
+以下候选仍默认关闭，后续记录必须包含实际源提交及统一环境，不能拼接逐项赢家：
+
+- `FLAGFFT_HCU_WAVE_CODELET=1`：wave 的局部 radix16/32 复用现有原生蝶形，
+  保持精确类型的系数。`DENSE_WAVE=fourstep_codelets` 只替换支持该蝶形的
+  FourStep 行列，不改变短叶子的路径。生成数学的 CPU NumPy 对照通过，设备筛选中。
+- `FLAGFFT_HCU_2D_REAL_ROW_STORE=1`：两个轴均为 Leaf 的 dense 二维前向实数
+  变换，将行 FFT 与紧凑谱转置合并写出，删除中间完整转置；不使用尺寸表。
+- `FLAGFFT_HCU_STAGE_TRAFFIC_COST=1|fp32|fp64`：规划器按每个阶段边界完整
+  complex FFT 的 LDS 写入和读取字节量增加成本，计入上下文及缓存失效。
+  它与公开 shape/batch 无关，不用具体尺寸强制因子顺序，尚待设备筛选。
+
+相关 HCU Python 回归当前为 **917 passed**；CPU 检查仍不代替设备验收。
+目标尚未达到，最终仍须同一冻结配置完成规范 400 项 combined/full-batch 验收。
