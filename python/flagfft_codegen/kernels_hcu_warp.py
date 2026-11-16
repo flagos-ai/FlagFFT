@@ -12,13 +12,6 @@ _FOURSTEP_ROWS = {"four_step_row", "four_step_real_row", "four_step_hermitian_ro
 _FOURSTEP_COLS = {"four_step_col", "four_step_r2c_col", "four_step_c2r_col"}
 
 
-def _explicit_wave_count(pack):
-    setting = os.getenv("FLAGFFT_HCU_WAVE_LAYOUT", "0")
-    if setting not in {"0", "1"}:
-        raise ValueError("FLAGFFT_HCU_WAVE_LAYOUT must be 0 or 1")
-    return min(8, pack) if setting == "1" else 0
-
-
 def hcu_dense_wave_pack(plan, io_mode):
     profile = current_profile()
     if profile.backend != "hcu" or profile.warp_size != 64:
@@ -63,7 +56,6 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
         output_radix_chunk=chunk if chunk < radix else 0,
         four_step_other=other if fourstep else 0,
         wide=wide,
-        explicit_warps=_explicit_wave_count(pack),
     )
     leaf_name = "hcu_" + name + "_dense"
     aliases = ["    inp=in_ptr", "    out=out_ptr", "    span=1"]
@@ -121,7 +113,6 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch):
     name, source = build_ix_warp_source(
         plan.length, pack, mode, plan.direction == "inverse",
         output_radix_chunk=chunk if chunk < radix else 0,
-        explicit_warps=_explicit_wave_count(pack),
     )
     leaf_name = "hcu_" + name + "_leaf"
     aliases = [

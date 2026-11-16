@@ -95,18 +95,3 @@ def test_wide_wave_uses_supplied_double_roots_and_interleaved_double_stores(tmp_
     name = metadata["kernel_name"]
     chunk = int(name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in name else n // 64
     assert 4 * 64 * chunk * 16 <= 32768
-
-
-@pytest.mark.parametrize("dtype,pack", [("complex64", 8), ("complex128", 4)])
-@pytest.mark.parametrize("n", [64, 512, 2048])
-def test_wave_layout_assigns_each_fft_to_64_physical_lanes(tmp_path, monkeypatch, dtype, pack, n):
-    monkeypatch.setenv("FLAGFFT_HCU_WAVE_LAYOUT", "1")
-    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE_FP64", "1")
-    metadata = emit_jit_kernel(kernel="leaf", length=n, factors=(16, n // 16),
-        lanes=16, num_warps=1, generic_radices=(), smem_size=n, direction="forward",
-        dtype=dtype, prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
-    source = Path(metadata["module_path"]).read_text()
-    assert metadata["num_warps"] == pack
-    assert f"tle.gpu.BlockEncoding([1,1],[1,64],[{pack},1],[1,0])" in source
-    assert source.count("tle.gpu.set_layout(") == n // 64 * 2
-    compile(source, "<hcu-explicit-wave-layout>", "exec")

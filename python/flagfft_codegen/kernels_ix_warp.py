@@ -24,8 +24,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          local_codelet: bool = False, manual_store: bool = False,
                          output_radix_chunk: int = 0, lane_width: int = 64,
                          packed_gather: bool = False,
-                         four_step_other: int = 0, wide: bool = False,
-                         explicit_warps: int = 0) -> tuple[str, str]:
+                         four_step_other: int = 0, wide: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -40,8 +39,6 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp output chunk")
     if pack not in {1,2,4,8,16,32,64}:
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
-    if explicit_warps and (explicit_warps not in {1,2,4,8} or lane_width != 64):
-        raise ValueError("explicit wave layout requires 64 lanes and 1, 2, 4 or 8 waves")
     row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
     col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
@@ -67,7 +64,6 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if lane_width!=64: name+=f'_lanes{lane_width}'
     if packed_gather: name+='_pairgather'
     if wide: name+='_f64'
-    if explicit_warps: name+='_layout'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -163,11 +159,6 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                  '    pair=tl.load(ip+offset,valid,0)',
                  f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                  f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
-    if explicit_warps:
-        a.insert(0, 'import triton.experimental.tle.language as tle')
-        for j in range(radix):
-            for component in ('r','i'):
-                a += [f'    x{j}{component}=tle.gpu.set_layout(x{j}{component},tle.gpu.BlockEncoding([1,1],[1,64],[{explicit_warps},1],[1,0]))']
     if radix==4:
         for c in 'ri': a += [f'    a{c}=x0{c}+x2{c}',f'    b{c}=x1{c}+x3{c}',f'    c{c}=x0{c}-x2{c}',f'    d{c}=x1{c}-x3{c}']
         a+= ['    r0=ar+br','    i0=ai+bi','    r2=ar-br','    i2=ai-bi',
