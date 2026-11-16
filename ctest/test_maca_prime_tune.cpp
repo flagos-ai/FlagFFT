@@ -81,6 +81,31 @@ TEST(PermutedStoreGrid, CoversEachPlaneIncludingOddSpansAndTailTiles) {
   EXPECT_EQ(flagfft::permuted_store_outer_blocks(4 * 1025, 1025, 8), 516);
 }
 
+TEST(HcuPackedCTA, BoundsReconstructionButterfliesWithoutLengthTables) {
+  ScopedEnv enabled("FLAGFFT_HCU_PACKED_REAL_CTA", "1");
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  for (int64_t n = 32; n <= 1024; n *= 2) {
+    const std::vector<int64_t> original = n == 32 ? std::vector<int64_t>{32} :
+        std::vector<int64_t>{32, n/32};
+    flagfft::LeafPlanNode leaf(n, original, 1, 32, 1, {32}, n);
+    auto factors = flagfft::hcu_packed_cta_factors(request, leaf);
+    int64_t product = 1;
+    for (int64_t radix : factors) { product *= radix; EXPECT_GE(radix, 2); EXPECT_LE(radix, 16); }
+    EXPECT_EQ(product, n);
+    if (n >= 128) for (int64_t radix : factors) EXPECT_LE(n/radix, 128);
+    request.device_type = "cuda";
+    EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, leaf), leaf.factors);
+    request.device_type = "hcu";
+  }
+  flagfft::LeafPlanNode mixed(210, {7, 5, 6}, 1, 30, 1, {7, 5, 6}, 210);
+  EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, mixed), mixed.factors);
+  ScopedEnv disabled("FLAGFFT_HCU_PACKED_REAL_CTA", "0");
+  flagfft::LeafPlanNode leaf(1024, {32, 32}, 1, 32, 1, {32}, 1024);
+  EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, leaf), leaf.factors);
+}
+
 TEST(HcuWave3D, SelectsOnlySupportedDenseSinglePrecisionC2CGeometry) {
   flagfft::FFTRequest request;
   request.device_type = "hcu";

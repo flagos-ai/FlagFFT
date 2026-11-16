@@ -2613,6 +2613,21 @@ namespace {
                : default_form;
   }
 
+  std::shared_ptr<LeafPlanNode> hcu_packed_cta_leaf(std::shared_ptr<LeafPlanNode> leaf,
+                                                const FFTRequest &request) {
+    if (!leaf) return leaf;
+    auto factors = hcu_packed_cta_factors(request, *leaf);
+    if (factors == leaf->factors) return leaf;
+    int64_t minimum = leaf->length, maximum = 1;
+    for (int64_t radix : factors) {
+      minimum = std::min(minimum, leaf->length / radix);
+      maximum = std::max(maximum, leaf->length / radix);
+    }
+    const int64_t lanes = leaf->length >= 128 ? maximum : minimum;
+    return std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
+        lanes, std::max<int64_t>(1, (maximum + 31) / 32), std::vector<int64_t>{}, leaf->smem_size);
+  }
+
   bool hcu_fused_packed_real_enabled(const FFTRequest &request, int64_t batch, int64_t n) {
     const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
     if (packed && std::string(packed) == "0") return false;
@@ -4608,6 +4623,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_stor
   child.input_strides = {n / 2, 1};
   PlanBuilder builder;
   auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(n / 2, child));
+  leaf = hcu_packed_cta_leaf(std::move(leaf), child);
   if (!leaf || leaf->factors.size() < 2) return nullptr;
   auto key = KernelKey::leaf_r2c(triton_target_for_request(child), child.direction, child.input_dtype,
       leaf->length, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
@@ -4761,6 +4777,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
             packed_child->request.direction, packed_child->request.input_dtype,
             leaf->length,leaf->factors,leaf->lanes,leaf->num_warps,leaf->generic_radices,leaf->smem_size);
@@ -4949,6 +4966,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       auto leaf=std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan);
       if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
         leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
+      leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
       if (leaf) {
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),

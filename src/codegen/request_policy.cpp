@@ -19,11 +19,29 @@
 #include "flagfft/codegen.hpp"
 
 #include <cstdlib>
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <string>
 
 namespace flagfft {
+
+std::vector<int64_t> hcu_packed_cta_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
+  const char *setting = std::getenv("FLAGFFT_HCU_PACKED_REAL_CTA");
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+      !setting || std::string(setting) != "1" || leaf.length < 32 || leaf.length > 1024 ||
+      (leaf.length & (leaf.length - 1)) || leaf.factors.empty()) return leaf.factors;
+  // Reconstruction keeps a second complex partner live. Bound the butterfly
+  // at radix sixteen, distributing the radix bits evenly across FFT stages
+  // so a tiny final butterfly does not require incomplete shared-read groups.
+  int bits = 0;
+  for (int64_t n = leaf.length; n > 1; n /= 2) ++bits;
+  const int stages = (bits + 3) / 4;
+  std::vector<int64_t> factors;
+  for (int stage = 0; stage < stages; ++stage)
+    factors.push_back(int64_t{1} << (bits / stages + (stage < bits % stages)));
+  return factors;
+}
 
 int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pack) {
   if (transforms < 0 || span <= 0 || pack <= 0)
