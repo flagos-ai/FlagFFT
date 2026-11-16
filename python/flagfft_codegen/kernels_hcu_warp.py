@@ -132,6 +132,12 @@ def build_hcu_dense_wave(plan, io_mode, params, pack, n1=0, n2=0):
 
 def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
     profile = current_profile()
+    strided = io_mode == "strided_permuted_store"
+    strided_setting = os.getenv("FLAGFFT_HCU_WAVE_STRIDED_INPUT", "0")
+    if profile.backend == "hcu" and strided_setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_WAVE_STRIDED_INPUT must be 0 or 1")
+    strided_enabled = (strided and strided_setting == "1" and plan.dtype == "complex64"
+                       and perm_form.startswith("inner") and _root_table_enabled())
     wide_setting = os.getenv("FLAGFFT_HCU_3D_WARP_FP64", "0")
     if profile.backend == "hcu" and wide_setting not in {"0", "1"}:
         raise ValueError("FLAGFFT_HCU_3D_WARP_FP64 must be 0 or 1")
@@ -142,7 +148,8 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
             or not 64 <= plan.length <= 2048 or plan.length & (plan.length - 1)
             or (wide and plan.length * 8 > profile.warp_size *
                 (256 if _wide_root_period(plan) else 128))
-            or (io_mode != "permuted_store" and not (wide and io_mode == "permuted_store_r2c"))
+            or (io_mode != "permuted_store" and not (wide and io_mode == "permuted_store_r2c")
+                and not strided_enabled)
             or span <= 0 or batch <= 0):
         return 0
     inner = perm_form.startswith("inner")
@@ -165,7 +172,7 @@ def hcu_warp_store_pack(plan, io_mode, perm_form, span, batch):
         live_bytes = 2 * (profile.max_dynamic_shared_memory or 65536)
         while pack > 1 and plan.length * pack * 16 > live_bytes:
             pack //= 2
-    while pack > 1 and ((batch // span) % pack
+    while not strided and pack > 1 and ((batch // span) % pack
                        if inner else span % pack if io_mode == "permuted_store_r2c" else False):
         pack //= 2
     if wide and target == "auto" and pack < 4:
@@ -182,6 +189,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
 
     mode = "r2c" if io_mode == "permuted_store_r2c" else "inner" if perm_form.startswith("inner") else "outer"
     wide = plan.dtype == "complex128"
+    strided = io_mode == "strided_permuted_store"
     lanes = 64
     radix = plan.length // lanes
     chunk = min(radix, 8)
@@ -195,6 +203,7 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
         table_roots=_root_table_enabled() and not wide,
         wide=wide, lane_width=lanes,
         root_period=_wide_root_period(plan),
+        strided_input=strided,
     )
     batched = perm_form.endswith("_batched")
     leaf_name = "hcu_" + name + ("_batched" if batched else "") + "_leaf"
@@ -202,7 +211,8 @@ def build_hcu_warp_store(plan, perm_form, params, pack, span, batch, io_mode="pe
         if "rows_per_transform" not in params or mode != "inner":
             raise ValueError("batched HCU wave stores require the per-cube row count")
         source = source.replace(
-            f"    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+slot",
+            ("    gbase=(row%span)*(nbatch//span)+row//span" if strided else
+             f"    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+slot"),
             f"    cube=row//rows_per_transform\n"
             f"    local_row=row%rows_per_transform\n"
             f"    gbase=cube*({plan.length}*rows_per_transform)+(local_row%span)*(rows_per_transform//span)+local_row//span", 1,

@@ -15,6 +15,14 @@
 """IX warp-local radix-4 x FFT64 prototype; source generator only."""
 import math
 
+
+def strided_input_tile_shape(pack):
+    """Balance independent rows across the input and output fast axes."""
+    outer = 1
+    while outer * outer < pack:
+        outer *= 2
+    return outer, pack // outer
+
 def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = False) -> tuple[str, str]:
     return build_ix_warp_source(256, pack, mode, inverse)
 
@@ -25,7 +33,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          output_radix_chunk: int = 0, lane_width: int = 64,
                          packed_gather: bool = False,
                          four_step_other: int = 0, wide: bool = False,
-                         table_roots: bool = False, root_period: int = 0) -> tuple[str, str]:
+                         table_roots: bool = False, root_period: int = 0,
+                         strided_input: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -42,6 +51,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
     if root_period not in {0, 4, 8} or (root_period and not (wide or table_roots)):
         raise ValueError("periodic wave roots require supplied tables and period 4 or 8")
+    if strided_input and (mode != "inner" or manual_store):
+        raise ValueError("strided wave input requires an ordinary inner store")
     row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
     col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
@@ -69,11 +80,19 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if wide: name+='_f64'
     if table_roots: name+='_roots'
     if root_period: name+=f'_period{root_period}'
+    if strided_input: name+='_stridedinput'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
        f'    lane=tl.arange(0,{lane_width})[None,:]']
-    if mode=='inner':
+    if strided_input:
+        outer_tile, span_tile = strided_input_tile_shape(pack)
+        a += [f'    span_groups=(span+{span_tile-1})//{span_tile}',
+              f'    outer_row=(pid//span_groups)*{outer_tile}+slot//{span_tile}',
+              f'    span_row=(pid%span_groups)*{span_tile}+slot%{span_tile}',
+              '    row=outer_row*span+span_row',
+              '    gbase=(row%span)*(nbatch//span)+row//span']
+    elif mode=='inner':
         a+= [f'    row_base=(pid//span)*{pack}*span+pid%span',
              '    row=row_base+slot*span',
              f'    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+slot']
@@ -88,6 +107,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             outn=n//2+1 if mode=='r2c' else n
             a+=[f'    gbase=(row_base//span)*({outn}*span)+(row_base%span)+slot']
     a+= ['    valid=row[:,None]<nbatch']
+    if strided_input:
+        a += ['    valid_row=(outer_row<(nbatch//span))&(span_row<span)',
+              '    valid=valid_row[:,None]']
     if four_step:
         a += [f'    valid=row[:,None]<{four_step_other}',
               f'    matrix_base=tl.program_id(1)*{n*four_step_other}']
@@ -176,6 +198,19 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             a+=[f'    x{j}r=tl.load(inp+row[:,None]*input_distance+pos,valid,0.0)',
                 f'    x{j}i=tl.full(({pack},{lane_width}),0.0,tl.float64)' if wide else
                 f'    x{j}i=tl.full(({pack},{lane_width}),0.0,tl.float32)']
+        elif strided_input:
+            # Load neighboring independent rows together, then transpose
+            # into the wave FFT layout. Odd spans and tiles crossing a
+            # matrix boundary retain their exact, unhinted addresses.
+            a += [f'    offset=outer_row[None,:]*({n}*span)+span_row[None,:]+tl.trans(pos)*span']
+            if wide:
+                a += [f'    x{j}r=tl.trans(tl.load(inp+offset*2,tl.trans(valid),0.0))',
+                      f'    x{j}i=tl.trans(tl.load(inp+offset*2+1,tl.trans(valid),0.0))']
+            else:
+                a += ['    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
+                      '    pair=tl.trans(tl.load(ip+offset,tl.trans(valid),0))',
+                      f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                      f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
         else:
             a+=['    offset=row[:,None]*input_distance+pos',
                  f'    offset=tl.max_contiguous(tl.multiple_of(offset,(1,{lane_width})),(1,{lane_width}))']
@@ -376,10 +411,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       '    nyquist=tl.cast(tl.cast(nyquist_r,tl.uint32,bitcast=True),tl.uint64)',
                       '    tl.store(ptr+address,nyquist,valid&(pos==0))']
         else:
-            a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')',
-                 '    stride=nbatch' if mode=='inner' else '    stride=span',
+            if not strided_input:
+                a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')']
+            a+=['    stride=nbatch' if mode=='inner' else '    stride=span',
                  '    address=freq[:,None]*stride+gbase[None,:]',
-                 '    mask=(row[None,:]<nbatch)']
+                 '    mask=valid_row[None,:]' if strided_input else '    mask=(row[None,:]<nbatch)']
             if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
             if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
             if wide_complex:

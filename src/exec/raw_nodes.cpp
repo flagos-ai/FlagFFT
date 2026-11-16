@@ -617,6 +617,7 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
         kernel->kernel_name.find("_outer_") != std::string::npos) {
       blocks = permuted_store_outer_blocks(context.batch, outer_stride, kernel->batch_per_block);
     }
+    if (kernel->grid_x_override > 0) blocks = kernel->grid_x_override;
     kernel->launch(context.stream, args, blocks, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {

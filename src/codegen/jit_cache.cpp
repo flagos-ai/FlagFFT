@@ -284,6 +284,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *permuted_wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
     const char *permuted_pack = std::getenv("FLAGFFT_HCU_3D_WARP_PACK");
     const char *permuted_wide = std::getenv("FLAGFFT_HCU_3D_WARP_FP64");
+    const char *strided_wave = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_INPUT");
+    cache_key += ";hcu-wave-strided-input-v1=" + std::string(strided_wave ? strided_wave : "0");
     cache_key += ";hcu-permuted-wave-v2=" + std::string(permuted_wave ? permuted_wave : "0") +
                  ";pack=" + std::string(permuted_pack ? permuted_pack : "auto") +
                  ";fp64=" + std::string(permuted_wide ? permuted_wide : "0");
@@ -1143,6 +1145,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        kernel->kernel_name == "power_cube_finish" ||
        kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (key.kind == KernelKind::LeafStridedPermutedStore &&
+      kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
+      kernel->kernel_name.find("_stridedinput") != std::string::npos) {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    if (kernel->grid_x_override <= 0)
+      throw std::runtime_error("HCU strided wave requires a positive tile-derived launch grid");
+  }
   if (key.kind == KernelKind::Hcu3DCTFirst || key.kind == KernelKind::Hcu3DCTLast) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
     if (kernel->grid_x_override <= 0) {

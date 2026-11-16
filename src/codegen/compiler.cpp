@@ -6619,8 +6619,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
            ? request.input_dtype == "complex64"
            : std::string(c2r_middle_transpose_override) == "1");
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
+  const bool wave_fused_load = request.device_type == "hcu" && request.device_arch == "gfx936" &&
+      request.input_dtype == "complex64" && n1_leaf && n1 >= 64 && n1 <= 2048 &&
+      (n1 & (n1 - 1)) == 0 && flag_or_default("FLAGFFT_HCU_3D_WARP_FFT", false) &&
+      flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false) &&
+      flag_or_default("FLAGFFT_HCU_WAVE_STRIDED_INPUT", false);
   const bool c2r_fused_load_default =
-      !(request.input_dtype == "complex64" && batch >= 4 && n0 == 256 && n1 == 256 && n2 == 256);
+      wave_fused_load || !(request.input_dtype == "complex64" && batch >= 4 &&
+                           n0 == 256 && n1 == 256 && n2 == 256);
   const bool n1_strided_input =
       request.device_type == "hcu" && inverse && !small && n1_leaf && !c2r_middle_transpose &&
       (c2r_fused_load_override == nullptr ? c2r_fused_load_default

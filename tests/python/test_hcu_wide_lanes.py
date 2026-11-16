@@ -28,11 +28,15 @@ class Pointer:
 class NumpyTL:
     pid = 0
     float64 = np.float64
+    float32 = np.float32
+    uint32 = np.uint32
+    uint64 = np.uint64
+    int64 = np.int64
+    pointer_type = staticmethod(lambda dtype: dtype)
     arange = staticmethod(np.arange)
     full = staticmethod(np.full)
     broadcast_to = staticmethod(np.broadcast_to)
     gather = staticmethod(np.take_along_axis)
-    where = staticmethod(np.where)
     reshape = staticmethod(np.reshape)
     join = staticmethod(lambda a, b: np.stack((a, b), axis=-1))
     trans = staticmethod(np.transpose)
@@ -46,6 +50,22 @@ class NumpyTL:
         return value
 
     max_contiguous = multiple_of
+
+    @staticmethod
+    def where(condition, a, b):
+        # Triton's untyped floating literals start as FP32. Preserve array
+        # precision when either arm already carries an explicit dtype.
+        if isinstance(a, float) and isinstance(b, float):
+            a, b = np.float32(a), np.float32(b)
+        return np.where(condition, a, b)
+
+    @staticmethod
+    def cast(value, dtype, bitcast=False):
+        if isinstance(value, Pointer):
+            assert value.offset == 0
+            return Pointer(value.data.view(dtype))
+        value = np.asarray(value)
+        return value.view(dtype) if bitcast else value.astype(dtype)
 
     @staticmethod
     def load(ptr, mask=True, other=0):

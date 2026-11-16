@@ -400,6 +400,15 @@ def _metadata(
             batch_per_block=1
             inner_pack=warp_pack
             tle_fused_twiddle=True
+    strided_grid = {}
+    if kernel_name.startswith("hcu_warp") and "_stridedinput" in kernel_name:
+        from .kernels_ix_warp import strided_input_tile_shape
+        if permutation_span <= 0 or permutation_batch <= 0 or permutation_batch % permutation_span:
+            raise ValueError("HCU strided wave requires complete static permutation planes")
+        outer_tile, span_tile = strided_input_tile_shape(batch_per_block)
+        outer = permutation_batch // permutation_span
+        strided_grid["grid_x_override"] = ((outer + outer_tile - 1)//outer_tile
+                                          * ((permutation_span + span_tile - 1)//span_tile))
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -418,6 +427,7 @@ def _metadata(
         "inner_pack": inner_pack,
         "tle_fused_twiddle": tle_fused_twiddle,
         "ix_warp_fft_pack": warp_pack,
+        **strided_grid,
     }
 
 
