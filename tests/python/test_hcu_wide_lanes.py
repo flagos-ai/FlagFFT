@@ -157,6 +157,29 @@ def test_packed_transposed_spectrum_matches_numpy_with_partial_planes(monkeypatc
 
 
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_cli_transports_the_transposed_packed_real_layout(tmp_path, monkeypatch, capsys, dtype):
+    import json
+    from flagfft_codegen import cli
+    monkeypatch.setenv("FLAGFFT_HCU_PACKED_REAL_STORE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1")
+    monkeypatch.setenv("FLAGFFT_HCU_DENSE_WAVE", "0")
+    device = {"backend": "hcu", "device_arch": "gfx936", "warp_size": 64,
+              "max_threads_per_block": 1024, "max_dynamic_shared_memory": 65536}
+    monkeypatch.setattr(sys, "argv", ["codegen", "--kernel", "leaf_packed_r2c",
+        "--length", "128", "--factors", "8,4,4", "--lanes", "16", "--num-warps", "1",
+        "--smem-size", "128", "--direction", "forward", "--dtype", dtype,
+        "--perm-form", "outer_packed", "--target", "hcu:gfx936:64",
+        "--device-profile", json.dumps(device), "--execution-policy", "native",
+        "--out-dir", str(tmp_path)])
+    cli.main()
+    metadata = json.loads(capsys.readouterr().out)
+    source = Path(metadata["module_path"]).read_text()
+    assert "_transpose" in metadata["kernel_name"]
+    assert "outer_packed" in metadata["module_path"]
+    assert "span=output_distance" in source
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 @pytest.mark.parametrize("n,factors,lanes", [(128, (8, 4, 4), 16), (1024, (16, 8, 8), 64)])
 def test_transposed_packed_leaf_preserves_span_abi_and_native_fallback_names(
         tmp_path, monkeypatch, dtype, n, factors, lanes):

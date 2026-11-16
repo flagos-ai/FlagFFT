@@ -198,6 +198,7 @@ def main() -> None:
         "--perm-form",
         choices=(
             "outer",
+            "outer_packed",
             "inner",
             "inner_batched",
             "inner_middle_batched",
