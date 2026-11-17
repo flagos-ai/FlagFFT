@@ -42,7 +42,7 @@ namespace {
   };
 
   bool flag_or_default(const char *name, bool default_value) {
-    const char *value = npu_performance_env(name);
+    const char *value = performance_env(name);
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
@@ -824,12 +824,12 @@ namespace {
         continue;
       }
       if (!switched && prefix>=64) {
-        const char *tile_setting=npu_performance_env("FLAGFFT_NPU_DIF_TRANSPOSE_TILE");
+        const char *tile_setting=performance_env("FLAGFFT_NPU_DIF_TRANSPOSE_TILE");
         const int64_t tile=tile_setting ? std::stoll(tile_setting) : 32;
         if (tile!=32 && tile!=64) throw std::runtime_error("DIF transpose tile must be 32 or 64");
         const bool dense_transpose=aligned && padded_prefix<=256 &&
             flag_or_default("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE",true);
-        const char *points_setting=npu_performance_env("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
+        const char *points_setting=performance_env("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
         const int64_t transpose_points=points_setting ? std::stoll(points_setting) :
             (workspace_length>=262144 ? 8192 : 4096);
         if (transpose_points!=4096 && transpose_points!=8192)
@@ -1032,7 +1032,7 @@ namespace {
     int64_t pack = small_batch ? (request.real_transform_kind=="c2r" ? 1 : 4) :
                      request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
                      (small_real ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
-    if (const char *value = npu_performance_env(key.length == 256
+    if (const char *value = performance_env(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
       const std::string text(value);
       if (text != "1" && text != "2" && text != "4" && text != "8" && text != "16" && text != "32") {
@@ -1200,7 +1200,7 @@ namespace {
   }
 
   bool use_npu_2d_cube_dft(const FFTRequest &request, int64_t n) {
-    const char *setting = npu_performance_env("FLAGFFT_NPU_2D_CUBE_DFT");
+    const char *setting = performance_env("FLAGFFT_NPU_2D_CUBE_DFT");
     return setting != nullptr && std::string(setting) == "1" && request.device_type == "npu" &&
            request.origin_rank == 2 && request.input_dtype == "complex64" &&
            request.output_dtype == "complex64" && n >= 32 && n <= 64;
@@ -2385,7 +2385,7 @@ namespace {
 
   std::shared_ptr<CompiledRawNode> make_npu_aiv_fft256_complex_child(
       const FFTRequest &request, bool allow_transposed_store) {
-    const char *group_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV256_GROUP");
+    const char *group_setting = performance_env("FLAGFFT_NPU_3D_AIV256_GROUP");
     if (group_setting == nullptr) group_setting = "8";
     int64_t group_size = 1;
     if (std::string(group_setting) == "4") {
@@ -2396,7 +2396,7 @@ namespace {
       throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_GROUP must be 1, 4, or 8");
     }
 
-    const char *pair_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV256_PAIR");
+    const char *pair_setting = performance_env("FLAGFFT_NPU_3D_AIV256_PAIR");
     const bool pair_mode = pair_setting == nullptr
         ? npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR")
         : std::string(pair_setting) == "1";
@@ -2407,7 +2407,7 @@ namespace {
       throw std::runtime_error("FLAGFFT_NPU_3D_AIV256_PAIR requires FLAGFFT_NPU_3D_AIV256_GROUP=8");
     }
 
-    const char *pair_store_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV256_PAIR_STORE");
+    const char *pair_store_setting = performance_env("FLAGFFT_NPU_3D_AIV256_PAIR_STORE");
     const bool pair_store_requested = pair_store_setting == nullptr
         ? npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_STORE")
         : std::string(pair_store_setting) == "1";
@@ -2420,7 +2420,7 @@ namespace {
           "FLAGFFT_NPU_3D_AIV256_PAIR_STORE requires pair mode and group size 8");
     }
 
-    const char *radix4_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
+    const char *radix4_setting = performance_env("FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
     const bool radix4_requested = radix4_setting == nullptr
         ? npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4")
         : std::string(radix4_setting) == "1";
@@ -2593,7 +2593,7 @@ namespace {
 
   void mark_npu_portable_leaf(KernelKey &key, const FFTRequest &request) {
     key.npu_portable_leaf = npu_portable_leaf_enabled(request);
-    const char *pack = npu_performance_env("FLAGFFT_NPU_2D_BATCH_PACK");
+    const char *pack = performance_env("FLAGFFT_NPU_2D_BATCH_PACK");
     if (key.npu_portable_leaf && (pack == nullptr || std::string(pack) == "auto") &&
         (key.kind == KernelKind::Leaf || key.kind == KernelKind::LeafR2C || key.kind == KernelKind::LeafC2R)) {
       key.npu_batch_pack = request.batch >= 4 ? 4 : (request.batch >= 2 ? 2 : 1);
@@ -2603,7 +2603,7 @@ namespace {
   std::string hcu_3d_final_axis_perm_form(const FFTRequest &request) {
     if (request.device_type != "hcu") return "outer";
     for (const char *name : {"FLAGFFT_HCU_3D_FINAL_WARPS", "FLAGFFT_HCU_3D_FINAL_PACK"}) {
-      const char *value = npu_performance_env(name);
+      const char *value = performance_env(name);
       if (value != nullptr && std::string(value) != "auto") return "outer_last";
     }
     return "outer";
@@ -2613,7 +2613,7 @@ namespace {
                                     const char *pack_knob,
                                     const char *tagged_form,
                                     const char *default_form) {
-    const char *value = npu_performance_env(pack_knob);
+    const char *value = performance_env(pack_knob);
     return request.device_type == "hcu" && value != nullptr && std::string(value) != "auto"
                ? tagged_form
                : default_form;
@@ -2637,10 +2637,10 @@ namespace {
   bool hcu_fused_packed_real_enabled(const FFTRequest &request, int64_t batch, int64_t n) {
     const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
     if (packed && std::string(packed) == "0") return false;
-    const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+    const char *layout = performance_env("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
     const bool native_cta = n / 2 <= 1024 &&
         flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false);
-    const char *public_setting = std::getenv("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
+    const char *public_setting = performance_env("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
     const std::string public_mode = public_setting ? public_setting : "0";
     const bool wide_inverse = (request.input_dtype == "complex128" || request.input_dtype == "float64") &&
         (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
@@ -2688,7 +2688,7 @@ namespace {
     // The half-length boundary helped C2R, while it displaced the faster
     // permuted-store R2C path. Keep this experiment inverse-only.
     if (request.device_type != "hcu" || request.origin_rank != 3) return false;
-    const char *setting = std::getenv("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY");
+    const char *setting = performance_env("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY");
     if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
     }
@@ -3040,7 +3040,7 @@ namespace {
   }
 
   bool maca_flag_or_default(const char *name, bool default_value) {
-    const char *value = npu_performance_env(name);
+    const char *value = performance_env(name);
     if (value == nullptr) {
       return default_value;
     }
@@ -3207,7 +3207,7 @@ namespace {
 std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
     const FFTRequest &request, int64_t stride, int32_t group_size,
     NpuAivFFT64Mode mode, bool radix4_pair) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   if (stride != 1 && (group_size == 1 || radix4_pair)) {
     return make_npu_aiv_fft_small_child(request, 64, stride, group_size,
         static_cast<NpuAivFFTSmallMode>(mode));
@@ -3240,7 +3240,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft64_child(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft512_child(
     const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::vector<uint32_t> host_indices;
   std::vector<float> host_twiddles;
   build_npu_aiv_fft_radix4_pair_tables(request, 512, 1, NpuAivFFT64Mode::Complex,
@@ -3266,7 +3266,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::make_npu_aiv_fft512_child(
 #endif
 
 void TritonCompiler::configure_single_transform_policies(const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   maca_3d_policy_ = request.device_type == "maca" && request.origin_rank == 3;
   maca_3d_c2c32_single_cube_policy_ = request.device_type == "maca" &&
                                       request.maca_3d_c2c32_single_cube;
@@ -3347,7 +3347,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                                   const FFTRequest &request,
                                                                   int64_t batch,
                                                                   bool allow_npu_aiv256_transposed_store) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
@@ -3424,7 +3424,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_kernel(key);
   };
   auto make_npu_2d_aiv128_child = [&]() -> std::shared_ptr<CompiledRawNode> {
-    const char *group_setting = npu_performance_env("FLAGFFT_NPU_2D_AIV128_GROUP");
+    const char *group_setting = performance_env("FLAGFFT_NPU_2D_AIV128_GROUP");
     if (group_setting == nullptr) group_setting = "auto";
     int32_t group_size = npu_2d_radix4_pair
                              ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
@@ -3493,7 +3493,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.output_dtype == "complex64" && leaf->length == 128 &&
                                    npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV128");
     if (use_npu_3d_aiv128 && batch % 4 == 0) {
-      const char *group_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV128_GROUP");
+      const char *group_setting = performance_env("FLAGFFT_NPU_3D_AIV128_GROUP");
       if (group_setting == nullptr) group_setting = "16";
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
@@ -3517,7 +3517,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                   leaf->length == 64 &&
                                   npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV64");
     if (use_npu_3d_aiv64) {
-      const char *group_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV64_GROUP");
+      const char *group_setting = performance_env("FLAGFFT_NPU_3D_AIV64_GROUP");
       if (group_setting == nullptr) group_setting = "32";
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 32)
@@ -3600,7 +3600,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                   request.output_dtype == "complex64" && stockham->length == 64 &&
                                   npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV64");
     if (use_npu_3d_aiv64) {
-      const char *group_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV64_GROUP");
+      const char *group_setting = performance_env("FLAGFFT_NPU_3D_AIV64_GROUP");
       if (group_setting == nullptr) group_setting = "32";
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 32)
@@ -3615,7 +3615,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                    request.output_dtype == "complex64" && stockham->length == 128 &&
                                    npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV128");
     if (use_npu_3d_aiv128 && batch % 4 == 0) {
-      const char *group_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV128_GROUP");
+      const char *group_setting = performance_env("FLAGFFT_NPU_3D_AIV128_GROUP");
       if (group_setting == nullptr) group_setting = "16";
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, batch, 16)
@@ -3662,7 +3662,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       }
     }
     auto block_override = [](const char *name, int64_t fallback) {
-      const char *raw = npu_performance_env(name);
+      const char *raw = performance_env(name);
       if (raw == nullptr) return fallback;
       const std::string value(raw);
       if (value != "8" && value != "16" && value != "32" && value != "64" && value != "128") {
@@ -4118,9 +4118,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                             n1 == 128 && n2 == 128)) {
       const bool recursive = flag_or_default("FLAGFFT_NPU_RECURSIVE_AXIS", false);
       int64_t preferred=8;
-      const bool explicit_pack=npu_performance_env("FLAGFFT_NPU_STRUCTURED_PACK")!=nullptr;
+      const bool explicit_pack=performance_env("FLAGFFT_NPU_STRUCTURED_PACK")!=nullptr;
       if (explicit_pack) {
-        const std::string value=npu_performance_env("FLAGFFT_NPU_STRUCTURED_PACK");
+        const std::string value=performance_env("FLAGFFT_NPU_STRUCTURED_PACK");
         if (value!="1" && value!="2" && value!="4" && value!="8" && value!="16" && value!="32")
           throw std::runtime_error("FLAGFFT_NPU_STRUCTURED_PACK must be 1, 2, 4, 8, 16 or 32");
         preferred=std::stoll(value);
@@ -4274,7 +4274,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const bool use_musa_3d_fp64_full_leaf = request.device_type == "musa" && request.device_arch == "31" &&
                                            request.input_dtype == "complex128" && request.origin_rank == 3 &&
                                            bluestein->length == 997 && batch <= 4096;
-    const char *hcu_full_leaf_override = std::getenv("FLAGFFT_HCU_3D_BLUESTEIN_FULL_LEAF");
+    const char *hcu_full_leaf_override = performance_env("FLAGFFT_HCU_3D_BLUESTEIN_FULL_LEAF");
     const bool use_hcu_3d_fp64_full_leaf = request.device_type == "hcu" &&
                                           request.input_dtype == "complex128" && request.origin_rank == 3 &&
                                           bluestein->length == 997 && batch <= 4096 &&
@@ -4305,7 +4305,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_type == "cuda" && request.device_arch == "sm_80" &&
         leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
         flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
-    const char *hcu_boundary = std::getenv("FLAGFFT_HCU_BLUESTEIN_BOUNDARY");
+    const char *hcu_boundary = performance_env("FLAGFFT_HCU_BLUESTEIN_BOUNDARY");
     const std::string hcu_boundary_mode = hcu_boundary ? hcu_boundary : "0";
     if (request.device_type == "hcu" && hcu_boundary_mode != "0" &&
         hcu_boundary_mode != "1" && hcu_boundary_mode != "fp64")
@@ -4600,7 +4600,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
     const PlanNodePtr &node, const FFTRequest &request, int64_t batch, bool inverse) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const int64_t n = request.requested_n;
   const bool cuda_enabled = request.device_type == "cuda" && request.device_arch == "sm_80" &&
       flag_or_default("FLAGFFT_CUDA_REAL_BATCH_PAIR", false);
@@ -4632,7 +4632,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_store(
     const FFTRequest &request, int64_t batch, int64_t n, int64_t span) {
   const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
-  const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+  const char *layout = performance_env("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
   const int64_t minimum = flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
       (layout && std::string(layout) == "compact") ? 64 : 128;
   // Short half FFTs need enough row groups to cover the device. Otherwise
@@ -4680,7 +4680,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
                                                                       bool allow_packed) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
@@ -4894,7 +4894,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
                                                                       bool allow_packed) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
@@ -4986,7 +4986,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
               ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
     const int64_t packed = n / 2;
-    const char *packed_fuse_setting = std::getenv("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
+    const char *packed_fuse_setting = performance_env("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
     if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
         std::string(packed_fuse_setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_C2R_PACKED_FUSE must be 0 or 1");
@@ -5106,7 +5106,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   int64_t num_warps = leaf.num_warps;
   KernelKey key = KernelKey::leaf(target,
@@ -5133,7 +5133,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
                                                                                 const std::string &perm_form,
                                                                                 bool strided_input,
                                                                                 int64_t rows_per_transform) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   // The fused store vectorizes along the batch slots. FP64 length-256 uses a
   // smaller pack than FP32, and one warp measured faster than two on S5000.
@@ -5185,7 +5185,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
   mark_static_permutation_span(key, request, perm_span);
   mark_ix_warp_fft(key, request, perm_span);
   mark_npu_portable_leaf(key, request);
-  const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
+  const char *full_smem_override = performance_env("FLAGFFT_HCU_3D_FULL_SMEM");
   // Forcing FP64 256-point stores to use the full 64 KiB shared-memory pack
   // raised latency by about 10% on HCU 256^3 C2C, for both batch=1 and batch=4.
   // Keep the larger pack available as an explicit experiment, but default to
@@ -5208,7 +5208,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const LeafPlanNode &leaf,
                                                                           const FFTRequest &request,
                                                                           int64_t outer_stride) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
 #if defined(FLAGFFT_BACKEND_NPU)
   const bool use_npu_3d_aiv_small =
       request.device_type == "npu" && request.origin_rank == 3 && request.real_transform_kind.empty() &&
@@ -5242,7 +5242,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_leaf(const 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_direct_dft(const DirectDFTPlanNode &node,
                                                                                 const FFTRequest &request,
                                                                                 int64_t outer_stride) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::direct_dft_strided(target, request.direction, request.input_dtype, node.length);
   const bool cube_dft = use_npu_2d_cube_dft(request, node.length);
@@ -5258,7 +5258,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_strided_direct_dft(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const DirectDFTPlanNode &node,
                                                                         const FFTRequest &request,
                                                                         int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation input_copy =
       adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
@@ -5272,7 +5272,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const Di
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_cube_transposed_direct_dft(
     const DirectDFTPlanNode &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   DeviceAllocation input_copy =
       adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
@@ -5289,7 +5289,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_cube_transposed_dir
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
     const FFTRequest &request, bool inverse) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   FFTRequest real_request = request;
   real_request.direction = inverse ? "inverse" : "forward";
   const int64_t n = request.requested_n;
@@ -5320,7 +5320,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_direct_dft(
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_r2c(target,
                                       request.direction,
@@ -5338,7 +5338,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_kernel(const LeafPla
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_permuted_store_kernel(
     const LeafPlanNode &leaf, const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_r2c_permuted_store(target,
                                                      request.direction,
@@ -5355,7 +5355,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_permuted_store_kerne
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_c2r(target,
                                       request.direction,
@@ -5372,7 +5372,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_direct_dft_kernel(const FFTRequest &request, int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::direct_dft(target, request.direction, request.input_dtype, n);
   if (use_npu_2d_cube_dft(request, n)) key.kind = KernelKind::DirectDftCube;
@@ -5383,7 +5383,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
                                                                         int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_row(target,
                                            request.direction,
@@ -5405,7 +5405,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_strided_kernel(
                                                                                 const FFTRequest &request,
                                                                                 int64_t n1,
                                                                                 int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_row_strided(target,
                                                    request.direction,
@@ -5426,7 +5426,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(con
                                                                              const FFTRequest &request,
                                                                              int64_t n1,
                                                                              int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_real_row(target,
                                                 request.direction,
@@ -5448,7 +5448,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_hermitian_row_kerne
                                                                                   const FFTRequest &request,
                                                                                   int64_t n1,
                                                                                   int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_hermitian_row(target,
                                                      request.direction,
@@ -5470,7 +5470,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                                                         const FFTRequest &request,
                                                                         int64_t n1,
                                                                         int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_col(target,
                                            request.direction,
@@ -5492,7 +5492,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_strided_kernel(
                                                                                 const FFTRequest &request,
                                                                                 int64_t n1,
                                                                                 int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_col_strided(target,
                                                    request.direction,
@@ -5513,7 +5513,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(cons
                                                                             const FFTRequest &request,
                                                                             int64_t n1,
                                                                             int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_r2c_col(target,
                                                request.direction,
@@ -5535,7 +5535,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(cons
                                                                             const FFTRequest &request,
                                                                             int64_t n1,
                                                                             int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_c2r_col(target,
                                                request.direction,
@@ -5556,7 +5556,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(cons
 std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                                             int64_t n,
                                                                             int64_t m) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_prepare(target, request.input_dtype, n, m);
   return compile_kernel(key);
@@ -5565,7 +5565,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_prepare_kernel(cons
 std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                               int64_t n,
                                                                               int64_t m) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_pointwise(target, request.input_dtype, n, m);
   return compile_kernel(key);
@@ -5574,7 +5574,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_pointwise_kernel(co
 std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                              int64_t n,
                                                                              int64_t m) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_finalize(target, request.input_dtype, n, m);
   return compile_kernel(key);
@@ -5583,7 +5583,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_finalize_kernel(con
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_kernel(const LeafPlanNode &leaf,
                                                                          const FFTRequest &request,
                                                                          int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein(target,
                                             request.direction,
@@ -5601,7 +5601,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_kernel(const L
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_full_kernel(const LeafPlanNode &leaf,
                                                                            const FFTRequest &request,
                                                                            int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_rader_full(target, request.direction, request.input_dtype,
                                              n, leaf.length, leaf.factors, leaf.lanes,
@@ -5612,7 +5612,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_full_kernel(const 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_prepare_kernel(const LeafPlanNode &leaf,
                                                                               const FFTRequest &request,
                                                                               int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_rader_prepare(target, request.direction, request.input_dtype,
                                                 n, leaf.length, leaf.factors, leaf.lanes,
@@ -5623,7 +5623,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_prepare_kernel(con
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_finish_kernel(const LeafPlanNode &leaf,
                                                                              const FFTRequest &request,
                                                                              int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_rader_finish(target, request.direction, request.input_dtype,
                                                n, leaf.length, leaf.factors, leaf.lanes,
@@ -5634,7 +5634,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_finish_kernel(cons
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                                  const FFTRequest &request,
                                                                                  int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_prepare(target,
                                                     request.direction,
@@ -5652,7 +5652,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(const LeafPlanNode &leaf,
                                                                                 const FFTRequest &request,
                                                                                 int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_finish(target,
                                                    request.direction,
@@ -5670,7 +5670,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(
 std::shared_ptr<JitKernel> TritonCompiler::compile_rader_prepare_kernel(const FFTRequest &request,
                                                                         int64_t n,
                                                                         int64_t m) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::rader_prepare(target, request.input_dtype, n, m);
   return compile_kernel(key);
@@ -5679,7 +5679,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_rader_prepare_kernel(const FF
 std::shared_ptr<JitKernel> TritonCompiler::compile_rader_pointwise_kernel(const FFTRequest &request,
                                                                           int64_t n,
                                                                           int64_t m) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::rader_pointwise(target, request.input_dtype, n, m);
   return compile_kernel(key);
@@ -5688,7 +5688,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_rader_pointwise_kernel(const 
 std::shared_ptr<JitKernel> TritonCompiler::compile_rader_finalize_kernel(const FFTRequest &request,
                                                                          int64_t n,
                                                                          int64_t m) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::rader_finalize(target, request.input_dtype, n, m);
   return compile_kernel(key);
@@ -5697,7 +5697,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_rader_finalize_kernel(const F
 std::shared_ptr<JitKernel> TritonCompiler::compile_reshape_pack_kernel(const FFTRequest &request,
                                                                        int64_t n1,
                                                                        int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::reshape_pack(target, request.input_dtype, n1, n2);
   return compile_kernel(key);
@@ -5706,7 +5706,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_reshape_pack_kernel(const FFT
 std::shared_ptr<JitKernel> TritonCompiler::compile_twiddle_reshape_pack_kernel(const FFTRequest &request,
                                                                                int64_t n1,
                                                                                int64_t n2) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::twiddle_reshape_pack(target, request.input_dtype, n1, n2);
   return compile_kernel(key);
@@ -5714,7 +5714,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_twiddle_reshape_pack_kernel(c
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_real_to_complex_kernel(const FFTRequest &request,
                                                                           int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::real_to_complex(target, request.input_dtype, n);
   return compile_kernel(key);
@@ -5722,7 +5722,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_real_to_complex_kernel(const 
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FFTRequest &request,
                                                                         int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::r2c_half_pack(target, request.input_dtype, n);
   return compile_kernel(key);
@@ -5730,7 +5730,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_half_pack_kernel(const FF
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel(const FFTRequest &request,
                                                                                  int64_t n, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::r2c_packed_postprocess(target, complex_dtype_for(request.input_dtype), n);
   if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
@@ -5743,7 +5743,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(const FFTRequest &request,
                                                                                 int64_t n, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::c2r_packed_preprocess(target, complex_dtype_for(request.input_dtype), n);
   // Record this batch-only schedule in the key so short and single-row
@@ -5758,7 +5758,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_compact_to_hermitian_full_kernel(const FFTRequest &request,
                                                                                     int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::compact_to_hermitian_full(target, request.input_dtype, n);
   return compile_kernel(key);
@@ -5766,7 +5766,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_compact_to_hermitian_full_ker
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_complex_to_real_kernel(const FFTRequest &request,
                                                                           int64_t n) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::complex_to_real(target, request.input_dtype, n);
   return compile_kernel(key);
@@ -5775,7 +5775,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_complex_to_real_kernel(const 
 std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const FFTRequest &request,
                                                                           int64_t n0,
                                                                           int64_t n1) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::tiled_transpose(target, request.input_dtype, n0, n1);
   return compile_kernel(key);
@@ -5783,7 +5783,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_tiled_transpose_kernel(const 
 
 std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_kernel(
     const FFTRequest &request, int64_t rows, int64_t cols, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   auto transpose = std::make_shared<CompiledRawTranspose2D>();
   transpose->rows = rows;
   transpose->cols = cols;
@@ -5808,7 +5808,7 @@ std::shared_ptr<CompiledRawTranspose2D> TritonCompiler::compile_2d_transpose_ker
 std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
     const FFTRequest &request, int64_t n0, int64_t n1, int64_t n2, const std::string &order,
     bool npu_table) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   // The 3D real paths permute compact complex intermediates, even when the
   // public transform starts or ends with real values.
@@ -5827,7 +5827,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::Complex))
@@ -5857,7 +5857,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   n1_request.batch = batch * n0 * n2;
   if (request.device_type == "hcu" && request.input_dtype == "complex64" && n1 == 2048 &&
       std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan)) {
-    const char *middle_batch_pack = std::getenv("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK");
+    const char *middle_batch_pack = performance_env("FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK");
     if (middle_batch_pack != nullptr && *middle_batch_pack != '\0' &&
         std::string(middle_batch_pack) != "auto") {
       const int64_t pack = std::stoll(middle_batch_pack);
@@ -5932,7 +5932,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // Keep the backend-specific measured routes independent. The NPU fused
   // store is only selected for its explicit AIV256 screening configuration.
 #if defined(FLAGFFT_BACKEND_NPU)
-  const char *npu_aiv256_group = npu_performance_env("FLAGFFT_NPU_3D_AIV256_GROUP");
+  const char *npu_aiv256_group = performance_env("FLAGFFT_NPU_3D_AIV256_GROUP");
   if (npu_aiv256_group == nullptr) npu_aiv256_group = "8";
   const bool npu_pair_radix4 =
       npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_AIV256_PAIR_RADIX4");
@@ -6124,17 +6124,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   // then run the outer strided leaf in a second launch.
   const bool small_plane_backend = request.device_type == "musa" || request.device_type == "hcu" ||
                                    request.device_type == "maca";
-  const char *fused16_override = npu_performance_env(request.device_type == "hcu"
+  const char *fused16_override = performance_env(request.device_type == "hcu"
                                                   ? "FLAGFFT_HCU_3D_FUSED16"
                                                   : request.device_type == "maca"
                                                         ? "FLAGFFT_MACA_3D_FUSED16"
                                                         : "FLAGFFT_MUSA_3D_FUSED16");
-  const char *fused32_override = std::getenv("FLAGFFT_HCU_3D_FUSED32");
+  const char *fused32_override = performance_env("FLAGFFT_HCU_3D_FUSED32");
   const bool fused16 = small_plane_backend && n0 == 16 && n1 == 16 && n2 == 16 &&
                        (fused16_override == nullptr || std::string(fused16_override) != "0");
   const bool fused32 = request.device_type == "hcu" && n0 == 32 && n1 == 32 && n2 == 32 &&
                        (fused32_override == nullptr || std::string(fused32_override) != "0");
-  const char *fused_cube_override = std::getenv("FLAGFFT_HCU_3D_FUSED16_CUBE");
+  const char *fused_cube_override = performance_env("FLAGFFT_HCU_3D_FUSED16_CUBE");
   const bool fused_cube = request.device_type == "hcu" && n0 == 16 && n1 == 16 && n2 == 16 &&
                           batch <= 4 && n0_leaf && n1_leaf && n2_leaf &&
                           (fused_cube_override == nullptr || std::string(fused_cube_override) != "0");
@@ -6192,7 +6192,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::move(tw_r), std::move(tw_i));
   }
 
-  const char *prime_plane_override = std::getenv("FLAGFFT_HCU_3D_PRIME_PLANE");
+  const char *prime_plane_override = performance_env("FLAGFFT_HCU_3D_PRIME_PLANE");
   const bool prime_plane_enabled = prime_plane_override != nullptr &&
                                    std::string(prime_plane_override) == "1";
   const bool hcu_prime_plane = request.device_type == "hcu" && batch == 1 &&
@@ -6394,7 +6394,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", ix_nd_pack==0) &&
       batch * n0 * n1 * n2 > kStridedMaxElements;
-  const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
+  const char *hcu_hybrid_override = performance_env("FLAGFFT_HCU_3D_HYBRID");
   const bool hcu_wave_graph = n0_leaf && n1_leaf && n2_leaf &&
       hcu_wave_3d_c2c_policy_enabled(request, n0, n1, n2);
   const bool hcu_hybrid = request.device_type == "hcu" &&
@@ -6405,11 +6405,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const bool cuda_hybrid = request.device_type == "cuda" && request.device_arch == "sm_80" &&
                            elongated_3d && flag_or_default("FLAGFFT_CUDA_3D_HYBRID", false);
   if (n2_leaf && n0_leaf && (portable_hybrid || ix_hybrid || cuda_hybrid)) {
-    const char *first_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_FIRST_TRANSPOSE");
+    const char *first_transpose_override = performance_env("FLAGFFT_HCU_3D_HYBRID_FIRST_TRANSPOSE");
     const bool first_transpose = request.device_type == "hcu" &&
                                  first_transpose_override != nullptr &&
                                  std::string(first_transpose_override) == "1";
-    const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_HYBRID_LAST_TRANSPOSE");
+    const char *last_transpose_override = performance_env("FLAGFFT_HCU_3D_HYBRID_LAST_TRANSPOSE");
     const bool last_transpose_default = request.input_dtype == "complex128" && n0 >= 64;
     const bool hcu_last_transpose = request.device_type == "hcu" && n0 >= 64 &&
                                 (last_transpose_override == nullptr
@@ -6467,7 +6467,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   const bool cuda_fused_shape = request.device_type != "cuda" || (n0 == n1 && n1 == n2);
   if (n2_leaf && n1_leaf && n0_leaf && cuda_fused_shape && (fused_3d_store_enabled() || ix_nd_pack>0) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
-    const char *last_transpose_override = std::getenv("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
+    const char *last_transpose_override = performance_env("FLAGFFT_HCU_3D_LAST_TRANSPOSE");
     const bool last_transpose_default = request.device_type == "hcu" &&
                                         request.input_dtype == "complex128" &&
                                         n0 == 256 && n1 == 256 && n2 == 256 && batch <= 4;
@@ -6601,7 +6601,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   // Screen IX's small strided and large fused-store real paths separately.
   const char *ix_real_fused_override = std::getenv("FLAGFFT_IX_3D_REAL_FUSED");
   const bool ix_real_leaf_screen = request.device_type == "ix" && request.device_arch == "71" &&
@@ -6619,7 +6619,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       npu_3d_flag_or_default(
           request, "FLAGFFT_NPU_3D_REAL_SMALL_FUSED_FINAL_STORE", batch == 4);
   const bool npu_real_leaf_default = !npu_small_real_rtrt_candidate;
-  const char *npu_3d_real_leaf = npu_performance_env("FLAGFFT_NPU_3D_LEAF");
+  const char *npu_3d_real_leaf = performance_env("FLAGFFT_NPU_3D_LEAF");
   const bool npu_real_leaf_screen =
       request.device_type == "npu" && request.origin_rank == 3 &&
       (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r") &&
@@ -6719,7 +6719,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_r2c_first_store = maca_real_compact &&
       maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default);
-  const char *c2r_fused32_setting = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED32");
+  const char *c2r_fused32_setting = performance_env("FLAGFFT_HCU_3D_C2R_FUSED32");
   if (c2r_fused32_setting != nullptr && std::string(c2r_fused32_setting) != "0" &&
       std::string(c2r_fused32_setting) != "1") {
     throw std::runtime_error("FLAGFFT_HCU_3D_C2R_FUSED32 must be 0 or 1");
@@ -6731,7 +6731,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
           ? std::string(c2r_fused32_setting) == "1"
           : request.input_dtype == "complex64";
   const bool c2r_transform = request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d";
-  const char *r2c_fused32_setting = std::getenv("FLAGFFT_HCU_3D_R2C_FUSED32");
+  const char *r2c_fused32_setting = performance_env("FLAGFFT_HCU_3D_R2C_FUSED32");
   if (r2c_fused32_setting != nullptr && std::string(r2c_fused32_setting) != "0" &&
       std::string(r2c_fused32_setting) != "1") {
     throw std::runtime_error("FLAGFFT_HCU_3D_R2C_FUSED32 must be 0 or 1");
@@ -6790,7 +6790,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   }
   const bool packed_real_boundary =
       !small && hcu_3d_packed_real_boundary_enabled(request, inverse, batch * n0 * n1, n2);
-  const char *c2r_middle_transpose_override = std::getenv("FLAGFFT_HCU_3D_C2R_MIDDLE_TRANSPOSE");
+  const char *c2r_middle_transpose_override = performance_env("FLAGFFT_HCU_3D_C2R_MIDDLE_TRANSPOSE");
   // On the measured long C2R shape, an ordinary contiguous FP32 middle FFT
   // plus a tiled output transpose beats the fused strided/permuted leaf. The
   // same layout was not measured for FP64. Keep the default FP32-only, while
@@ -6803,7 +6803,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       (c2r_middle_transpose_override == nullptr
            ? request.input_dtype == "complex64"
            : std::string(c2r_middle_transpose_override) == "1");
-  const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
+  const char *c2r_fused_load_override = performance_env("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
   const bool wave_fused_load = request.device_type == "hcu" && request.device_arch == "gfx936" &&
       request.input_dtype == "complex64" && n1_leaf && n1 >= 64 && n1 <= 2048 &&
       (n1 & (n1 - 1)) == 0 && flag_or_default("FLAGFFT_HCU_3D_WARP_FFT", false) &&
@@ -6816,12 +6816,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       request.device_type == "hcu" && inverse && !small && n1_leaf && !c2r_middle_transpose &&
       (c2r_fused_load_override == nullptr ? c2r_fused_load_default
                                           : std::string(c2r_fused_load_override) == "1");
-  const char *real_hybrid_override = std::getenv("FLAGFFT_HCU_3D_REAL_HYBRID");
+  const char *real_hybrid_override = performance_env("FLAGFFT_HCU_3D_REAL_HYBRID");
   const bool real_hybrid = !n1_leaf && request.device_type == "hcu" && !small &&
                            n1 >= 4 * std::max(n0, n2) && fused_3d_store_enabled() &&
                            (real_hybrid_override == nullptr || std::string(real_hybrid_override) != "0");
   const char *r2c_middle_transpose_override =
-      std::getenv("FLAGFFT_HCU_3D_R2C_MIDDLE_TRANSPOSE");
+      performance_env("FLAGFFT_HCU_3D_R2C_MIDDLE_TRANSPOSE");
   const bool r2c_middle_transpose_shape = request.device_type == "hcu" && !inverse && !small &&
                                           batch == 1 && n0 == 128 && n1 == 2048 && n2 == 64 &&
                                           n1_leaf;
@@ -7022,7 +7022,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         std::move(temp), std::move(tw_r_dev), std::move(tw_i_dev));
   }
 
-  const char *r2c_permute_override = std::getenv("FLAGFFT_HCU_3D_R2C_PERMUTED_STORE");
+  const char *r2c_permute_override = performance_env("FLAGFFT_HCU_3D_R2C_PERMUTED_STORE");
   const bool r2c_fp64_cube_prefers_transpose =
       request.device_type == "hcu" && request.input_dtype == "complex128" && batch == 1 &&
       n0 == 256 && n1 == 256 && n2 == 256;
@@ -7115,7 +7115,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
     } else {
-      const char *middle_pack_override = std::getenv("FLAGFFT_HCU_3D_MIDDLE_PACK");
+      const char *middle_pack_override = performance_env("FLAGFFT_HCU_3D_MIDDLE_PACK");
       const bool c2r_cube_middle_pack8 = request.device_type == "hcu" && inverse &&
                                          request.origin_rank == 3 && batch == 1 &&
                                          n0 == 256 && n1 == 256 && n2 == 256 &&
@@ -7169,7 +7169,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     const FFTRequest &request,
     int64_t batch,
     bool inverse) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const bool npu_real_request = request.device_type == "npu" && request.origin_rank == 3 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r");
@@ -7214,7 +7214,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     }
     return false;
   };
-  const char *npu_aiv256_group = npu_performance_env("FLAGFFT_NPU_3D_AIV256_GROUP");
+  const char *npu_aiv256_group = performance_env("FLAGFFT_NPU_3D_AIV256_GROUP");
   const bool npu_fused_outer_stores = npu_aiv256_real && (batch == 1 || batch == 4) &&
       n0 == 256 && n1 == 256 && n2 == 256 &&
       is_npu_aiv256_axis(node->n1_plan) && is_npu_aiv256_axis(node->n0_plan) &&
@@ -7325,7 +7325,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
           n2_request, n2, 1, group_size,
           inverse ? NpuAivFFTSmallMode::RealInverse : NpuAivFFTSmallMode::RealForward);
     } else {
-      const char *group_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV64_GROUP");
+      const char *group_setting = performance_env("FLAGFFT_NPU_3D_AIV64_GROUP");
       if (group_setting == nullptr) group_setting = "32";
       const bool radix4_pair = npu_3d_flag_or_default(request, "FLAGFFT_NPU_3D_RADIX4_PAIR");
       int32_t group_size = radix4_pair ? npu_aiv_fft_radix4_pair_group_size(group_setting, real_batch, 32)
@@ -7462,7 +7462,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::RealForward))
@@ -7559,7 +7559,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
     const std::shared_ptr<ThreeDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1,node->n2}, NpuAivFFTSmallMode::RealInverse))
@@ -7656,7 +7656,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_c2r_node(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_rc_row(const PlanNodePtr &node,
                                                                        const FFTRequest &request,
                                                                        int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope child_scope(
       maca_2d_single_policy_,
       maca_2d_single_policy_ && !(batch > 1 && maca_2d_rc_preserve_batched_row(node)));
@@ -7665,7 +7665,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_rc_row(const Pla
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -7707,7 +7707,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                    batch);
   }
 
-  const char *npu_fused_2d = npu_performance_env("FLAGFFT_NPU_2D_FUSED_RADIX");
+  const char *npu_fused_2d = performance_env("FLAGFFT_NPU_2D_FUSED_RADIX");
   if (request.device_type == "npu" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n0 == 64 && n1 == 64 &&
       npu_fused_2d != nullptr && std::string(npu_fused_2d) == "1") {
@@ -7752,7 +7752,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       (n0&(n0-1))==0 && (n1&(n1-1))==0 &&
       flag_or_default("FLAGFFT_NPU_2D_FUSED_FFT_STORES",false)) {
     int64_t preferred=8;
-    if (const char *value=npu_performance_env("FLAGFFT_NPU_2D_FUSED_FFT_PACK")) {
+    if (const char *value=performance_env("FLAGFFT_NPU_2D_FUSED_FFT_PACK")) {
       preferred=std::stoll(value);
       if (preferred<1 || preferred>16 || (preferred&(preferred-1))!=0)
         throw std::runtime_error("FLAGFFT_NPU_2D_FUSED_FFT_PACK must be 1, 2, 4, 8 or 16");
@@ -7787,8 +7787,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       if (value == "8") return int32_t{8};
       return int32_t{1};
     };
-    const char *row_group_setting = npu_performance_env("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP");
-    const char *column_group_setting = npu_performance_env("FLAGFFT_NPU_2D_ASCENDC_COL_GROUP");
+    const char *row_group_setting = performance_env("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP");
+    const char *column_group_setting = performance_env("FLAGFFT_NPU_2D_ASCENDC_COL_GROUP");
     const int32_t row_group_size = parse_group_size(row_group_setting, batch);
     const int32_t col_group_size = parse_group_size(column_group_setting, batch);
     std::shared_ptr<CompiledRawNode> row_fft =
@@ -7808,7 +7808,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const auto cube_row_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->row_plan);
   const auto cube_col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   if (n0 == 64 && n1 == 64 && use_npu_2d_cube_dft(request, n0) && cube_row_direct && cube_col_direct) {
-    const char *cube_matmul = npu_performance_env("FLAGFFT_NPU_2D_CUBE_MATMUL");
+    const char *cube_matmul = performance_env("FLAGFFT_NPU_2D_CUBE_MATMUL");
     if (cube_matmul != nullptr && std::string(cube_matmul) == "1") {
       auto compile_cube_2d_pass = [&](const DirectDFTPlanNode &direct,
                                       const FFTRequest &pass_request,
@@ -7838,7 +7838,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
                                                    std::move(temp1),
                                                    enable_graph);
     }
-    const char *cube_transpose_kernels = npu_performance_env("FLAGFFT_NPU_2D_CUBE_TRANSPOSE_KERNELS");
+    const char *cube_transpose_kernels = performance_env("FLAGFFT_NPU_2D_CUBE_TRANSPOSE_KERNELS");
     if (cube_transpose_kernels != nullptr && std::string(cube_transpose_kernels) == "1") {
       // Keep each Cube DFT tile in its native contiguous layout. Move the
       // matrix between axes with the existing tiled transpose kernels rather
@@ -7876,7 +7876,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // order. The second pass then reads contiguous rows and transposes its
   // output back to natural matrix order, using the existing TwoDim and raw
   // leaf nodes without standalone transpose kernels.
-  const char *npu_2d_transpose_store = npu_performance_env("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
+  const char *npu_2d_transpose_store = performance_env("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
   const bool use_npu_2d_transpose_store =
       request.device_type == "npu" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -7916,7 +7916,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   // RC fast path: when the column FFT is a plain leaf transform, run it
   // directly on the strided matrix columns and skip both transposes.
   const char *npu_leaf64_transpose_setting =
-      npu_performance_env("FLAGFFT_NPU_2D_LEAF64_TRANSPOSE");
+      performance_env("FLAGFFT_NPU_2D_LEAF64_TRANSPOSE");
   const bool npu_leaf64_transpose =
       request.device_type == "npu" && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n0 == 64 && n1 == 64 &&
@@ -7994,7 +7994,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -8073,7 +8073,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64_real) {
     const int32_t row_group_size = npu_aiv_fft64_real_row_group_size(
-        npu_performance_env("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
+        performance_env("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
     auto row_fft = make_npu_aiv_fft64_child(
         request, 1, row_group_size, NpuAivFFT64Mode::RealForward);
     auto col_fft = make_npu_aiv_fft64_child(request, half_n1, 1);
@@ -8262,7 +8262,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -8339,7 +8339,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
       std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan) != nullptr;
   if (use_npu_aiv_fft64_real) {
     const int32_t row_group_size = npu_aiv_fft64_real_row_group_size(
-        npu_performance_env("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
+        performance_env("FLAGFFT_NPU_2D_ASCENDC_ROW_GROUP"), batch);
     auto col_fft = make_npu_aiv_fft64_child(request, half_n1, 1);
     auto row_fft = make_npu_aiv_fft64_child(
         request, 1, row_group_size, NpuAivFFT64Mode::RealInverse);
@@ -8521,7 +8521,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_strided_node(
     const FourStepPlanNode &node, const FFTRequest &request, int64_t batch, int64_t outer_stride) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node.row_plan);
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node.col_plan);
@@ -8547,7 +8547,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_strided_n
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_four_step_generic(const FourStepPlanNode &node,
                                                                                const FFTRequest &request,
                                                                                int64_t batch) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = node.length;
   const int64_t n1 = node.n1;

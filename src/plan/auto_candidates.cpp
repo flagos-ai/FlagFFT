@@ -66,7 +66,7 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   // Keep NPU convolution children on the validated small-radix path, including
   // lengths above the GPU-specific power-of-two preference threshold.
   if (context.device_type == "npu") {
-    const char *smooth_setting = npu_performance_env("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV");
+    const char *smooth_setting = performance_env("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV");
     if (smooth_setting != nullptr && std::string(smooth_setting) != "0" &&
         std::string(smooth_setting) != "1" && std::string(smooth_setting) != "auto") {
       throw std::runtime_error("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV must be 0, 1 or auto");
@@ -269,7 +269,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // the compact real-row path for 2D R2C/C2R. Keep 128-point axes on the
     // existing policy until their batched performance is competitive.
     int64_t npu_2d_direct_dft_max = 128;
-    if (const char *raw = npu_performance_env("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
+    if (const char *raw = performance_env("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
       std::size_t parsed = 0;
       try {
         npu_2d_direct_dft_max = std::stoll(raw, &parsed);
@@ -287,7 +287,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // Ascend Stockham stages launch once per radix and the scalar kernel
     // serialises across active butterflies, so a short 1D transform costs more
     // in stage launches than a single batch-tiled direct DFT.
-    const char *npu_1d_direct_setting = npu_performance_env("FLAGFFT_NPU_1D_DIRECT_DFT");
+    const char *npu_1d_direct_setting = performance_env("FLAGFFT_NPU_1D_DIRECT_DFT");
     const bool npu_1d_direct_enabled =
         npu_1d_direct_setting == nullptr || std::string(npu_1d_direct_setting) != "0";
     if (npu_1d_direct_enabled && context.origin_rank <= 1 &&
@@ -295,14 +295,14 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
       return {{node, estimate_direct_dft_cost(n), priority(node)}};
     }
-    const char *npu_3d_leaf_setting = npu_performance_env("FLAGFFT_NPU_3D_LEAF");
+    const char *npu_3d_leaf_setting = performance_env("FLAGFFT_NPU_3D_LEAF");
     if (npu_3d_leaf_setting != nullptr && std::string(npu_3d_leaf_setting) != "0" &&
         std::string(npu_3d_leaf_setting) != "1") {
       throw std::runtime_error("FLAGFFT_NPU_3D_LEAF must be 0 or 1");
     }
     const bool use_npu_3d_leaf = npu_3d_leaf_setting != nullptr &&
                                  std::string(npu_3d_leaf_setting) == "1";
-    const char *npu_3d_aiv_small_setting = npu_performance_env("FLAGFFT_NPU_3D_AIV_SMALL");
+    const char *npu_3d_aiv_small_setting = performance_env("FLAGFFT_NPU_3D_AIV_SMALL");
     if (npu_3d_aiv_small_setting != nullptr &&
         std::string(npu_3d_aiv_small_setting) != "0" &&
         std::string(npu_3d_aiv_small_setting) != "1") {
@@ -330,7 +330,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
       }
     }
-    const char *cube_dft_setting = npu_performance_env("FLAGFFT_NPU_2D_CUBE_DFT");
+    const char *cube_dft_setting = performance_env("FLAGFFT_NPU_2D_CUBE_DFT");
     if (cube_dft_setting != nullptr && std::string(cube_dft_setting) != "0" &&
         std::string(cube_dft_setting) != "1") {
       throw std::runtime_error("FLAGFFT_NPU_2D_CUBE_DFT must be 0 or 1");
@@ -347,11 +347,11 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
       return {{node, estimate_direct_dft_cost(n), priority(node)}};
     }
-    const bool npu_2d_leaf_explicit = npu_performance_env("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
+    const bool npu_2d_leaf_explicit = performance_env("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
     const bool npu_2d_measured_leaf = context.origin_rank == 2 && n == 64 &&
                                       (npu_2d_real_transform || npu_2d_c2c);
     int64_t npu_2d_leaf_length = npu_2d_measured_leaf ? n : 0;
-    if (const char *raw = npu_performance_env("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
+    if (const char *raw = performance_env("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
       std::size_t parsed = 0;
       try {
         npu_2d_leaf_length = std::stoll(raw, &parsed);
@@ -367,7 +367,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         n == npu_2d_leaf_length) {
       std::vector<int64_t> factors = select_leaf_factors(n);
       if (n == 64) factors = {8, 8};
-      if (const char *raw = npu_performance_env("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
+      if (const char *raw = performance_env("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
         const std::string spec(raw);
         std::size_t start = 0;
         int64_t product = 1;
@@ -411,7 +411,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
 
     Factorization factorization = factorize_supported_radices(n);
-    const char *structured_pair = npu_performance_env("FLAGFFT_NPU_STRUCTURED_FOURSTEP");
+    const char *structured_pair = performance_env("FLAGFFT_NPU_STRUCTURED_FOURSTEP");
     if (structured_pair != nullptr && std::string(structured_pair) == "1" &&
         context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
         n > 2048 && n <= 2048 * 2048 && (n & (n-1)) == 0) {
@@ -422,13 +422,13 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
           build_auto_node(n1,false),build_auto_node(n2,false));
       return {{node, static_cast<double>(2*n), priority(node)}};
     }
-    const char *mixed_pair = npu_performance_env("FLAGFFT_NPU_MIXED_FOURSTEP");
+    const char *mixed_pair = performance_env("FLAGFFT_NPU_MIXED_FOURSTEP");
     if (mixed_pair != nullptr && std::string(mixed_pair) == "1" &&
         context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
         n > 2048 && n <= 2048*2048 && (n & (n-1)) != 0 &&
         factorization.remainder == 1) {
       int64_t best_a = 0, best_b = 0;
-      const char *matrix_setting=npu_performance_env("FLAGFFT_NPU_MATRIX_FFT");
+      const char *matrix_setting=performance_env("FLAGFFT_NPU_MATRIX_FFT");
       const bool matrix_enabled=matrix_setting && std::string(matrix_setting)=="1";
       bool best_matrix=false;
       std::vector<int64_t> best_row, best_col;
@@ -456,7 +456,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
     // Resource-bounded experiment: reuse the portable fused leaf codelets
     // instead of one global-memory Stockham launch per radix.
-    if (const char *raw = npu_performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
+    if (const char *raw = performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
       std::size_t parsed = 0;
       const int64_t limit = std::stoll(raw, &parsed);
       if (parsed != std::string(raw).size() || limit < 0 || limit > 2048)
@@ -470,7 +470,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         }
       }
     }
-    const char *factor_split_setting = npu_performance_env("FLAGFFT_NPU_2D_FACTOR_SPLIT");
+    const char *factor_split_setting = performance_env("FLAGFFT_NPU_2D_FACTOR_SPLIT");
     if (factor_split_setting != nullptr && std::string(factor_split_setting) != "0" &&
         std::string(factor_split_setting) != "1") {
       throw std::runtime_error("FLAGFFT_NPU_2D_FACTOR_SPLIT must be 0 or 1");
@@ -524,7 +524,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // Large prime codelets produce expensive compiler scheduling on CANN 9
     // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
     // or Bluestein route until their vector lowering is qualified separately.
-    const char *prime_mode = npu_performance_env("FLAGFFT_NPU_STOCKHAM_PRIME");
+    const char *prime_mode = performance_env("FLAGFFT_NPU_STOCKHAM_PRIME");
     const bool small_radices = (prime_mode != nullptr && std::string(prime_mode) != "0") ||
                                (n % 13 != 0 && n % 17 != 0 && n % 19 != 0);
     if (n > 1 && factorization.remainder == 1 && small_radices) {

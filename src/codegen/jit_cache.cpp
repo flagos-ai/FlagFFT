@@ -46,7 +46,7 @@ namespace {
                          structured_fourstep ? "FLAGFFT_NPU_FOURSTEP_AUTO_BLOCK" :
                          vector_dif ? "FLAGFFT_NPU_DIF_AUTO_BLOCK" : nullptr;
     if (policy != nullptr) {
-      if (const char *value=npu_performance_env(policy)) {
+      if (const char *value=performance_env(policy)) {
         const std::string setting(value);
         if (setting!="0" && setting!="1")
           throw std::runtime_error(std::string(policy) + " must be 0 or 1");
@@ -62,7 +62,7 @@ namespace {
           // Narrow structured slices currently fail under CANN loop scheduling.
           // Keep their full logical grid; wider groups have native replay coverage.
           const bool dense_col=!row && key.four_step_n1>=512 && key.four_step_n2>=512 &&
-              env_flag_enabled(npu_performance_env("FLAGFFT_NPU_FOURSTEP_DENSE_SECOND"));
+              env_flag_enabled(performance_env("FLAGFFT_NPU_FOURSTEP_DENSE_SECOND"));
           if (pack < 8 && !(dense_col && pack>=4 && axis*pack==budget)) return false;
         }
         return setting=="1";
@@ -119,7 +119,7 @@ namespace {
 
   void reject_legacy_backend_env() {
     for (const char *name : {"FLAGFFT_KERNEL_BACKEND", "FFT_BACKEND"}) {
-      const char *value = std::getenv(name);
+      const char *value = performance_env(name);
       if (value == nullptr || std::strlen(value) == 0) {
         continue;
       }
@@ -227,7 +227,7 @@ namespace {
 }  // namespace
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) const {
-  const NpuPerformanceScope npu_policy(key.target, key.dtype);
+  const BackendPerformanceScope performance_policy(key.target, key.dtype);
   reject_legacy_backend_env();
   const auto device_profile = adaptor::device_capabilities_json();
   const char *policy_env = std::getenv("FLAGFFT_EXECUTION_POLICY");
@@ -252,63 +252,64 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   if (adaptor::backend_name() == "hcu") {
-    const char *vector_io = std::getenv("FLAGFFT_HCU_VECTOR_IO");
+    cache_key += ";" + hcu_performance_identity();
+    const char *vector_io = performance_env("FLAGFFT_HCU_VECTOR_IO");
     cache_key += ";hcu-vector-io-v2=" + std::string(vector_io ? vector_io : "0");
-    const char *single_buffer = std::getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER");
+    const char *single_buffer = performance_env("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER");
     cache_key += ";hcu-fourstep-single-buffer-v1=" + std::string(single_buffer ? single_buffer : "0");
-    const char *packing = std::getenv("FLAGFFT_HCU_FOURSTEP_PACKING");
+    const char *packing = performance_env("FLAGFFT_HCU_FOURSTEP_PACKING");
     cache_key += ";hcu-fourstep-packing-v1=" + std::string(packing ? packing : "resource");
-    const char *row_twiddle = std::getenv("FLAGFFT_HCU_FP32_ROW_TWIDDLE");
+    const char *row_twiddle = performance_env("FLAGFFT_HCU_FP32_ROW_TWIDDLE");
     cache_key += ";hcu-fp32-row-twiddle-v1=" + std::string(row_twiddle ? row_twiddle : "0");
-    const char *leaf_buffer = std::getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
+    const char *leaf_buffer = performance_env("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
     cache_key += ";hcu-leaf-single-buffer-v1=" + std::string(leaf_buffer ? leaf_buffer : "0");
-    const char *leaf_packing = std::getenv("FLAGFFT_HCU_LEAF_PACKING");
+    const char *leaf_packing = performance_env("FLAGFFT_HCU_LEAF_PACKING");
     cache_key += ";hcu-leaf-packing-v1=" + std::string(leaf_packing ? leaf_packing : "resource");
-    const char *cyclic_skew = std::getenv("FLAGFFT_HCU_CYCLIC_SKEW");
+    const char *cyclic_skew = performance_env("FLAGFFT_HCU_CYCLIC_SKEW");
     cache_key += ";hcu-cyclic-skew-v1=" + std::string(cyclic_skew ? cyclic_skew : "unit");
-    const char *small_wave = std::getenv("FLAGFFT_HCU_SMALL_WAVE");
+    const char *small_wave = performance_env("FLAGFFT_HCU_SMALL_WAVE");
     cache_key += ";hcu-small-wave-v1=" + std::string(small_wave ? small_wave : "0");
-    const char *dense_wave = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
-    const char *dense_wave_pack = std::getenv("FLAGFFT_HCU_DENSE_WAVE_PACK");
-    const char *dense_wave_fp64 = std::getenv("FLAGFFT_HCU_DENSE_WAVE_FP64");
+    const char *dense_wave = performance_env("FLAGFFT_HCU_DENSE_WAVE");
+    const char *dense_wave_pack = performance_env("FLAGFFT_HCU_DENSE_WAVE_PACK");
+    const char *dense_wave_fp64 = performance_env("FLAGFFT_HCU_DENSE_WAVE_FP64");
     cache_key += ";hcu-dense-wave-v2=" + std::string(dense_wave ? dense_wave : "0") +
                  ";fp64=" + std::string(dense_wave_fp64 ? dense_wave_fp64 : "0") +
                  ";pack=" + std::string(dense_wave_pack ? dense_wave_pack : "auto");
-    const char *wave_roots = std::getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE");
+    const char *wave_roots = performance_env("FLAGFFT_HCU_WAVE_ROOT_TABLE");
     cache_key += ";hcu-wave-root-table-v1=" + std::string(wave_roots ? wave_roots : "0");
-    const char *root_period = std::getenv("FLAGFFT_HCU_WAVE_ROOT_PERIOD");
+    const char *root_period = performance_env("FLAGFFT_HCU_WAVE_ROOT_PERIOD");
     cache_key += ";hcu-wave-root-period-v1=" + std::string(root_period ? root_period : "0");
-    const char *wave_codelet = std::getenv("FLAGFFT_HCU_WAVE_CODELET");
-    const char *packed_store = std::getenv("FLAGFFT_HCU_PACKED_REAL_STORE");
+    const char *wave_codelet = performance_env("FLAGFFT_HCU_WAVE_CODELET");
+    const char *packed_store = performance_env("FLAGFFT_HCU_PACKED_REAL_STORE");
     cache_key += ";hcu-packed-real-store-v1=" + std::string(packed_store ? packed_store : "0");
-    const char *fill_wave = std::getenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE");
+    const char *fill_wave = performance_env("FLAGFFT_HCU_PERMUTED_FILL_WAVE");
     cache_key += ";hcu-permuted-fill-wave-v1=" + std::string(fill_wave ? fill_wave : "0");
-    const char *packed_layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+    const char *packed_layout = performance_env("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
     cache_key += ";hcu-packed-wave-layout-v1=" + std::string(packed_layout ? packed_layout : "wave");
-    const char *conv_buffer = std::getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
+    const char *conv_buffer = performance_env("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
     cache_key += ";hcu-conv-single-buffer-v1=" + std::string(conv_buffer ? conv_buffer : "0");
-    const char *packed_cta = std::getenv("FLAGFFT_HCU_PACKED_REAL_CTA");
+    const char *packed_cta = performance_env("FLAGFFT_HCU_PACKED_REAL_CTA");
     cache_key += ";hcu-packed-cta-v1=" + std::string(packed_cta ? packed_cta : "0");
-    const char *transpose_2d = std::getenv("FLAGFFT_HCU_2D_TRANSPOSE");
+    const char *transpose_2d = performance_env("FLAGFFT_HCU_2D_TRANSPOSE");
     cache_key += ";hcu-2d-transpose-v1=" + std::string(transpose_2d ? transpose_2d : "auto");
     if (key.kind == KernelKind::Transpose3D) {
       for (const char *name : {"FLAGFFT_HCU_3D_TRANSPOSE_MODE", "FLAGFFT_HCU_3D_TRANSPOSE_TILE",
                                "FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP"}) {
-        const char *value = std::getenv(name);
+        const char *value = performance_env(name);
         cache_key += ";" + std::string(name) + "=" + (value ? value : "auto");
       }
     }
     cache_key += ";hcu-wave-codelet-v1=" + std::string(wave_codelet ? wave_codelet : "0");
-    const char *wave_budget = std::getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
+    const char *wave_budget = performance_env("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
     cache_key += ";hcu-wave-batched-v1;budget=" + std::string(wave_budget ? wave_budget : "64");
-    const char *wide_lanes = std::getenv("FLAGFFT_HCU_WIDE_WAVE_LANES");
+    const char *wide_lanes = performance_env("FLAGFFT_HCU_WIDE_WAVE_LANES");
     cache_key += ";hcu-wide-wave-lanes-v1=" + std::string(wide_lanes ? wide_lanes : "64");
-    const char *permuted_wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
-    const char *permuted_pack = std::getenv("FLAGFFT_HCU_3D_WARP_PACK");
-    const char *permuted_wide = std::getenv("FLAGFFT_HCU_3D_WARP_FP64");
-    const char *strided_wave = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_INPUT");
+    const char *permuted_wave = performance_env("FLAGFFT_HCU_3D_WARP_FFT");
+    const char *permuted_pack = performance_env("FLAGFFT_HCU_3D_WARP_PACK");
+    const char *permuted_wide = performance_env("FLAGFFT_HCU_3D_WARP_FP64");
+    const char *strided_wave = performance_env("FLAGFFT_HCU_WAVE_STRIDED_INPUT");
     cache_key += ";hcu-wave-strided-input-v1=" + std::string(strided_wave ? strided_wave : "0");
-    const char *strided_tile = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_TILE");
+    const char *strided_tile = performance_env("FLAGFFT_HCU_WAVE_STRIDED_TILE");
     cache_key += ";strided-tile=" + std::string(strided_tile ? strided_tile : "balanced");
     cache_key += ";hcu-permuted-wave-v2=" + std::string(permuted_wave ? permuted_wave : "0") +
                  ";pack=" + std::string(permuted_pack ? permuted_pack : "auto") +
@@ -332,24 +333,24 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.perm_form == "npu_matrix_cube" || key.perm_form.rfind("npu_matrix_fourstep_", 0) == 0)
       cache_key += ";npu-ieee-dot-partials-v2";
     if (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) {
-      const char *group=npu_performance_env("FLAGFFT_NPU_REAL_BOUNDARY_GROUP");
+      const char *group=performance_env("FLAGFFT_NPU_REAL_BOUNDARY_GROUP");
       cache_key += ";npu-real-boundary-group-v5=" + std::string(group!=nullptr?group:"auto");
-      const char *midpoint=npu_performance_env("FLAGFFT_NPU_REAL_MIDPOINT_DIRECT");
+      const char *midpoint=performance_env("FLAGFFT_NPU_REAL_MIDPOINT_DIRECT");
       cache_key += ";npu-real-midpoint=" + std::string(midpoint!=nullptr?midpoint:"1");
     }
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0) {
       cache_key += ";npu-dif-cube-prefix-v6";
       if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
           key.perm_form.find("_dense_batch_f64_c64")!=std::string::npos) {
-        const char *pipeline=npu_performance_env("FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE");
+        const char *pipeline=performance_env("FLAGFFT_NPU_DIF_BATCH_DENSE_PIPELINE");
         cache_key += ";npu-dif-batch-dense-pipeline-v1=" +
                      std::string(pipeline!=nullptr?pipeline:"1");
       }
-      const char *fast9=npu_performance_env("FLAGFFT_NPU_DIF_FAST9");
+      const char *fast9=performance_env("FLAGFFT_NPU_DIF_FAST9");
       cache_key += ";npu-dif-radix9-v1=" + std::string(fast9!=nullptr?fast9:"1");
-      const char *pack13=npu_performance_env("FLAGFFT_NPU_DIF_BATCH_PACK13");
+      const char *pack13=performance_env("FLAGFFT_NPU_DIF_BATCH_PACK13");
       cache_key += ";npu-dif-batch13-v1=" + std::string(pack13!=nullptr?pack13:"1");
-      const char *coprime=npu_performance_env("FLAGFFT_NPU_DIF_COPRIME");
+      const char *coprime=performance_env("FLAGFFT_NPU_DIF_COPRIME");
       cache_key += ";npu-dif-coprime-v2=" + std::string(coprime!=nullptr?coprime:"1");
       if (key.perm_form.find("_vector17")!=std::string::npos)
         cache_key += ";npu-dif-vector17-codelet-v1";
@@ -359,12 +360,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
           key.perm_form.find("_half17")!=std::string::npos &&
           key.direction=="forward" && !key.factors.empty() &&
           key.factors.front()==17 && (key.length/17+511)/512>=64) {
-        const char *pipeline=npu_performance_env("FLAGFFT_NPU_DIF_PREFIX_PIPELINE");
+        const char *pipeline=performance_env("FLAGFFT_NPU_DIF_PREFIX_PIPELINE");
         cache_key += ";npu-dif-prefix-pipeline-v1=" +
                      std::string(pipeline!=nullptr?pipeline:"1");
       }
-      const char *component17=npu_performance_env("FLAGFFT_NPU_DIF_COMPONENT17");
-      const char *wide7=npu_performance_env("FLAGFFT_NPU_DIF_FIRST7_WIDE");
+      const char *component17=performance_env("FLAGFFT_NPU_DIF_COMPONENT17");
+      const char *wide7=performance_env("FLAGFFT_NPU_DIF_FIRST7_WIDE");
       if (key.perm_form.rfind("npu_vector_dif_aligned_cube_0_",0)==0 &&
           key.perm_form.find("_batchpack")!=std::string::npos &&
           key.perm_form.size()>=5 &&
@@ -377,7 +378,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
           key.perm_form.find("_batchpack")!=std::string::npos &&
           (component17==nullptr || std::string(component17)!="0"))
         cache_key += ";npu-dif-component17-v1";
-      const char *group_branches=npu_performance_env("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
+      const char *group_branches=performance_env("FLAGFFT_NPU_DIF_GROUP_BRANCHES");
       cache_key += ";npu-dif-group-branches-v2=" +
                    std::string(group_branches!=nullptr?group_branches:"1");
     }
@@ -386,29 +387,29 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     if (key.perm_form.rfind("npu_vector_dif_flat_power2_",0)==0)
       cache_key += ";npu-flat-power-dif-v1";
     if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0) {
-      const char *dense_transpose=npu_performance_env("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
+      const char *dense_transpose=performance_env("FLAGFFT_NPU_DIF_DENSE_TRANSPOSE");
       cache_key += ";npu-dif-dense-transpose-v2=" +
                    std::string(dense_transpose!=nullptr?dense_transpose:"1");
-      const char *transpose_points=npu_performance_env("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
+      const char *transpose_points=performance_env("FLAGFFT_NPU_DIF_TRANSPOSE_POINTS");
       cache_key += ";npu-dif-transpose-points=" +
                    std::string(transpose_points!=nullptr?transpose_points:"auto");
-      const char *single_gather=npu_performance_env("FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH");
+      const char *single_gather=performance_env("FLAGFFT_NPU_DIF_SINGLE_GATHER_FINISH");
       cache_key += ";npu-dif-single-gather-finish-v1=" +
                    std::string(single_gather!=nullptr?single_gather:"1");
     }
-    const char *symmetric_codelets=npu_performance_env("FLAGFFT_NPU_SYMMETRIC_CODELETS");
+    const char *symmetric_codelets=performance_env("FLAGFFT_NPU_SYMMETRIC_CODELETS");
     cache_key += ";npu-symmetric-codelets-v1=" +
                  std::string(symmetric_codelets!=nullptr?symmetric_codelets:"1");
-    const char *join = npu_performance_env("FLAGFFT_NPU_JOIN_MODE");
+    const char *join = performance_env("FLAGFFT_NPU_JOIN_MODE");
     cache_key += ";npu-join-mode=" + std::string(join != nullptr ? join : "auto");
     cache_key += ";npu-auto-blockify=" + std::string(npu_auto_blockify_for(key) ? "1" : "0");
     if (key.perm_form.rfind("npu_vector_dif_aligned_",0)==0 &&
-        env_flag_enabled(npu_performance_env("FLAGFFT_NPU_DIF_FUSED_FINISH")))
+        env_flag_enabled(performance_env("FLAGFFT_NPU_DIF_FUSED_FINISH")))
       cache_key += ";npu-dif-fused-finish=3";
-    const char *vector_remainder = npu_performance_env("FLAGFFT_NPU_VECTOR_REMAINDER");
+    const char *vector_remainder = performance_env("FLAGFFT_NPU_VECTOR_REMAINDER");
     cache_key += ";npu-source-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
     for (const char *name : {"FLAGFFT_NPU_FOURSTEP_DENSE_SECOND", "FLAGFFT_NPU_DIRECT_DFT_PAIR", "FLAGFFT_NPU_DIRECT_DFT_PREFETCH", "FLAGFFT_NPU_DIF_TRANSPOSE_TILE", "FLAGFFT_NPU_DIRECT_DFT_BT", "FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "FLAGFFT_NPU_REAL_BOUNDARY_TILE", "FLAGFFT_NPU_COMPACT_STAGES", "FLAGFFT_NPU_FOURSTEP_PACK", "FLAGFFT_NPU_AFFINE_MATRIX_IO", "FLAGFFT_NPU_TRIG_TWIDDLES"}) {
-      const char *value = npu_performance_env(name);
+      const char *value = performance_env(name);
       cache_key += ";" + std::string(name) + "=" + (value != nullptr ? value : "default");
     }
   }
@@ -423,9 +424,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "npu") {
-    const char *transpose_store = npu_performance_env("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
-    const char *portable_leaf = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
-    const char *transpose_pack = npu_performance_env("FLAGFFT_NPU_2D_TRANSPOSE_PACK");
+    const char *transpose_store = performance_env("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
+    const char *portable_leaf = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
+    const char *transpose_pack = performance_env("FLAGFFT_NPU_2D_TRANSPOSE_PACK");
     cache_key += ";npu-2d-transpose-store=" +
                  std::string(transpose_store != nullptr && std::string(transpose_store) == "1" ? "1" : "0");
     cache_key += ";npu-portable-leaf=" +
@@ -441,19 +442,19 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        key.kind == KernelKind::FourStepHermitianRow || key.kind == KernelKind::FourStepR2CCol ||
        key.kind == KernelKind::FourStepC2RCol || key.kind == KernelKind::FourStepRowStrided ||
        key.kind == KernelKind::FourStepColStrided)) {
-    const char *vector_remainder = npu_performance_env("FLAGFFT_NPU_VECTOR_REMAINDER");
+    const char *vector_remainder = performance_env("FLAGFFT_NPU_VECTOR_REMAINDER");
     cache_key += ";npu-vector-remainder=" + std::string(vector_remainder != nullptr ? vector_remainder : "0");
-    const char *vector_io = npu_performance_env("FLAGFFT_NPU_PORTABLE_VECTOR_IO");
+    const char *vector_io = performance_env("FLAGFFT_NPU_PORTABLE_VECTOR_IO");
     cache_key += ";npu-vector-io=" + std::string(vector_io != nullptr ? vector_io : "0");
-    const char *portable_leaf = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
+    const char *portable_leaf = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
     const bool use_portable_leaf = key.npu_portable_leaf ||
                                    (portable_leaf != nullptr && std::string(portable_leaf) == "1");
     cache_key += ";npu-portable-leaf=" + std::string(use_portable_leaf ? "1" : "0");
     if (key.npu_portable_leaf) {
-      const char *exchange = npu_performance_env("FLAGFFT_NPU_2D_EXCHANGE");
-      const char *lane_min = npu_performance_env("FLAGFFT_NPU_2D_LANE_MIN");
-      const char *batch_pack = npu_performance_env("FLAGFFT_NPU_2D_BATCH_PACK");
-      const char *split_order = npu_performance_env("FLAGFFT_NPU_2D_SPLIT_ORDER");
+      const char *exchange = performance_env("FLAGFFT_NPU_2D_EXCHANGE");
+      const char *lane_min = performance_env("FLAGFFT_NPU_2D_LANE_MIN");
+      const char *batch_pack = performance_env("FLAGFFT_NPU_2D_BATCH_PACK");
+      const char *split_order = performance_env("FLAGFFT_NPU_2D_SPLIT_ORDER");
       if (exchange == nullptr) exchange = std::getenv("FLAGFFT_MACA_EXCHANGE");
       if (lane_min == nullptr) lane_min = std::getenv("FLAGFFT_MACA_LANE_MIN");
       if (batch_pack == nullptr) batch_pack = std::getenv("FLAGFFT_MACA_BATCH_PACK");
@@ -758,7 +759,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::ostringstream jit_command;
   if (npu_performance_defaults_active) {
     for (const auto &setting : kNpuPerformanceDefaults) {
-      jit_command << setting.name << "=" << shell_quote(npu_performance_env(setting.name)) << " ";
+      jit_command << setting.name << "=" << shell_quote(performance_env(setting.name)) << " ";
+    }
+  }
+  if (hcu_performance_defaults_active) {
+    for (const auto &setting : kHcuPerformanceDefaults) {
+      jit_command << setting.name << "=" << shell_quote(performance_env(setting.name)) << " ";
     }
   }
   // These literals belong to this kernel key, not the process-wide policy.
@@ -1164,7 +1170,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (adaptor::backend_name() == "npu") {
     if (key.perm_form.rfind("npu_vector_dif_aligned_cube_",0)==0)
       cache_key += ";npu-dif-cube-prefix-v2";
-    const char *join = npu_performance_env("FLAGFFT_NPU_JOIN_MODE");
+    const char *join = performance_env("FLAGFFT_NPU_JOIN_MODE");
     kernel->npu_join_lowering = join != nullptr ? join : "auto";
     if (kernel->npu_join_lowering != "auto" && kernel->npu_join_lowering != "native" &&
         kernel->npu_join_lowering != "packed")

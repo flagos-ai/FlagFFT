@@ -162,6 +162,7 @@ class PlanBuilder {
     int64_t device_index = -1;
     std::string device_arch;
     std::string npu_performance;
+    std::string hcu_performance;
     std::string musa_1d_fourstep_split;
     int64_t origin_rank = 0;
     int64_t requested_n = 0;

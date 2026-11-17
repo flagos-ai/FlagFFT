@@ -26,6 +26,14 @@ It requires all 400 cases and 30 operators, passing NumPy and platform
 accuracy, validated reference timings, case-weighted geomean at least 1.0,
 and every speedup at least 0.7. A performance-only run cannot pass this gate.
 
+BW1000 library plans on `gfx936` now automatically resolve the runtime
+settings in `hcu_bw1000.sh`; explicit environment overrides take precedence.
+`FLAGFFT_HCU_OPTIMIZED_DEFAULTS=0` disables automatic settings without clearing
+explicit overrides. Sourcing the profile is optional for normal library use
+and also sets `FLAGFFT_NUMPY_CAPTURE_FULL_BATCH=1` for acceptance capture.
+The historical canonical and expanded results are recorded separately in
+[`docs/hcu-bw1000-acceptance.md`](../docs/hcu-bw1000-acceptance.md).
+
 Counts include FP32/FP64 and all legal directions, before backend precision
 omissions and reference-library skips. IX/NPU currently omit FP64, halving
 these expanded counts. The manifest contains the full matrix, its source path

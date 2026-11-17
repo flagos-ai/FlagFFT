@@ -93,7 +93,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
   }
 
   try {
-    const NpuPerformanceScope npu_policy(adaptor::backend_name(), desc.device_arch, "complex64");
+    const BackendPerformanceScope performance_policy(adaptor::backend_name(), desc.device_arch, "complex64");
     auto plan = std::make_unique<FlagFFTPlan>();
     plan->desc = std::move(desc);
 
@@ -355,8 +355,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse =
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
-      const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
-      const char *large_graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH_LARGE");
+      const char *graph_override = performance_env("FLAGFFT_HCU_3D_GRAPH");
+      const char *large_graph_override = performance_env("FLAGFFT_HCU_3D_GRAPH_LARGE");
       const int64_t graph_max_elements = large_graph_override != nullptr &&
                                           std::string(large_graph_override) == "1"
                                               ? 4 * 1024 * 1024
@@ -421,7 +421,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
       }
     }
-    const char *npu_graph = npu_performance_env("FLAGFFT_NPU_GRAPH");
+    const char *npu_graph = performance_env("FLAGFFT_NPU_GRAPH");
     if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
         (std::string(npu_graph) == "1" || std::string(npu_graph) == "auto") &&
         std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
@@ -466,7 +466,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
       }
     }
     if (request.device_type == "hcu") {
-      const char *setting = std::getenv("FLAGFFT_HCU_PLAN_GRAPH");
+      const char *setting = performance_env("FLAGFFT_HCU_PLAN_GRAPH");
       const std::string graph_mode = setting ? setting : "0";
       if (graph_mode != "0" && graph_mode != "1" && graph_mode != "real_2d")
         throw std::runtime_error("FLAGFFT_HCU_PLAN_GRAPH must be 0, 1 or real_2d");

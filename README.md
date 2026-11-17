@@ -225,6 +225,16 @@ cmake -S . -B build-hcu -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-hcu -j$(nproc)
 ```
 
+On BW1000 (`gfx936`), FP32 and FP64 plans automatically use the qualified
+runtime settings in [`conf/hcu_bw1000.sh`](conf/hcu_bw1000.sh), including
+resource-based packing, native execution and graph replay for 2D real plans.
+Individual environment settings override these defaults. Set
+`FLAGFFT_HCU_OPTIMIZED_DEFAULTS=0` to disable the automatic settings; explicit
+overrides remain in effect. No profile needs to be sourced for normal library
+use. The profile also enables full-batch capture for acceptance runs.
+See [BW1000 acceptance results](docs/hcu-bw1000-acceptance.md) for qualified
+revisions, the passing canonical suite and the remaining expanded-suite gaps.
+
 ### Environment Variables
 
 | Variable | Description |
@@ -234,6 +244,7 @@ cmake --build build-hcu -j$(nproc)
 | `FLAGFFT_TUNE_DISABLE` | Set to `1` to disable tuned plan lookup and always use auto-selected plans |
 | `FLAGFFT_EXECUTION_POLICY` | Hardware execution policy: `balanced` (IX default), `native` (HCU default; device warp with queried resource caps), `legacy` (other backends' default/comparison), or `packed` (experimental wider leaf packing) |
 | `FLAGFFT_HCU_PREPARED_LAUNCH` | HCU reuses prepared native kernel handles for explicit streams by default; set `0` to use generic dispatch. Default streams and installed launch hooks use the generic path. |
+| `FLAGFFT_HCU_OPTIMIZED_DEFAULTS` | BW1000/gfx936 FP32/FP64 runtime defaults: `1` (default) or `0` (rollback). Explicit per-setting overrides always take precedence; clear a manually sourced profile before comparing with legacy settings. |
 
 ### Hardware profiles and IX experiments
 

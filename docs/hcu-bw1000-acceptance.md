@@ -4,6 +4,20 @@
 每个 case 至少 0.7x；同时要求 NumPy 和 hipFFT 参考准确性通过。算子等权几何平均
 单独记录，不与逐 case 口径混用。
 
+按本次用户指令，`dev` 合入 `codex/hcu-general-opt@9912c961`，保留原有
+NPU 改动，并对 HCU `gfx936` 的 FP32/FP64 计划默认启用已验收配置中的 47 项
+运行参数。默认值在计划/编译作用域内解析，不修改进程环境，并显式传给 Python
+代码生成；规划缓存和 JIT 缓存都包含有效配置。逐项环境变量覆盖优先，
+`FLAGFFT_HCU_OPTIMIZED_DEFAULTS=0` 关闭自动默认值，但不清除显式覆盖。
+普通库调用无需 source；验收时仍需完整 batch 捕获。实验分支
+`codex/hcu-multi-graph` 未合入，图策略保持 `real_2d`。
+
+本次合并的 CPU 验证归档在外围工作区
+`results/20261117_154420_hcu_dev_integration/`，包含默认值与显式配置等价、
+回退、目标/线程隔离、真实规划器缓存切换以及原有 NPU 默认策略检查。
+海光 SSH 认证未通过，合并后的版本尚未重新执行设备构建和性能验收；下述
+性能数字属于原冻结提交及其验收配置。
+
 2026-11-17 07:10，`b11a09fb872090d334a0732babf5eb8e2f9e5853` 已通过规范
 400 项正式验收。逐 case GM **1.32575139x**，最低 **0.71266440x**，算子等权
 GM **1.31066935x**，低于 0.7x 的项数为 **0**。FlagFFT/NumPy、hipFFT/NumPy
@@ -452,8 +466,8 @@ C++ twiddle 表与 Python 发射体采用相同的 stage lane 宽度。部分分
 数字均保留于逐轮外部结果目录。完整验收必须重新冻结单一源提交和统一环境，
 使用实际请求 batch 的 NumPy 与 hipFFT 检查，不能复用筛选时延或拼接局部赢家。
 
-统一候选环境已整理在 `conf/hcu_bw1000.sh`，可在配置编译栈后 source；它仍为待验收
-配置，不改变库的全局默认。`3D_WARP_PACK=resource` 按查询到的 CU 数和总行数
+当时的统一候选环境整理在 `conf/hcu_bw1000.sh`，可在配置编译栈后 source；
+正式验收和后续默认启用状态以本文开头为准。`3D_WARP_PACK=resource` 按查询到的 CU 数和总行数
 限制 wave FFT 分组，使小工作量保留足够独立 CTA；缺少 CU 信息时保持原自动
 分组。查询的 CU 数写入 codegen profile 指纹，避免共享不同设备的分组产物。
 175 项相关检查（含 10 个 subtest）与 1331 项 HCU/profile 回归通过。

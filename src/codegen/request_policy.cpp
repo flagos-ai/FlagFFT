@@ -27,7 +27,7 @@
 namespace flagfft {
 
 std::vector<int64_t> hcu_real_inverse_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
-  const char *setting = std::getenv("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
+  const char *setting = performance_env("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
   if (request.device_type != "hcu" || request.device_arch != "gfx936" || request.origin_rank > 1 ||
       request.input_dtype != "complex128" || !setting || std::string(setting) != "resource" ||
       leaf.length <= 0 || (leaf.length & (leaf.length - 1)) || leaf.factors.size() < 2)
@@ -57,7 +57,7 @@ int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t
 }
 
 std::vector<int64_t> hcu_packed_cta_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
-  const char *setting = std::getenv("FLAGFFT_HCU_PACKED_REAL_CTA");
+  const char *setting = performance_env("FLAGFFT_HCU_PACKED_REAL_CTA");
   if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
       !setting || std::string(setting) != "1" || leaf.length < 32 || leaf.length > 1024 ||
       (leaf.length & (leaf.length - 1)) || leaf.factors.empty()) return leaf.factors;
@@ -93,8 +93,8 @@ bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
   for (int64_t axis : {n0, n1, n2}) {
     if (axis < 64 || axis > 2048 || (axis & (axis - 1)) != 0) return false;
   }
-  const char *wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
-  const char *roots = std::getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE");
+  const char *wave = performance_env("FLAGFFT_HCU_3D_WARP_FFT");
+  const char *roots = performance_env("FLAGFFT_HCU_WAVE_ROOT_TABLE");
   return wave && std::string(wave) == "1" && roots && std::string(roots) == "1";
 }
 

@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # BW1000 / gfx936 profile. Source after configuring DTK and the codegen stack.
+# These runtime settings are automatic for BW1000 library plans on dev.
+# Sourcing additionally enables full-batch acceptance capture and explicitly
+# pins the settings (which take precedence over OPTIMIZED_DEFAULTS=0).
 # Acceptance status and exact source revisions: docs/hcu-bw1000-acceptance.md.
 # Canonical 400-case full-batch acceptance passed at b11a09fb.
 # Frozen generalization validation is recorded separately in the document.

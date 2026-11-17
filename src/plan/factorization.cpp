@@ -230,7 +230,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     return {16, 8, 8};
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
-    const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
+    const char *override_value = performance_env("FLAGFFT_HCU_3D_256_FACTORS");
     if (override_value != nullptr) {
       const std::string choice(override_value);
       if (choice == "auto" || choice == "16,16") return {16, 16};
@@ -244,7 +244,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     }
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 128) {
-    if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_128_FACTORS")) {
+    if (const char *override_value = performance_env("FLAGFFT_HCU_3D_128_FACTORS")) {
       const std::string choice(override_value);
       if (choice == "4,4,8") return {4, 4, 8};
       if (choice == "4,8,4") return {4, 8, 4};
@@ -264,13 +264,13 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
                            context.origin_real_transform_kind == "d2z") &&
                           context.input_dtype == "complex128" && context.requested_n == n;
     const char *c2r_fp64_override =
-        c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
+        c2r_fp64 ? performance_env("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
     const char *r2c_fp64_override =
-        r2c_fp64 ? std::getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS") : nullptr;
+        r2c_fp64 ? performance_env("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS") : nullptr;
     const char *fp64_override =
         r2c_fp64_override != nullptr ? r2c_fp64_override : c2r_fp64_override;
     const char *override_value =
-        fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
+        fp64_override != nullptr ? fp64_override : performance_env("FLAGFFT_HCU_3D_2048_FACTORS");
     if (c2r_fp64_override != nullptr && std::string(c2r_fp64_override) != "auto" &&
         std::string(c2r_fp64_override) != "16,16,8" && std::string(c2r_fp64_override) != "8,16,16" &&
         std::string(c2r_fp64_override) != "16,8,16") {
@@ -381,7 +381,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       (context.origin_rank <= 1 || context.origin_rank == 3) &&
       context.requested_n == n && n == 16) {
     if (context.origin_rank == 3) {
-      if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_16_FACTORS")) {
+      if (const char *override_value = performance_env("FLAGFFT_HCU_3D_16_FACTORS")) {
         const std::string choice(override_value);
         if (choice == "4,4") return {4, 4};
         if (choice == "2,2,2,2") return {2, 2, 2, 2};

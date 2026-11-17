@@ -39,6 +39,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          device_type == other.device_type && device_index == other.device_index &&
          device_arch == other.device_arch &&
          npu_performance == other.npu_performance &&
+         hcu_performance == other.hcu_performance &&
          musa_1d_fourstep_split == other.musa_1d_fourstep_split && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
          batch == other.batch &&
@@ -57,7 +58,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
 }
 
 PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &request) const {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   RequestContext context;
   context.input_dtype = request.input_dtype;
   context.output_dtype = request.output_dtype;
@@ -68,8 +69,10 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_arch = request.device_arch;
   if (npu_performance_qualified(request.device_type, request.device_arch, request.input_dtype))
     context.npu_performance = npu_performance_identity();
+  if (hcu_performance_qualified(request.device_type, request.device_arch, request.input_dtype))
+    context.hcu_performance = hcu_performance_identity();
   if (request.device_type == "hcu" && request.device_arch == "gfx936") {
-    const char *setting = std::getenv("FLAGFFT_HCU_FOURSTEP_RADIX_CAP");
+    const char *setting = performance_env("FLAGFFT_HCU_FOURSTEP_RADIX_CAP");
     const std::string value = setting ? setting : "auto";
     if (value != "auto" && value != "8" && value != "16" && value != "fp64") {
       throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8, 16 or fp64");
@@ -77,7 +80,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
     const bool wide = request.input_dtype == "complex128" || request.input_dtype == "float64";
     context.hcu_fourstep_radix_cap = value == "fp64" ? (wide ? 16 : 0)
         : value == "auto" ? 0 : std::stoi(value);
-    const char *preserve = std::getenv("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT");
+    const char *preserve = performance_env("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT");
     const std::string preserve_value = preserve ? preserve : "0";
     if (preserve_value != "0" && preserve_value != "1" && preserve_value != "irreducible") {
       throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0, 1 or irreducible");
@@ -85,32 +88,32 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
     context.hcu_preserve_fourstep_split = preserve_value == "1" ||
         (preserve_value == "irreducible" &&
          has_prime_factor_above(request.requested_n, context.hcu_fourstep_radix_cap));
-    const char *convolution = std::getenv("FLAGFFT_HCU_FP64_CONV_RADIX_CAP");
+    const char *convolution = performance_env("FLAGFFT_HCU_FP64_CONV_RADIX_CAP");
     const std::string convolution_value = convolution ? convolution : "auto";
     if (convolution_value != "auto" && convolution_value != "8" && convolution_value != "16") {
       throw std::runtime_error("FLAGFFT_HCU_FP64_CONV_RADIX_CAP must be auto, 8 or 16");
     }
     context.hcu_fp64_convolution_radix_cap =
         convolution_value == "auto" ? 0 : std::stoi(convolution_value);
-    const char *balance = std::getenv("FLAGFFT_HCU_CONV_BALANCE");
+    const char *balance = performance_env("FLAGFFT_HCU_CONV_BALANCE");
     const std::string balance_value = balance ? balance : "0";
     if (balance_value != "0" && balance_value != "1" && balance_value != "fp64") {
       throw std::runtime_error("FLAGFFT_HCU_CONV_BALANCE must be 0, 1 or fp64");
     }
     context.hcu_balance_convolution = balance_value == "1" || (balance_value == "fp64" && wide);
-    const char *wave_cost = std::getenv("FLAGFFT_HCU_PHYSICAL_WAVE_COST");
+    const char *wave_cost = performance_env("FLAGFFT_HCU_PHYSICAL_WAVE_COST");
     const std::string wave_cost_value = wave_cost ? wave_cost : "0";
     if (wave_cost_value != "0" && wave_cost_value != "1" && wave_cost_value != "fp64")
       throw std::runtime_error("FLAGFFT_HCU_PHYSICAL_WAVE_COST must be 0, 1 or fp64");
     context.hcu_physical_wave_cost = wave_cost_value == "1" || (wave_cost_value == "fp64" && wide);
-    const char *stage_traffic = std::getenv("FLAGFFT_HCU_STAGE_TRAFFIC_COST");
+    const char *stage_traffic = performance_env("FLAGFFT_HCU_STAGE_TRAFFIC_COST");
     const std::string stage_traffic_value = stage_traffic ? stage_traffic : "0";
     if (stage_traffic_value != "0" && stage_traffic_value != "1" &&
         stage_traffic_value != "fp32" && stage_traffic_value != "fp64")
       throw std::runtime_error("FLAGFFT_HCU_STAGE_TRAFFIC_COST must be 0, 1, fp32 or fp64");
     context.hcu_stage_traffic_cost = stage_traffic_value == "1" ||
         (stage_traffic_value == "fp64" && wide) || (stage_traffic_value == "fp32" && !wide);
-    const char *prime_cost = std::getenv("FLAGFFT_HCU_PRIME_COST_COMPARISON");
+    const char *prime_cost = performance_env("FLAGFFT_HCU_PRIME_COST_COMPARISON");
     if (prime_cost && std::string(prime_cost) != "0" && std::string(prime_cost) != "1")
       throw std::runtime_error("FLAGFFT_HCU_PRIME_COST_COMPARISON must be 0 or 1");
     context.hcu_prime_cost_comparison = prime_cost && std::string(prime_cost) == "1";
@@ -152,7 +155,7 @@ const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
 }
 
 PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
@@ -317,7 +320,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
        request.origin_real_transform_kind == "c2r" ||
        request.origin_real_transform_kind == "z2d");
-  const char *hcu_c2r_split = std::getenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  const char *hcu_c2r_split = performance_env("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
   if (hcu_single_c2r_root && hcu_c2r_split != nullptr && *hcu_c2r_split != '\0') {
     const std::string spec(hcu_c2r_split);
     const auto separator = spec.find(':');
@@ -354,7 +357,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   // An opt-in split lets Ascend qualify the existing generic FourStep path
   // with Stockham/Bluestein children before changing its automatic policy.
   // Scope the override to the requested 1D root, never a convolution child.
-  const char *npu_split = npu_performance_env("FLAGFFT_NPU_FOURSTEP_SPLIT");
+  const char *npu_split = performance_env("FLAGFFT_NPU_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 1 && npu_split != nullptr && *npu_split != '\0') {
     const std::string spec(npu_split);
     const auto separator = spec.find(':');
@@ -376,7 +379,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
         const auto row_factors = select_leaf_factors(n1);
         const auto col_factors = select_leaf_factors(n2);
@@ -394,7 +397,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   // Let 2D axis plans reuse the existing FourStep plan and fused-leaf
   // execution for long axes. Keep this opt-in so the current 2D policy stays
   // unchanged while splits are screened on Ascend.
-  const char *npu_2d_split = npu_performance_env("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
+  const char *npu_2d_split = performance_env("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 2 && request.raw_dim == 1 &&
       request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_2d_split != nullptr && *npu_2d_split != '\0') {
@@ -418,7 +421,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
         const auto row_factors = select_leaf_factors(n1);
         const auto col_factors = select_leaf_factors(n2);
@@ -438,7 +441,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n2, false));
     }
   }
-  const char *npu_3d_aiv64 = npu_performance_env("FLAGFFT_NPU_3D_AIV64");
+  const char *npu_3d_aiv64 = performance_env("FLAGFFT_NPU_3D_AIV64");
   const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
                                 request.raw_dim == 1 && request.input_dtype == "complex64" &&
                                 request.output_dtype == "complex64" && npu_3d_aiv64 != nullptr &&
@@ -447,7 +450,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     const auto factors = select_leaf_factors(n);
     if (should_use_leaf(n, factors)) return make_leaf_plan(n, factors);
   }
-  const char *npu_3d_split = npu_performance_env("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
+  const char *npu_3d_split = performance_env("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 3 && request.raw_dim == 1 &&
       request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_3d_split != nullptr && *npu_3d_split != '\0') {
@@ -471,7 +474,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = npu_performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       auto build_3d_child = [&](int64_t length) -> PlanNodePtr {
         if (use_npu_3d_aiv64 && length == 64) {
           const auto factors = select_leaf_factors(length);
@@ -561,7 +564,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
 }
 
 double PlanBuilder::cost_for(int64_t n, const FFTRequest &request) {
-  const NpuPerformanceScope npu_policy(request.device_type, request.device_arch, request.input_dtype);
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   set_request_context(request);
   return cost_for(n);
 }

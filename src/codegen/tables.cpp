@@ -179,10 +179,10 @@ namespace {
     if (request.device_type != "hcu" || stage + 1 != leaf.factors.size() ||
         leaf.length < 32 || leaf.length > 2048 || (leaf.length & (leaf.length - 1)) != 0) return;
     const auto enabled = [](const char *name) {
-      const char *value = std::getenv(name);
+      const char *value = performance_env(name);
       return value && std::string(value) == "1";
     };
-    const char *dense_mode = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
+    const char *dense_mode = performance_env("FLAGFFT_HCU_DENSE_WAVE");
     const bool dense = dense_mode && (std::string(dense_mode) == "1" || std::string(dense_mode) == "leaves" ||
                                       std::string(dense_mode) == "packed" ||
                                       std::string(dense_mode) == "fourstep_codelets");
@@ -404,7 +404,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    bool portable_default) {
   const bool is_double = dtype_is_double(request.input_dtype);
-  const char *hcu_conv_buffer = std::getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
+  const char *hcu_conv_buffer = performance_env("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
   const int64_t hcu_convolution_limit = request.device_type == "hcu" &&
       hcu_conv_buffer && std::string(hcu_conv_buffer) == "1" && leaf.lanes > kMaxLanes
           ? leaf.lanes : 0;
