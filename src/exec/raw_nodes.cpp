@@ -86,10 +86,9 @@ flagfftResult CompiledRawGraphNode::execute(adaptor::DevicePtr input,
     if (raw_capture_active(context.stream) ||
         input == output)
       return inner->execute(input, output, context);
-    const bool same_npu_context = context.request.device_type != "npu" ||
-        (graph_stream == context.stream && graph_batch == context.batch &&
-         graph_input_distance == context.input_distance && graph_output_distance == context.output_distance);
-    if (graph != nullptr && graph_input == input && graph_output == output && same_npu_context) {
+    const bool same_context = graph_stream == context.stream && graph_batch == context.batch &&
+        graph_input_distance == context.input_distance && graph_output_distance == context.output_distance;
+    if (graph != nullptr && graph_input == input && graph_output == output && same_context) {
       graph->launch(context.stream);
       return FLAGFFT_SUCCESS;
     }
@@ -612,10 +611,12 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     int64_t blocks = ceil_div(context.batch, kernel->batch_per_block);
-    if (kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+    if ((kernel->kernel_name.rfind("ix_warp", 0) == 0 ||
+         kernel->kernel_name.rfind("hcu_warp", 0) == 0) &&
         kernel->kernel_name.find("_outer_") != std::string::npos) {
-      blocks = ceil_div(context.batch, outer_stride) * ceil_div(outer_stride, kernel->batch_per_block);
+      blocks = permuted_store_outer_blocks(context.batch, outer_stride, kernel->batch_per_block);
     }
+    if (kernel->grid_x_override > 0) blocks = kernel->grid_x_override;
     kernel->launch(context.stream, args, blocks, 1, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -4432,6 +4433,30 @@ flagfftResult CompiledRaw3DFusedRealPlaneNode::execute(adaptor::DevicePtr input,
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] 3D fused real plane execute failed: %s\n", e.what());
     std::fflush(stderr);
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+CompiledRaw3DCTNode::CompiledRaw3DCTNode(int64_t elements,
+                                       std::shared_ptr<JitKernel> first,
+                                       std::shared_ptr<JitKernel> last,
+                                       DeviceAllocation temp)
+    : elements(elements), first(std::move(first)), last(std::move(last)), temp(std::move(temp)) {}
+
+std::string CompiledRaw3DCTNode::describe() const {
+  return "CompiledRaw3DCT(first=" + first->execution_description() +
+         ", last=" + last->execution_description() + ")";
+}
+
+flagfftResult CompiledRaw3DCTNode::execute(adaptor::DevicePtr input,
+                                          adaptor::DevicePtr output,
+                                          const RawExecutionContext &context) const {
+  try {
+    launch_perm3d(first, context.stream, input, temp.get(), elements, context.batch, 8);
+    launch_perm3d(last, context.stream, temp.get(), output, elements, context.batch, 8);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "[flagfft] 3D CT execute failed: %s\n", e.what());
     return FLAGFFT_EXEC_FAILED;
   }
 }

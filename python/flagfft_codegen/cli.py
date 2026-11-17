@@ -49,6 +49,7 @@ from .kernels_npu_grouped import emit_npu_grouped_fft64
 from .kernels_npu_stockham_aiv import emit_npu_stockham_aiv
 from .artifacts import write_text_atomic
 from .registry import (
+    HCU_3D_CT,
     BLUESTEIN,
     BLUESTEIN_FOUR_STEP,
     BLUESTEIN_LEAF,
@@ -191,11 +192,13 @@ def main() -> None:
     parser.add_argument("--npu-table-transpose3d", action="store_true",
                         help="Replace a native NPU 3D tile with the same permutation table")
     parser.add_argument("--permutation-span", type=int, default=0)
+    parser.add_argument("--permutation-batch", type=int, default=0)
     parser.add_argument("--ix-warp-fft-pack", type=int, choices=(0,1,2,4,8,16,32), default=0)
     parser.add_argument(
         "--perm-form",
         choices=(
             "outer",
+            "outer_packed",
             "inner",
             "inner_batched",
             "inner_middle_batched",
@@ -405,6 +408,16 @@ def main() -> None:
                 f"-row-pack-{fourstep_row_pack}-col-pack-{fourstep_col_pack}"
             )
     if profile.backend == "hcu":
+        vector_io = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
+        if vector_io not in {"0", "1", "packed", "fp32"}:
+            parser.error("FLAGFFT_HCU_VECTOR_IO must be 0, 1, packed or fp32")
+        profile_dir += f"-hcu-vector-io-{vector_io}"
+        hcu_store_mode = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto")
+        if hcu_store_mode not in {"auto", "grouped", "smem", "wide", "cyclic"}:
+            parser.error("FLAGFFT_HCU_3D_STORE_MODE must be auto, grouped, smem, wide or cyclic")
+        hcu_transpose_mode = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto")
+        if hcu_transpose_mode not in {"auto", "packed", "flat", "resource"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_MODE must be auto, packed, flat or resource")
         pair_store = os.getenv("FLAGFFT_HCU_3D_PAIR_STORE", "1")
         permuted_pack = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
         fp64_tile = os.getenv("FLAGFFT_HCU_3D_FP64_TILE", "auto")
@@ -437,8 +450,8 @@ def main() -> None:
             parser.error("FLAGFFT_HCU_3D_FUSED_WARPS must be 1, 2, 4 or 8")
         if transpose_pair not in {"0", "1"}:
             parser.error("FLAGFFT_HCU_3D_TRANSPOSE_PAIR must be 0 or 1")
-        if transpose_tile not in {"auto", "16", "32", "64"}:
-            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32 or 64")
+        if transpose_tile not in {"auto", "16", "32", "64", "resource"}:
+            parser.error("FLAGFFT_HCU_3D_TRANSPOSE_TILE must be auto, 16, 32, 64 or resource")
         if transpose_slice_group not in {"auto", "1", "2"}:
             parser.error(
                 "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP must be auto, 1 or 2"
@@ -500,7 +513,23 @@ def main() -> None:
             profile_dir += f"-sg{transpose_slice_group}"
         if factors_256 != "auto":
             profile_dir += f"-f{factors_256.replace(',', '')}"
+        # Experimental policies must neither overwrite each other's artifacts
+        # nor exceed the filesystem's 255-byte component limit. Include all
+        # HCU overrides, including modes resolved inside the emitters.
+        overrides = {k: v for k, v in os.environ.items() if k.startswith("FLAGFFT_HCU_")}
+        identity = json.dumps([profile_dir, overrides], sort_keys=True).encode()
+        profile_dir = profile.fingerprint + "-hcu-" + hashlib.sha256(identity).hexdigest()[:20]
     args.out_dir = args.out_dir / profile_dir
+    if profile.backend == "hcu" and hcu_store_mode != "auto":
+        # A separate component also keeps long, existing HCU profile names
+        # below the filesystem's single-component length limit.
+        args.out_dir = args.out_dir / ("store-" + hcu_store_mode)
+    if profile.backend == "hcu" and hcu_transpose_mode != "auto":
+        args.out_dir = args.out_dir / ("transpose-" + hcu_transpose_mode)
+    if profile.backend == "hcu" and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1":
+        args.out_dir = args.out_dir / "direct-store"
+    if profile.backend == "hcu" and os.getenv("FLAGFFT_HCU_3D_WARP_FFT", "0") == "1":
+        args.out_dir = args.out_dir / ("wave-fft-" + os.getenv("FLAGFFT_HCU_3D_WARP_PACK", "auto"))
     # Legacy tree and explicit resource overrides must not overwrite a module
     # emitted earlier by the same executable, even when tail mode is off.
     if variant_suffix(root=True):
@@ -632,6 +661,13 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
         )
+    elif spec.family == HCU_3D_CT:
+        from .kernels_hcu_3d_ct import emit_ct_kernel
+        metadata = emit_ct_kernel(
+            n0=args.transpose3d_n0, n1=args.transpose3d_n1, n2=args.transpose3d_n2,
+            h0=args.four_step_n1, h1=args.four_step_n2, direction=args.direction,
+            first=args.kernel == "hcu_3d_ct_first", dtype=args.dtype, out_dir=args.out_dir,
+        )
     elif spec.family == SMALL_2D:
         metadata = emit_fused_2d_kernel(
             n=args.length,
@@ -748,6 +784,7 @@ def main() -> None:
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
             permutation_span=args.permutation_span,
+            permutation_batch=args.permutation_batch,
             hcu_full_smem=args.hcu_3d_full_smem,
             out_dir=args.out_dir,
         )

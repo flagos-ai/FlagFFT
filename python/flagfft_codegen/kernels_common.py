@@ -282,7 +282,10 @@ def cooperative_stage_lanes_for(plan: LeafPlan) -> tuple[int, ...]:
     )
     wide_cuda = (current_profile().backend == "cuda" and current_profile().device_arch == "sm_80"
                  and os.getenv("FLAGFFT_CUDA_WIDE_STAGE") == "1")
-    max_lanes = 256 if wide_cuda else _COOPERATIVE_STAGE_MAX_LANES
+    wide_hcu_convolution = (_hcu_backend_active() and
+        os.getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER", "0") == "1" and
+        plan.lanes > _COOPERATIVE_STAGE_MAX_LANES and not fixed_lanes_are_compatible)
+    max_lanes = plan.lanes if wide_hcu_convolution else 256 if wide_cuda else _COOPERATIVE_STAGE_MAX_LANES
     min_length = _COOPERATIVE_STAGE_MIN_LENGTH
     short_cooperative = (current_profile().backend == "cuda" and plan.length < min_length and
                          os.getenv("FLAGFFT_CUDA_SHORT_COOPERATIVE") == "1")
@@ -490,6 +493,20 @@ def _register_bounded_batch_pack(plan: LeafPlan, pack: int, native_pack: int) ->
 def _profile_batch_pack_for(plan: LeafPlan) -> int:
     profile = current_profile()
     lane_block = lane_block_for(plan.lanes)
+    target_threads = profile.leaf_target_threads
+    buffers = 4
+    if profile.backend == "hcu" and profile.device_arch == "gfx936":
+        packing = os.getenv("FLAGFFT_HCU_LEAF_PACKING", "resource")
+        if packing not in {"resource", "wave", "two_waves", "four_waves"}:
+            raise ValueError("FLAGFFT_HCU_LEAF_PACKING must be resource, wave, two_waves or four_waves")
+        if packing != "resource" and len(plan.factors) > 1:
+            # Count the lanes actually participating in the emitted stages.
+            # Fill a physical wave before adding blocks for otherwise idle
+            # lanes; retain the shared-memory bound below for both precisions.
+            lane_block = lane_block_for(max(cooperative_stage_lanes_for(plan), default=plan.lanes))
+            target_threads = profile.warp_size * {"wave": 1, "two_waves": 2, "four_waves": 4}[packing]
+            if os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1" and _hcu_buffer_stage_safe(plan):
+                buffers = 2
 
     def pack_for(target_threads):
         thread_pack = max(1, target_threads // lane_block)
@@ -498,14 +515,14 @@ def _profile_batch_pack_for(plan: LeafPlan) -> int:
             thread_pack = min(thread_pack, 4)
         if len(plan.factors) <= 1:
             return thread_pack
-        bytes_per_fft = 4 * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
+        bytes_per_fft = buffers * (plan.smem_size + 1) * _real_element_bytes(plan.dtype)
         smem_pack = max(
             1, profile.shared_budget(_LEAF_PACK_SMEM_BUDGET_BYTES) // bytes_per_fft
         )
         return _floor_power_of_two(max(1, min(thread_pack, smem_pack)))
 
     return _register_bounded_batch_pack(
-        plan, pack_for(profile.leaf_target_threads), pack_for(32)
+        plan, pack_for(target_threads), pack_for(32)
     )
 
 
@@ -650,8 +667,112 @@ def _ix_permuted_single_smem(plan: LeafPlan) -> bool:
                for i in range(len(plan.factors) - 1))
 
 
+def _hcu_wide_permuted_store(plan: LeafPlan) -> bool:
+    if (not _hcu_backend_active()
+            or os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") not in {"wide", "cyclic"}
+            or plan.length <= 0 or plan.length & (plan.length - 1)
+            or len(plan.factors) < 2):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    # Stage zero reads global memory, and the last stage writes global
+    # memory. Only intermediate stages overwrite their own shared input.
+    return all(plan.length == lanes[i] * plan.factors[i]
+               for i in range(1, len(plan.factors) - 1))
+
+
+def _hcu_buffer_stage_safe(plan: LeafPlan | None) -> bool:
+    if (plan is None or len(plan.factors) < 2 or plan.length <= 0
+            or plan.length & (plan.length - 1)):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    return all(plan.length == lanes[i] * plan.factors[i]
+               for i in range(1, len(plan.factors) - 1))
+
+
+def hcu_four_step_single_buffer(plan: LeafPlan | None) -> bool:
+    """An overwriting stage must read the complete FFT before its barrier."""
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER must be 0 or 1")
+    return setting == "1" and _hcu_buffer_stage_safe(plan)
+
+
+def hcu_leaf_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_LEAF_SINGLE_BUFFER must be 0 or 1")
+    if (setting != "1" or io_mode not in {
+            "contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+            "packed_r2c", "packed_c2r"} or not _hcu_buffer_stage_safe(plan)):
+        return False
+    if (os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1"
+            and io_mode in {"packed_r2c", "packed_c2r"}):
+        return True
+    # Retain the short-leaf schedule where shared storage is inexpensive.
+    # The original allocation must occupy at least one quarter of the CU's
+    # queried LDS capacity before screening the extra overwrite barrier.
+    pack = contiguous_batch_pack_for(plan)
+    scalar_bytes = _real_element_bytes(plan.dtype)
+    capacity = current_profile().max_dynamic_shared_memory or 65536
+    old_stride = plan.smem_size + (1 if pack >= 4 else 0)
+    old_bytes = 4 * lane_block_for(old_stride * pack) * scalar_bytes
+    new_bytes = 2 * lane_block_for(plan.smem_size * pack) * scalar_bytes
+    return old_bytes >= capacity // 4 and new_bytes <= capacity
+
+
+def hcu_packed_cta_batch_pack_for(plan: LeafPlan, io_mode: str) -> int:
+    """Fill an output transaction while retaining two LDS-resident CTAs."""
+    if not _hcu_backend_active() or os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") != "1":
+        return 0
+    if io_mode not in {"packed_r2c", "packed_c2r"}:
+        return 0
+    widths = cooperative_stage_lanes_for(plan)
+    single = hcu_leaf_single_buffer(plan, io_mode)
+    alias = single and plan.length == widths[-1] * plan.factors[-1]
+    buffers = 2 if single else 4
+    if io_mode == "packed_r2c" and not alias:
+        buffers += 2
+    scalar = _real_element_bytes(plan.dtype)
+    target = 128 // (2 * scalar)
+    capacity = (current_profile().max_dynamic_shared_memory or 65536) // 2
+    pack = 1
+    while pack * 2 <= target:
+        candidate = pack * 2
+        stride = plan.smem_size + (1 if candidate >= 4 and not single else 0)
+        shared = buffers * lane_block_for(stride * candidate) * scalar
+        if max(widths) * candidate > 512 or shared > capacity:
+            break
+        pack = candidate
+    maximum = os.getenv("FLAGFFT_HCU_PACKED_CTA_MAX_PACK", "auto")
+    if maximum != "auto":
+        if maximum not in {"1", "2", "4", "8", "16", "32"}:
+            raise ValueError("FLAGFFT_HCU_PACKED_CTA_MAX_PACK must be auto, 1, 2, 4, 8, 16 or 32")
+        pack = min(pack, int(maximum))
+    return pack
+
+
+def hcu_convolution_single_buffer(plan: LeafPlan, io_mode: str) -> bool:
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER", "0")
+    if setting not in {"0", "1"}:
+        raise ValueError("FLAGFFT_HCU_CONV_SINGLE_BUFFER must be 0 or 1")
+    if (setting != "1" or io_mode != "bluestein_full_leaf" or len(plan.factors) < 2 or
+            plan.length <= 0 or plan.length & (plan.length - 1)):
+        return False
+    lanes = cooperative_stage_lanes_for(plan)
+    # The first FFT's final stage and the second FFT's first stage also
+    # overwrite shared input. Every stage must read its entire FFT at once.
+    return all(plan.length == radix * width for radix, width in zip(plan.factors, lanes))
+
+
 def permuted_store_batch_pack_for(
-    plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None
+    plan: LeafPlan, *, force_full_smem: bool = False, pack_override: int | None = None,
+    permutation_span: int = 0, permutation_batch: int = 0, inner: bool = False,
 ) -> int:
     """Batch slots per block for the fused permuted store.
 
@@ -660,6 +781,44 @@ def permuted_store_batch_pack_for(
     two. Shared memory still caps the selected pack for large leaves.
     """
     profile = current_profile()
+    if _hcu_wide_permuted_store(plan):
+        # Aim for a cache-line-sized contiguous output run, bounded by the
+        # actual rounded allocation for one real/imaginary shared buffer.
+        target = 128 // (2 * _real_element_bytes(plan.dtype))
+        fill = os.getenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE", "0")
+        if fill not in {"0", "1"}:
+            raise ValueError("FLAGFFT_HCU_PERMUTED_FILL_WAVE must be 0 or 1")
+        if fill == "1" and profile.policy != "legacy":
+            active = lane_block_for(max(cooperative_stage_lanes_for(plan)))
+            # A cache-line-sized output run can still leave half a physical
+            # wave idle on a short wide-precision leaf. Fill those lanes
+            # before adding waves; the existing LDS/thread bounds still win.
+            target = max(target, profile.warp_size // active)
+        setting = os.getenv("FLAGFFT_HCU_3D_PACK", "auto")
+        if setting != "auto":
+            if setting not in {"1", "2", "4", "8", "16", "32"}:
+                raise ValueError("FLAGFFT_HCU_3D_PACK must be 1, 2, 4, 8, 16 or 32")
+            target = int(setting)
+        if pack_override is not None:
+            target = pack_override
+        if inner and permutation_span > 0 and permutation_batch > 0:
+            outer_rows = permutation_batch // permutation_span
+            # The inner-store grid groups rows across the permuted dimension.
+            # A partial group needs a padded grid; choose a divisor instead so
+            # the existing compact launch covers every row exactly once.
+            while target > 1 and outer_rows % target:
+                target //= 2
+        thread_limit = min(profile.max_threads_per_block,
+                           profile.warp_size * _cooperative_warp_cap())
+        lanes = lane_block_for(max(cooperative_stage_lanes_for(plan)))
+        shared_limit = profile.max_dynamic_shared_memory or 48 * 1024
+        for pack in (32, 16, 8, 4, 2, 1):
+            cyclic = os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
+            padded = plan.smem_size + (1 if pack >= 4 and not cyclic else 0)
+            shared = 2 * lane_block_for(padded * pack) * _real_element_bytes(plan.dtype)
+            if pack <= target and lanes * pack <= thread_limit and shared <= shared_limit:
+                return pack
+        return 1
     single_smem = _ix_permuted_single_smem(plan)
     buffer_count = 2 if single_smem else 4
     bytes_per_fft = buffer_count * (plan.smem_size + (0 if single_smem else 1)) * _real_element_bytes(plan.dtype)
@@ -795,7 +954,8 @@ def _four_step_resource_inner_pack_for(plan: LeafPlan) -> int:
     active_lanes = max(stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     thread_pack = max(1, _FOUR_STEP_PACK_TARGET_THREADS // lane_block)
-    bytes_per_fft = 4 * plan.smem_size * _real_element_bytes(plan.dtype)
+    buffers = 2 if hcu_four_step_single_buffer(plan) else 4
+    bytes_per_fft = buffers * plan.smem_size * _real_element_bytes(plan.dtype)
     smem_pack = max(
         1,
         current_profile().shared_budget(_FOUR_STEP_PACK_SMEM_BUDGET_BYTES)
@@ -1113,11 +1273,21 @@ def _bounded_inner_pack(
     # Keep this tighter allocation bound explicit while screening IX tiles.
     buffers = 4
     padded_elements = plan.smem_size + extra_smem_elements
+    if hcu_four_step_single_buffer(plan):
+        buffers = 2
+        padded_elements = plan.smem_size
     if (_ix_backend_active() and _maca_knob("TLE_INNER_PACK")
             and not _portable_leaf_backend_active()):
         buffers = 2 if len(plan.factors) == 2 else 4
         padded_elements = lane_block_for(plan.smem_size)
     bytes_per_fft = buffers * padded_elements * _real_element_bytes(plan.dtype)
+    if (_hcu_backend_active() and _is_double_dtype(plan.dtype)
+            and os.getenv("FLAGFFT_HCU_VECTOR_IO", "0") == "1"):
+        # The paired FP64 tensor can require a layout-exchange tile in
+        # addition to TLE's explicit FFT buffers. Reserve one complex value
+        # per logical lane instead of filling all LDS with those buffers.
+        active = max(cooperative_stage_lanes_for(plan), default=plan.lanes)
+        bytes_per_fft += 2 * lane_block_for(active) * _real_element_bytes(plan.dtype)
     return _floor_power_of_two(
         max(1, min(pack, profile.max_dynamic_shared_memory // bytes_per_fft))
     )
@@ -1153,6 +1323,28 @@ def _musa_four_step_inner_pack_override(plan, axis: str) -> int | None:
     return _bounded_inner_pack(int(override), plan)
 
 
+def _hcu_four_step_pack_for(pack, plan):
+    profile = current_profile()
+    if profile.backend != "hcu":
+        return pack
+    mode = os.getenv("FLAGFFT_HCU_FOURSTEP_PACKING", "resource")
+    if mode not in {"resource", "fp32_wave", "fp32_wide"}:
+        raise ValueError("FLAGFFT_HCU_FOURSTEP_PACKING must be resource, fp32_wave or fp32_wide")
+    if (mode == "fp32_wide" and plan is not None and profile.policy != "legacy"
+            and plan.dtype == "complex64" and hcu_four_step_single_buffer(plan)
+            and max(cooperative_stage_lanes_for(plan)) <= profile.warp_size):
+        # Widen the contiguous independent-row axis while keeping at most
+        # eight physical waves. The caller applies the queried LDS bound.
+        pack = max(pack, 8)
+    if (mode == "fp32_wave" and plan is not None and profile.policy != "legacy"
+            and plan.dtype == "complex64" and len(plan.factors) == 2
+            and hcu_four_step_single_buffer(plan)):
+        lanes = cooperative_stage_lanes_for(plan)
+        if len(set(lanes)) == 1 and lanes[0] <= profile.warp_size:
+            pack = min(pack, max(1, profile.warp_size // lane_block_for(lanes[0])))
+    return pack
+
+
 def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
     if _cuda_four_step_pack_four(plan):
         return 4
@@ -1172,7 +1364,7 @@ def four_step_col_inner_pack_for(n1, n2, dtype="complex64", plan=None):
         else 1
     )
     return _bounded_inner_pack(
-        _four_step_col_inner_pack_for(n1, n2, dtype, plan),
+        _hcu_four_step_pack_for(_four_step_col_inner_pack_for(n1, n2, dtype, plan), plan),
         plan,
         extra_smem_elements=extra_smem_elements,
     )
@@ -1192,7 +1384,7 @@ def four_step_row_inner_pack_for(n1, n2, dtype="complex64", plan=None):
         else 1
     )
     return _bounded_inner_pack(
-        _four_step_row_inner_pack_for(n1, n2, dtype, plan),
+        _hcu_four_step_pack_for(_four_step_row_inner_pack_for(n1, n2, dtype, plan), plan),
         plan,
         extra_smem_elements=extra_smem_elements,
     )
@@ -1231,6 +1423,14 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
         return True
     if _portable_leaf_backend_active():
         return False
+    if _hcu_backend_active():
+        setting = os.getenv("FLAGFFT_HCU_FP32_ROW_TWIDDLE", "0")
+        if setting not in {"0", "1"}:
+            raise ValueError("FLAGFFT_HCU_FP32_ROW_TWIDDLE must be 0 or 1")
+        shared = current_profile().max_dynamic_shared_memory or 65536
+        if (setting == "1" and dtype == "complex64" and 1 < n1 <= 1024
+                and 1 < n2 <= 1024 and n1 * n2 * 8 >= shared):
+            return True
     return use_tle_fused_twiddle(n1, n2, dtype) or (
         _is_double_dtype(dtype) and n1 * n2 >= _TLE_FUSED_TWIDDLE_MIN_LENGTH
     )
@@ -1296,6 +1496,17 @@ def _use_single_smem_buffer(
     four_step_n2: int = 0,
 ) -> bool:
     """Reuse one shared buffer between generated mixed-radix stages."""
+    if hcu_convolution_single_buffer(plan, io_mode):
+        return True
+    if hcu_leaf_single_buffer(plan, io_mode):
+        return True
+    if (io_mode.startswith(("four_step_", "bluestein_four_step_")) and not io_mode.endswith("_strided")
+            and hcu_four_step_single_buffer(plan)):
+        return True
+    if (_hcu_wide_permuted_store(plan) and io_mode in {
+            "permuted_store", "strided_permuted_store", "permuted_r2c",
+            "permuted_store_r2c"}):
+        return True
     if (current_profile().backend == "cuda" and
             os.getenv("FLAGFFT_CUDA_LEAF_SINGLE_BUFFER") == "1"):
         allowed_modes = {

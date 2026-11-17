@@ -20,6 +20,17 @@
 #include <string>
 
 namespace flagfft {
+namespace {
+bool has_prime_factor_above(int64_t value, int cap) {
+  if (value <= 1 || cap <= 0) return false;
+  for (int64_t divisor = 2; divisor <= value / divisor; ++divisor) {
+    if (value % divisor != 0) continue;
+    if (divisor > cap) return true;
+    do { value /= divisor; } while (value % divisor == 0);
+  }
+  return value > cap;
+}
+}  // namespace
 
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
   return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
@@ -35,6 +46,13 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
          ix_fourstep_preset == other.ix_fourstep_preset &&
+         hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
+         hcu_fp64_convolution_radix_cap == other.hcu_fp64_convolution_radix_cap &&
+         hcu_balance_convolution == other.hcu_balance_convolution &&
+         hcu_physical_wave_cost == other.hcu_physical_wave_cost &&
+         hcu_stage_traffic_cost == other.hcu_stage_traffic_cost &&
+         hcu_prime_cost_comparison == other.hcu_prime_cost_comparison &&
+         hcu_preserve_fourstep_split == other.hcu_preserve_fourstep_split &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
 
@@ -50,6 +68,53 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_arch = request.device_arch;
   if (npu_performance_qualified(request.device_type, request.device_arch, request.input_dtype))
     context.npu_performance = npu_performance_identity();
+  if (request.device_type == "hcu" && request.device_arch == "gfx936") {
+    const char *setting = std::getenv("FLAGFFT_HCU_FOURSTEP_RADIX_CAP");
+    const std::string value = setting ? setting : "auto";
+    if (value != "auto" && value != "8" && value != "16" && value != "fp64") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8, 16 or fp64");
+    }
+    const bool wide = request.input_dtype == "complex128" || request.input_dtype == "float64";
+    context.hcu_fourstep_radix_cap = value == "fp64" ? (wide ? 16 : 0)
+        : value == "auto" ? 0 : std::stoi(value);
+    const char *preserve = std::getenv("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT");
+    const std::string preserve_value = preserve ? preserve : "0";
+    if (preserve_value != "0" && preserve_value != "1" && preserve_value != "irreducible") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0, 1 or irreducible");
+    }
+    context.hcu_preserve_fourstep_split = preserve_value == "1" ||
+        (preserve_value == "irreducible" &&
+         has_prime_factor_above(request.requested_n, context.hcu_fourstep_radix_cap));
+    const char *convolution = std::getenv("FLAGFFT_HCU_FP64_CONV_RADIX_CAP");
+    const std::string convolution_value = convolution ? convolution : "auto";
+    if (convolution_value != "auto" && convolution_value != "8" && convolution_value != "16") {
+      throw std::runtime_error("FLAGFFT_HCU_FP64_CONV_RADIX_CAP must be auto, 8 or 16");
+    }
+    context.hcu_fp64_convolution_radix_cap =
+        convolution_value == "auto" ? 0 : std::stoi(convolution_value);
+    const char *balance = std::getenv("FLAGFFT_HCU_CONV_BALANCE");
+    const std::string balance_value = balance ? balance : "0";
+    if (balance_value != "0" && balance_value != "1" && balance_value != "fp64") {
+      throw std::runtime_error("FLAGFFT_HCU_CONV_BALANCE must be 0, 1 or fp64");
+    }
+    context.hcu_balance_convolution = balance_value == "1" || (balance_value == "fp64" && wide);
+    const char *wave_cost = std::getenv("FLAGFFT_HCU_PHYSICAL_WAVE_COST");
+    const std::string wave_cost_value = wave_cost ? wave_cost : "0";
+    if (wave_cost_value != "0" && wave_cost_value != "1" && wave_cost_value != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_PHYSICAL_WAVE_COST must be 0, 1 or fp64");
+    context.hcu_physical_wave_cost = wave_cost_value == "1" || (wave_cost_value == "fp64" && wide);
+    const char *stage_traffic = std::getenv("FLAGFFT_HCU_STAGE_TRAFFIC_COST");
+    const std::string stage_traffic_value = stage_traffic ? stage_traffic : "0";
+    if (stage_traffic_value != "0" && stage_traffic_value != "1" &&
+        stage_traffic_value != "fp32" && stage_traffic_value != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_STAGE_TRAFFIC_COST must be 0, 1, fp32 or fp64");
+    context.hcu_stage_traffic_cost = stage_traffic_value == "1" ||
+        (stage_traffic_value == "fp64" && wide) || (stage_traffic_value == "fp32" && !wide);
+    const char *prime_cost = std::getenv("FLAGFFT_HCU_PRIME_COST_COMPARISON");
+    if (prime_cost && std::string(prime_cost) != "0" && std::string(prime_cost) != "1")
+      throw std::runtime_error("FLAGFFT_HCU_PRIME_COST_COMPARISON must be 0 or 1");
+    context.hcu_prime_cost_comparison = prime_cost && std::string(prime_cost) == "1";
+  }
   if (request.device_type == "musa" && request.device_arch == "31") {
     const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
     if (split != nullptr) context.musa_1d_fourstep_split = split;
@@ -76,6 +141,7 @@ void PlanBuilder::set_request_context(const FFTRequest &request) {
   node_cache_.clear();
   cost_cache_.clear();
   tune_candidate_cache_.clear();
+  best_leaf_factors_cache_.clear();
 }
 
 const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
@@ -468,6 +534,28 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     const int64_t n2 = n / n1;
     return std::make_shared<FourStepPlanNode>(n, n1, n2,
                                               build_auto_node(n1, false), build_auto_node(n2, false));
+  }
+  const auto &context = request_context();
+  if (context.hcu_preserve_fourstep_split && context.hcu_fourstep_radix_cap &&
+      context.origin_rank == 1 && n == context.requested_n && n >= 65536 &&
+      factorize_supported_radices(n).remainder == 1) {
+    // Choose the memory decomposition with the original cost model, then
+    // bound register butterflies independently. A separate builder keeps
+    // capped and uncapped node/cost caches isolated without mutating env.
+    PlanBuilder split_builder;
+    split_builder.request_context_ = context;
+    split_builder.request_context_->hcu_fourstep_radix_cap = 0;
+    auto original = split_builder.build_auto_node(n, true);
+    auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(original);
+    if (pair && std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan) &&
+        std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan)) {
+      const auto row_factors = select_leaf_factors(pair->n1);
+      const auto col_factors = select_leaf_factors(pair->n2);
+      if (should_use_leaf(pair->n1, row_factors) && should_use_leaf(pair->n2, col_factors)) {
+        return std::make_shared<FourStepPlanNode>(n, pair->n1, pair->n2,
+            make_leaf_plan(pair->n1, row_factors), make_leaf_plan(pair->n2, col_factors));
+      }
+    }
   }
   return build_auto_node(n, true);
 }

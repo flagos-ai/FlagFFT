@@ -1,0 +1,75 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Discovery inputs for policy design; not a replacement for acceptance.
+# No full transform shape below occurs in conf/test_matrix.yaml.
+# Group names describe sampling strata, NOT a required runtime algorithm.
+# Existing sub-kernel specializations may still be selected: inspect actual plans.
+profile: generalization
+split: discovery
+
+# Powers of two and mixed radices, outside the acceptance size list.
+sizes_1d_ct:
+  - 48
+  - 256
+  - 768
+  - 1536
+  - 3072
+  - 4096
+
+# A leaf-boundary neighbor and medium/large decompositions.
+# 4097 = 17 * 241 can select Bluestein; it is deliberately not forced to FourStep.
+sizes_1d_fourstep:
+  - 4097
+  - 12288
+  - 32768
+  - 131072
+
+# Prime lengths absent from acceptance; includes a power-of-two neighbor.
+sizes_1d_prime:
+  - 257
+  - 1031
+  - 4093
+  - 65537
+
+# Odd/even real packing, rectangles and axis-length boundary neighbors.
+sizes_2d:
+  - [63, 65]
+  - [96, 160]
+  - [255, 128]
+  - [256, 128]
+  - [257, 128]
+  - [192, 320]
+
+# Odd dimensions, non-cubes, elongated transforms and an axis permutation pair.
+# 64*63*65 < 64^3 < 64*64*65; these sample a volume boundary without
+# claiming every backend has a dispatch threshold at that volume.
+sizes_3d:
+  - [15, 17, 19]
+  - [24, 40, 48]
+  - [64, 63, 65]
+  - [64, 64, 65]
+  - [32, 512, 48]
+  - [48, 512, 32]
+
+# Tail batches and additional work per launch; keep peak sizes bounded.
+batches:
+  single: [1]
+  batch: [3, 16, 65]
+  2d: [1]
+  2d_batch: [3, 8]
+  3d: [1]
+  3d_batch: [3, 8]
+
+scales: [1.0]

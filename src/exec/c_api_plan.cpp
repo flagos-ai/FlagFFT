@@ -465,6 +465,21 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         }
       }
     }
+    if (request.device_type == "hcu") {
+      const char *setting = std::getenv("FLAGFFT_HCU_PLAN_GRAPH");
+      const std::string graph_mode = setting ? setting : "0";
+      if (graph_mode != "0" && graph_mode != "1" && graph_mode != "real_2d")
+        throw std::runtime_error("FLAGFFT_HCU_PLAN_GRAPH must be 0, 1 or real_2d");
+      if ((graph_mode == "1" || (graph_mode == "real_2d" && is_2d && real_multid)) &&
+          std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+        const auto wrap = [](std::shared_ptr<CompiledRawNode> &node) {
+          if (node && !std::dynamic_pointer_cast<CompiledRawGraphNode>(node))
+            node = std::make_shared<CompiledRawGraphNode>(node);
+        };
+        wrap(plan->executable.forward);
+        wrap(plan->executable.inverse);
+      }
+    }
     plan->state.initialized = true;
 
     std::unique_ptr<flagfftPlan_t> handle(new flagfftPlan_t());

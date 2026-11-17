@@ -19,10 +19,84 @@
 #include "flagfft/codegen.hpp"
 
 #include <cstdlib>
+#include <algorithm>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
 namespace flagfft {
+
+std::vector<int64_t> hcu_real_inverse_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
+  const char *setting = std::getenv("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" || request.origin_rank > 1 ||
+      request.input_dtype != "complex128" || !setting || std::string(setting) != "resource" ||
+      leaf.length <= 0 || (leaf.length & (leaf.length - 1)) || leaf.factors.size() < 2)
+    return leaf.factors;
+  auto factors = leaf.factors;
+  std::size_t best = 0;
+  for (std::size_t i = 1; i < factors.size(); ++i) {
+    const int64_t active = leaf.length / factors[i];
+    // The Hermitian global read benefits from more independent butterflies;
+    // keep a complete first stage within two physical waves.
+    if (active >= 64 && active <= 128 && factors[i] < factors[best]) best = i;
+  }
+  if (best) std::rotate(factors.begin(), factors.begin() + best, factors.begin() + best + 1);
+  return factors;
+}
+
+int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t active_lanes) {
+  if (batch <= 0 || compute_units <= 0 || active_lanes <= 0) return 0;
+  // Leave two blocks per CU before grouping rows, while filling the physical
+  // wave for short FFTs. A transposed boundary separately retains its wider
+  // output-transaction grouping.
+  const int64_t requested = std::max<int64_t>(64 / active_lanes,
+      std::max<int64_t>(1, batch / compute_units / 2));
+  int64_t pack = 1;
+  while (pack <= requested / 2) pack *= 2;
+  return std::min<int64_t>(pack, 16);
+}
+
+std::vector<int64_t> hcu_packed_cta_factors(const FFTRequest &request, const LeafPlanNode &leaf) {
+  const char *setting = std::getenv("FLAGFFT_HCU_PACKED_REAL_CTA");
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+      !setting || std::string(setting) != "1" || leaf.length < 32 || leaf.length > 1024 ||
+      (leaf.length & (leaf.length - 1)) || leaf.factors.empty()) return leaf.factors;
+  // Reconstruction keeps a second complex partner live. Bound the butterfly
+  // at radix sixteen, distributing the radix bits evenly across FFT stages
+  // so a tiny final butterfly does not require incomplete shared-read groups.
+  int bits = 0;
+  for (int64_t n = leaf.length; n > 1; n /= 2) ++bits;
+  const int stages = (bits + 3) / 4;
+  std::vector<int64_t> factors;
+  for (int stage = 0; stage < stages; ++stage)
+    factors.push_back(int64_t{1} << (bits / stages + (stage < bits % stages)));
+  return factors;
+}
+
+int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pack) {
+  if (transforms < 0 || span <= 0 || pack <= 0)
+    throw std::invalid_argument("invalid outer permutation launch dimensions");
+  const int64_t planes = transforms / span + (transforms % span != 0);
+  const int64_t tiles = span / pack + (span % pack != 0);
+  if (planes > std::numeric_limits<int64_t>::max() / tiles)
+    throw std::overflow_error("outer permutation launch size overflow");
+  return planes * tiles;
+}
+
+bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
+                                    int64_t n0, int64_t n1, int64_t n2) {
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+      request.origin_rank != 3 || request.raw_dim != 3 || request.real_transform ||
+      !request.real_transform_kind.empty() || !request.origin_real_transform_kind.empty() ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy) return false;
+  for (int64_t axis : {n0, n1, n2}) {
+    if (axis < 64 || axis > 2048 || (axis & (axis - 1)) != 0) return false;
+  }
+  const char *wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
+  const char *roots = std::getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE");
+  return wave && std::string(wave) == "1" && roots && std::string(roots) == "1";
+}
 
 int ix_fourstep_default_preset(const FFTRequest &request) {
   if (request.device_type!="ix" || request.device_arch!="71" || request.raw_dim!=1 ||

@@ -1,0 +1,28 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Frozen before evaluating HCU packed-real, paired-I/O and two-pass CT policies.
+# Do not use these measurements to choose thresholds or winners.
+profile: generalization
+split: hcu_large_holdout
+
+sizes_1d_ct: [96, 768, 1536, 3072]
+sizes_1d_fourstep: [32768, 98304, 262144, 360360, 786432]
+sizes_1d_prime: [1031, 4099, 65537]
+sizes_2d:
+  - [192, 320]
+  - [768, 1024]
+  - [4096, 384]
+sizes_3d:
+  - [32, 128, 256]
+  - [128, 256, 128]
+  - [64, 1024, 32]
+  - [96, 128, 64]
+batches:
+  single: [1]
+  batch: [2, 7]
+  2d: [1]
+  2d_batch: [3]
+  3d: [1]
+  3d_batch: [5]
+scales: [1.0]

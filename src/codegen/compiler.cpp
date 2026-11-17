@@ -974,10 +974,31 @@ namespace {
 
 
 
-  void mark_ix_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
-    if (request.device_type == "ix" && request.device_arch == "71" && span > 0 &&
-        flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false)) {
+  void mark_static_permutation_span(KernelKey &key, const FFTRequest &request, int64_t span) {
+    const bool ix_static = request.device_type == "ix" && request.device_arch == "71" &&
+                           flag_or_default("FLAGFFT_IX_STATIC_PERM_SPAN", false);
+    const bool hcu_wave_static = request.device_type == "hcu" &&
+                                  flag_or_default("FLAGFFT_HCU_3D_WARP_FFT", false) &&
+                                  flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false);
+    const bool fp32_wave = request.input_dtype == "complex64" && key.kind == KernelKind::LeafPermutedStore &&
+                           key.length <= 2048;
+    const bool fp64_wave = request.input_dtype == "complex128" && key.length <= 1024 &&
+        flag_or_default("FLAGFFT_HCU_3D_WARP_FP64", false) &&
+        (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafR2CPermutedStore);
+    const bool hcu_2d_store = request.device_type == "hcu" && request.origin_rank == 2 &&
+        key.length >= 64 && (key.length & (key.length - 1)) == 0 && (fp32_wave || fp64_wave) &&
+        flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
+    const bool hcu_static = request.device_type == "hcu" && (request.origin_rank == 3 || hcu_2d_store) &&
+                            // The automatic wave graph is qualified for 3D.
+                            // 2D compact columns retain native fused stores;
+                            // an explicit static override can screen waves.
+                            flag_or_default("FLAGFFT_HCU_3D_STATIC_PERMUTE",
+                                            hcu_wave_static && request.origin_rank == 3);
+    if (span > 0 && (ix_static || hcu_static)) {
       key.permutation_span = span;
+      if (hcu_static && flag_or_default("FLAGFFT_HCU_3D_STATIC_BATCH", hcu_wave_static)) {
+        key.permutation_batch = request.batch;
+      }
     }
   }
 
@@ -2598,6 +2619,68 @@ namespace {
                : default_form;
   }
 
+  std::shared_ptr<LeafPlanNode> hcu_packed_cta_leaf(std::shared_ptr<LeafPlanNode> leaf,
+                                                const FFTRequest &request) {
+    if (!leaf) return leaf;
+    auto factors = hcu_packed_cta_factors(request, *leaf);
+    if (factors == leaf->factors) return leaf;
+    int64_t minimum = leaf->length, maximum = 1;
+    for (int64_t radix : factors) {
+      minimum = std::min(minimum, leaf->length / radix);
+      maximum = std::max(maximum, leaf->length / radix);
+    }
+    const int64_t lanes = leaf->length >= 128 ? maximum : minimum;
+    return std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
+        lanes, std::max<int64_t>(1, (maximum + 31) / 32), std::vector<int64_t>{}, leaf->smem_size);
+  }
+
+  bool hcu_fused_packed_real_enabled(const FFTRequest &request, int64_t batch, int64_t n) {
+    const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
+    if (packed && std::string(packed) == "0") return false;
+    const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+    const bool native_cta = n / 2 <= 1024 &&
+        flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false);
+    const char *public_setting = std::getenv("FLAGFFT_HCU_PACKED_CTA_PUBLIC");
+    const std::string public_mode = public_setting ? public_setting : "0";
+    const bool wide_inverse = (request.input_dtype == "complex128" || request.input_dtype == "float64") &&
+        (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
+         request.origin_real_transform_kind == "c2r" || request.origin_real_transform_kind == "z2d");
+    const bool native_public = native_cta && request.origin_rank <= 1 &&
+        (public_mode == "1" || (public_mode == "resource" && !wide_inverse));
+    const bool native_nd = native_cta && (request.origin_rank > 1 || native_public);
+    const int64_t minimum = native_nd || (layout && std::string(layout) == "compact") ? 64 : 256;
+    if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+        request.requires_contiguous_copy || request.input_layout != "contiguous" ||
+        request.input_strides.empty() || request.input_strides.back() != 1 ||
+        request.packed_real_child || n < minimum || (n & (n - 1)) != 0 || batch < (native_public ? 1 : 64) ||
+        !(native_nd || flag_or_default("FLAGFFT_HCU_FUSED_PACKED_REAL", false))) return false;
+    // Six half-length real/imaginary buffers conservatively cover the FFT
+    // and packed reconstruction, including FP64, within the queried LDS cap.
+    const int64_t scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
+    return n / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
+  }
+
+  void mark_hcu_packed_grid(KernelKey &key, const FFTRequest &request,
+                            int64_t batch, const LeafPlanNode &leaf) {
+    if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+        !flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
+        key.perm_form == "outer_packed") return;
+    const auto facts = nlohmann::json::parse(adaptor::device_capabilities_json());
+    const auto units = facts.find("multiprocessor_count");
+    if (units == facts.end() || !units->is_number_integer()) return;
+    int64_t lanes = leaf.lanes;
+    if (leaf.length >= 128)
+      for (int64_t radix : leaf.factors) lanes = std::max(lanes, leaf.length / radix);
+    key.hcu_packed_max_pack = hcu_packed_grid_pack_limit(batch, units->get<int64_t>(), lanes);
+  }
+
+  bool hcu_2d_compact_real_rows_enabled(const FFTRequest &request, int64_t n0, int64_t n1) {
+    return request.device_type == "hcu" && request.device_arch == "gfx936" &&
+        request.origin_rank == 2 && request.input_layout == "contiguous" &&
+        !request.requires_contiguous_copy && n0 > 1 && n1 > 1 && n1 % 2 == 0 &&
+        flag_or_default("FLAGFFT_HCU_2D_REAL_ROWS", false);
+  }
+
   bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
                                            bool inverse,
                                            int64_t batch,
@@ -2609,6 +2692,8 @@ namespace {
     if (setting != nullptr && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_HCU_3D_PACKED_REAL_BOUNDARY must be 0 or 1");
     }
+    if (setting && std::string(setting) == "0") return false;
+    if (hcu_fused_packed_real_enabled(request, batch, length)) return true;
     if (!inverse || (request.input_dtype != "complex64" && request.input_dtype != "complex128")) {
       return false;
     }
@@ -2688,16 +2773,35 @@ namespace {
     PlanNodePtr plan;
   };
 
+  bool hcu_large_packed_real_enabled(const PlanNodePtr &original_plan,
+                                     const FFTRequest &request, int64_t batch) {
+    const int64_t n = request.requested_n;
+    // Amortise the extra reconstruction launch by total work, rather than
+    // recognising benchmark lengths or one batch count. The child topology
+    // is checked after construction, before this policy can replace a plan.
+    return request.device_type == "hcu" && request.device_arch == "gfx936" &&
+        request.origin_rank == 1 && request.raw_dim == 1 && !request.packed_real_child &&
+        !request.requires_contiguous_copy && request.input_layout == "contiguous" &&
+        !request.input_strides.empty() && request.input_strides.back() == 1 &&
+        request.fft_length == n && n > 0 && n % 2 == 0 && batch > 0 &&
+        n >= 65536 / batch + (65536 % batch != 0) &&
+        std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
+        flag_or_default("FLAGFFT_HCU_LARGE_PACKED_REAL", false);
+  }
+
   std::optional<PackedRealChild> select_packed_real_child(const PlanNodePtr &original_plan,
                                                           const FFTRequest &request,
                                                           int64_t batch,
                                                           bool inverse) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
+    const bool hcu_large_packed = hcu_large_packed_real_enabled(original_plan, request, batch);
     const bool cuda_fused = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && request.raw_dim == 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
+                       hcu_large_packed ||
+                       hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
     const bool disable = setting != nullptr && std::string(setting) == "0";
@@ -2822,6 +2926,17 @@ namespace {
 
     PlanBuilder child_builder;
     PlanNodePtr child_plan = child_builder.build(n / 2, child_request);
+    if (hcu_large_packed && !(setting && std::string(setting) == "1")) {
+      const auto fourstep = std::dynamic_pointer_cast<FourStepPlanNode>(child_plan);
+      const bool leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan) != nullptr;
+      const bool two_leaf = fourstep &&
+          std::dynamic_pointer_cast<LeafPlanNode>(fourstep->row_plan) &&
+          std::dynamic_pointer_cast<LeafPlanNode>(fourstep->col_plan);
+      if (!leaf && !two_leaf) return std::nullopt;
+    }
+    if (hcu_fused_packed_real_enabled(request, batch, n) &&
+        !(setting && std::string(setting) == "1") &&
+        !std::dynamic_pointer_cast<LeafPlanNode>(child_plan)) return std::nullopt;
     if (use_npu_packed_mixed_real(request,n,batch) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(child_plan)) {
@@ -4190,6 +4305,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_type == "cuda" && request.device_arch == "sm_80" &&
         leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
         flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
+    const char *hcu_boundary = std::getenv("FLAGFFT_HCU_BLUESTEIN_BOUNDARY");
+    const std::string hcu_boundary_mode = hcu_boundary ? hcu_boundary : "0";
+    if (request.device_type == "hcu" && hcu_boundary_mode != "0" &&
+        hcu_boundary_mode != "1" && hcu_boundary_mode != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_BLUESTEIN_BOUNDARY must be 0, 1 or fp64");
+    const bool use_hcu_boundary_leaf = request.device_type == "hcu" &&
+        request.device_arch == "gfx936" && leaf != nullptr && real_kind.empty() &&
+        batch > 1 && batch == chunk_batch &&
+        (hcu_boundary_mode == "1" ||
+         (hcu_boundary_mode == "fp64" && request.input_dtype == "complex128"));
     const bool use_full_leaf =
         allow_bluestein_fusion &&
         (request.input_dtype == "complex64" || use_a100_fp64_full_leaf || use_musa_s5000_fp64_full_leaf ||
@@ -4227,7 +4352,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
-    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf) {
+    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf || use_hcu_boundary_leaf) {
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinLeafNode>(
@@ -4248,6 +4373,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::reverse(fused_factors.begin() + 1, fused_factors.end());
       }
       int64_t fused_warps = leaf->num_warps;
+      int64_t fused_lanes = leaf->lanes;
+      if (request.device_type == "hcu" && request.device_arch == "gfx936" &&
+          flag_or_default("FLAGFFT_HCU_CONV_SINGLE_BUFFER", false) &&
+          leaf->length > 0 && (leaf->length & (leaf->length - 1)) == 0 &&
+          leaf->length <= 4096 && fused_factors.size() >= 2) {
+        int64_t complete_lanes = 1;
+        for (int64_t radix : fused_factors)
+          complete_lanes = std::max(complete_lanes, leaf->length / radix);
+        // Consume a full shared FFT before each overwrite. At most four
+        // physical waves cooperate; other convolutions keep ping-pong.
+        if (complete_lanes <= 256) {
+          fused_lanes = complete_lanes;
+          fused_warps = std::max(fused_warps, (complete_lanes + 31) / 32);
+        }
+      }
       if (request.device_type == "ix" && request.device_arch == "71" &&
           request.origin_rank == 3 && bluestein->length == 997) {
         const char *value = std::getenv("FLAGFFT_IX_3D_BLUESTEIN_WARPS");
@@ -4258,7 +4398,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       LeafPlanNode fused_leaf(leaf->length,
                               std::move(fused_factors),
                               leaf->remainder,
-                              leaf->lanes,
+                              fused_lanes,
                               fused_warps,
                               leaf->generic_radices,
                               leaf->smem_size);
@@ -4489,6 +4629,53 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
       adaptor::Memory(bytes), adaptor::Memory(bytes));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_hcu_packed_r2c_store(
+    const FFTRequest &request, int64_t batch, int64_t n, int64_t span) {
+  const char *packed = std::getenv("FLAGFFT_PACKED_REAL");
+  const char *layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+  const int64_t minimum = flag_or_default("FLAGFFT_HCU_PACKED_REAL_CTA", false) ||
+      (layout && std::string(layout) == "compact") ? 64 : 128;
+  // Short half FFTs need enough row groups to cover the device. Otherwise
+  // the full real leaf avoids the reconstruction and shared exchange.
+  if (request.device_type == "hcu" && layout &&
+      std::string(layout) == "resource" && n / 2 < 64) {
+    const auto facts = nlohmann::json::parse(adaptor::device_capabilities_json());
+    const auto units = facts.find("multiprocessor_count");
+    const int64_t group = 128 / complex_element_bytes(request.input_dtype);
+    if (units == facts.end() || !units->is_number_integer() ||
+        batch / group < 2 * units->get<int64_t>()) return nullptr;
+  }
+  if (request.device_type != "hcu" || request.device_arch != "gfx936" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.packed_real_child || n < minimum || n > 2048 || (n & (n - 1)) != 0 ||
+      span <= 0 || batch <= 0 || batch % span ||
+      (packed && std::string(packed) == "0") ||
+      !flag_or_default("FLAGFFT_HCU_PACKED_REAL_STORE", false) ||
+      !flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false)) return nullptr;
+  const int64_t scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
+  if (n / 2 > adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes))
+    return nullptr;
+  FFTRequest child = request;
+  child.n = child.requested_n = child.fft_length = n / 2;
+  child.real_transform = false;
+  child.real_transform_kind.clear();
+  child.packed_real_child = true;
+  child.raw_dim = 1;
+  child.batch = batch;
+  child.input_shape = {batch, n / 2};
+  child.input_strides = {n / 2, 1};
+  PlanBuilder builder;
+  auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(n / 2, child));
+  leaf = hcu_packed_cta_leaf(std::move(leaf), child);
+  if (!leaf || leaf->factors.size() < 2) return nullptr;
+  auto key = KernelKey::leaf_r2c(triton_target_for_request(child), child.direction, child.input_dtype,
+      leaf->length, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
+  key.kind = KernelKind::LeafPackedR2C;
+  key.perm_form = "outer_packed";
+  return std::make_shared<CompiledRawR2CLeafNode>(n, compile_kernel(key),
+      build_raw_leaf_tables(*leaf, child), build_raw_packed_real_twiddle(request, n), span);
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const PlanNodePtr &node,
                                                                       const FFTRequest &request,
                                                                       int64_t batch,
@@ -4629,14 +4816,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
               ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
     const int64_t packed = n / 2;
-    if (request.device_type == "cuda" && request.device_arch == "sm_80" &&
+    if (hcu_fused_packed_real_enabled(request, batch, n) ||
+        (request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
-        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false)) {
+        flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
             packed_child->request.direction, packed_child->request.input_dtype,
             leaf->length,leaf->factors,leaf->lanes,leaf->num_warps,leaf->generic_radices,leaf->smem_size);
         key.kind = KernelKind::LeafPackedR2C;
+        mark_hcu_packed_grid(key, packed_child->request, batch, *leaf);
         return std::make_shared<CompiledRawR2CLeafNode>(n,compile_kernel(key),
             build_raw_leaf_tables(*leaf,packed_child->request),build_raw_packed_real_twiddle(request,n));
       }
@@ -4814,7 +5004,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool cuda_fused_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
-    const bool use_packed_fused_leaf = cuda_fused_leaf || (request.device_type == "hcu" &&
+    const bool use_packed_fused_leaf = cuda_fused_leaf || hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
                                        batch == 256 * 256 && packed_fuse_enabled) ||
                                       ix_fused_c2r_leaf_enabled(request, batch);
@@ -4822,6 +5012,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       auto leaf=std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan);
       if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
         leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
+      leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
       if (leaf) {
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),
@@ -4834,6 +5025,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             leaf->generic_radices,
             leaf->smem_size);
         key.kind = KernelKind::LeafPackedC2R;
+        mark_hcu_packed_grid(key, packed_child->request, batch, *leaf);
         mark_ix_warp_fft(key,request);
         return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
             n,
@@ -4890,6 +5082,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     }
   }
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+    auto factors = hcu_real_inverse_factors(request, *leaf);
+    if (factors != leaf->factors)
+      leaf = std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
+          leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
     return std::make_shared<CompiledRawC2RLeafNode>(n,
                                                     compile_leaf_c2r_kernel(*leaf, request),
                                                     build_raw_leaf_tables(*leaf, request));
@@ -4986,7 +5182,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf
     key.cuda_permute_span = perm_span;
     key.cuda_permute_batch = request.batch;
   }
-  mark_ix_static_permutation_span(key, request, perm_span);
+  mark_static_permutation_span(key, request, perm_span);
   mark_ix_warp_fft(key, request, perm_span);
   mark_npu_portable_leaf(key, request);
   const char *full_smem_override = std::getenv("FLAGFFT_HCU_3D_FULL_SMEM");
@@ -5620,6 +5816,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_transpose3d_kernel(
                                 ? complex_dtype_for(request.input_dtype)
                                 : request.input_dtype;
   KernelKey key = KernelKey::transpose3d(target, dtype, n0, n1, n2, order);
+  if (request.device_type == "hcu" &&
+      (request.real_transform || !request.real_transform_kind.empty() ||
+       !request.origin_real_transform_kind.empty())) key.perm_form = "compact_spectrum";
   if (npu_table) {
     key.perm_form = "npu_table_loop";
   }
@@ -5698,6 +5897,38 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   auto n1_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n1_plan);
   auto n0_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n0_plan);
   auto n2_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->n2_plan);
+  if (request.device_type == "hcu" && request.input_dtype == "complex64" &&
+      request.origin_rank == 3 && flag_or_default("FLAGFFT_HCU_3D_CT", false) &&
+      n0 >= 2 && n1 >= 2 && n2 >= 4 && n2 <= 256 &&
+      (n0 & (n0 - 1)) == 0 && (n1 & (n1 - 1)) == 0 && (n2 & (n2 - 1)) == 0 &&
+      n0 * n1 * n2 > kStridedMaxElements &&
+      adaptor::max_dynamic_smem_bytes(request.device_index) >= 65536) {
+    constexpr int64_t tile_budget = 8192;
+    int64_t h0 = 1, h1 = 1;
+    while (h0 * h1 * n2 * 2 <= tile_budget && (h0 < n0 || h1 < n1)) {
+      if (n0 / h0 >= n1 / h1 && h0 < n0) h0 *= 2;
+      else h1 *= 2;
+    }
+    // The second pass keeps at least four adjacent complex values per row.
+    if ((n0 / h0) * (n1 / h1) * 4 <= tile_budget) {
+      KernelKey key;
+      key.target = triton_target_for_request(request);
+      key.direction = request.direction;
+      key.dtype = request.input_dtype;
+      key.transpose3d_n0 = n0;
+      key.transpose3d_n1 = n1;
+      key.transpose3d_n2 = n2;
+      key.four_step_n1 = h0;
+      key.four_step_n2 = h1;
+      key.kind = KernelKind::Hcu3DCTFirst;
+      auto first = compile_kernel(key);
+      key.kind = KernelKind::Hcu3DCTLast;
+      auto last = compile_kernel(key);
+      auto temp = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
+      return std::make_shared<CompiledRaw3DCTNode>(
+          n0 * n1 * n2, std::move(first), std::move(last), std::move(temp));
+    }
+  }
   // Keep the backend-specific measured routes independent. The NPU fused
   // store is only selected for its explicit AIV256 screening configuration.
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -6164,8 +6395,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       (n2 == 64 || n2 == 256) && flag_or_default("FLAGFFT_IX_3D_HYBRID", ix_nd_pack==0) &&
       batch * n0 * n1 * n2 > kStridedMaxElements;
   const char *hcu_hybrid_override = std::getenv("FLAGFFT_HCU_3D_HYBRID");
+  const bool hcu_wave_graph = n0_leaf && n1_leaf && n2_leaf &&
+      hcu_wave_3d_c2c_policy_enabled(request, n0, n1, n2);
   const bool hcu_hybrid = request.device_type == "hcu" &&
-                          (hcu_hybrid_override == nullptr || std::string(hcu_hybrid_override) != "0");
+                          (hcu_hybrid_override == nullptr
+                               ? !hcu_wave_graph : std::string(hcu_hybrid_override) != "0");
   const bool portable_hybrid = fused_3d_store_enabled() && elongated_3d &&
                                (musa_hybrid || hcu_hybrid);
   const bool cuda_hybrid = request.device_type == "cuda" && request.device_arch == "sm_80" &&
@@ -6570,8 +6804,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
            ? request.input_dtype == "complex64"
            : std::string(c2r_middle_transpose_override) == "1");
   const char *c2r_fused_load_override = std::getenv("FLAGFFT_HCU_3D_C2R_FUSED_LOAD");
+  const bool wave_fused_load = request.device_type == "hcu" && request.device_arch == "gfx936" &&
+      request.input_dtype == "complex64" && n1_leaf && n1 >= 64 && n1 <= 2048 &&
+      (n1 & (n1 - 1)) == 0 && flag_or_default("FLAGFFT_HCU_3D_WARP_FFT", false) &&
+      flag_or_default("FLAGFFT_HCU_WAVE_ROOT_TABLE", false) &&
+      flag_or_default("FLAGFFT_HCU_WAVE_STRIDED_INPUT", false);
   const bool c2r_fused_load_default =
-      !(request.input_dtype == "complex64" && batch >= 4 && n0 == 256 && n1 == 256 && n2 == 256);
+      wave_fused_load || !(request.input_dtype == "complex64" && batch >= 4 &&
+                           n0 == 256 && n1 == 256 && n2 == 256);
   const bool n1_strided_input =
       request.device_type == "hcu" && inverse && !small && n1_leaf && !c2r_middle_transpose &&
       (c2r_fused_load_override == nullptr ? c2r_fused_load_default
@@ -6792,10 +7032,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                 (r2c_permute_override == nullptr
                                      ? r2c_permute_default
                                      : std::string(r2c_permute_override) != "0");
-  const bool n2_permuted = hcu_n2_permuted || maca_r2c_first_store;
   const int64_t n2_batch = batch * n0 * n1;
-  std::shared_ptr<CompiledRawNode> n2_real_fft;
-  if (n2_permuted) {
+  auto n2_real_fft = !inverse && !small && n1_leaf
+      ? compile_raw_hcu_packed_r2c_store(n2_request, n2_batch, n2, n1) : nullptr;
+  const bool n2_permuted = n2_real_fft != nullptr || hcu_n2_permuted || maca_r2c_first_store;
+  if (n2_real_fft) {
+    // The half-length FFT reconstructs directly into the next axis layout.
+  } else if (n2_permuted) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                         n2_request.direction, n2_request.input_dtype,
                                         n2_leaf->length, n2_leaf->factors, n2_leaf->lanes,
@@ -6805,7 +7048,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     key.perm_form = request.device_type == "hcu"
         ? hcu_3d_axis_perm_form(request, "FLAGFFT_HCU_3D_FIRST_PACK", "outer_first", "outer")
         : "outer";
-    mark_ix_static_permutation_span(key, request, n1);
+    mark_static_permutation_span(key, n2_request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
@@ -7108,7 +7351,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     // write its compact rows directly in that transposed layout.
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
-    mark_ix_static_permutation_span(key, request, n1);
+    mark_static_permutation_span(key, n2_request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
@@ -7788,10 +8031,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
 
   const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-  if (request.device_type == "ix" && request.device_arch == "71" &&
+  const bool hcu_row_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
+      request.origin_rank == 2 && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && n0 > 1 && n1 > 1 && n1 % 2 == 0 &&
+      flag_or_default("FLAGFFT_HCU_2D_REAL_ROW_STORE", false);
+  if (((request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
-      ix_row_leaf && ix_col_leaf && flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) {
+      flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) || hcu_row_store) &&
+      ix_row_leaf && ix_col_leaf) {
     // Keep the compact spectrum transposed between two FFT passes. Each
     // outer store stays inside its own matrix, including the odd half width.
     auto key = KernelKey::leaf_r2c_permuted_store(
@@ -7799,7 +8047,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
         ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
     mark_ix_warp_fft(key, row_request, n0);
-    auto row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
+    auto row_r2c = compile_raw_hcu_packed_r2c_store(row_request, batch * n0, n1, n0);
+    if (!row_r2c) row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
         n1, compile_kernel(key), build_raw_leaf_tables(*ix_row_leaf, row_request), DeviceAllocation{}, n0);
     FFTRequest col_request = request;
     col_request.fft_length = col_request.requested_n = n0;
@@ -7844,12 +8093,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   // the 2D schedule does not materialize a full complex row matrix merely to
   // discard its Hermitian half.  Restrict this to row plans that the existing
   // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
-  // real is deliberately disabled here until it is qualified for this layout.
+  // real is disabled for existing MACA/MUSA defaults. HCU can explicitly
+  // screen its resource-bounded fused half-length boundary in this layout.
   if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
-       musa_compact_real_rows) &&
+       musa_compact_real_rows || hcu_2d_compact_real_rows_enabled(request, n0, n1)) &&
       has_real_boundary_row_plan(node->row_plan)) {
     std::shared_ptr<CompiledRawNode> row_r2c =
-        compile_raw_r2c_node(node->row_plan, row_request, batch * n0, false);
+        compile_raw_r2c_node(node->row_plan, row_request, batch * n0,
+                            hcu_2d_compact_real_rows_enabled(request, n0, n1));
 
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -7861,14 +8112,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     // the final full-size transpose from the large MUSA real 2D path.
     const bool musa_col_permuted_store = request.device_type == "musa" && n0 == 2048 && n1 == 2048 &&
         flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", true);
+    const bool hcu_col_permuted_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
+        request.origin_rank == 2 && flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-    const bool use_musa_col_permuted_store = musa_col_permuted_store && col_leaf != nullptr;
-    std::shared_ptr<CompiledRawNode> col_fft = use_musa_col_permuted_store
+    const bool use_col_permuted_store = (musa_col_permuted_store || hcu_col_permuted_store) && col_leaf != nullptr;
+    std::shared_ptr<CompiledRawNode> col_fft = use_col_permuted_store
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
-    auto transpose_inv = use_musa_col_permuted_store
+    auto transpose_inv = use_col_permuted_store
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
@@ -7882,7 +8135,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                      std::move(transpose_inv),
                                                      std::move(temp1),
                                                      std::move(temp2),
-                                                     use_musa_col_permuted_store);
+                                                     use_col_permuted_store);
   }
 
   // RC fast path for real transforms: pack the half spectrum, then run the
@@ -8105,10 +8358,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
   // Symmetric MACA FP32 path.  The column inverse and compact-layout
   // transposes run first; the existing 1D C2R boundary node then consumes the
-  // compact rows directly and writes real output.  Keep packed-real disabled
-  // until its 2D row layout has a separate qualification.
+  // compact rows directly and writes real output. HCU's opt-in route also
+  // screens the fused half-length boundary; existing defaults stay unchanged.
   if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
-       musa_compact_real_rows) &&
+       musa_compact_real_rows || hcu_2d_compact_real_rows_enabled(request, n0, n1)) &&
       has_real_boundary_row_plan(node->row_plan)) {
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8120,16 +8373,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         request.origin_real_transform_kind == "c2r" && request.output_dtype == "float32";
     const bool musa_col_permuted_store = request.device_type == "musa" && n0 == 2048 && n1 == 2048 &&
         !musa_single_fp32_c2r && flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", true);
+    const bool hcu_col_permuted_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
+        request.origin_rank == 2 && flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-    const bool use_musa_col_permuted_store = musa_col_permuted_store && col_leaf != nullptr;
-    std::shared_ptr<CompiledRawNode> col_fft = use_musa_col_permuted_store
+    const bool use_col_permuted_store = (musa_col_permuted_store || hcu_col_permuted_store) && col_leaf != nullptr;
+    std::shared_ptr<CompiledRawNode> col_fft = use_col_permuted_store
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
     std::shared_ptr<CompiledRawNode> row_c2r =
-        compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+        compile_raw_c2r_node(node->row_plan, row_request, batch * n0,
+                            hcu_2d_compact_real_rows_enabled(request, n0, n1));
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
-    auto transpose_inv = use_musa_col_permuted_store
+    auto transpose_inv = use_col_permuted_store
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
@@ -8143,7 +8399,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
                                                      std::move(transpose_inv),
                                                      std::move(temp1),
                                                      std::move(temp2),
-                                                     use_musa_col_permuted_store);
+                                                     use_col_permuted_store);
   }
 
   // RC fast path for inverse real transforms: column IFFT first, then expand,

@@ -157,6 +157,8 @@ def _metadata(
     n2: int,
     dtype: str,
     hcu_full_smem: bool = False,
+    permutation_span: int = 0,
+    permutation_batch: int = 0,
 ) -> dict[str, Any]:
     if (
         current_profile().backend == "hcu"
@@ -181,7 +183,9 @@ def _metadata(
         ):
             final_pack = 8
         batch_per_block = permuted_store_batch_pack_for(
-            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack,
+            permutation_span=permutation_span, permutation_batch=permutation_batch,
+            inner=kernel_name.startswith("permuted_store_inner"),
         )
     elif (kernel_type in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}
           or (current_profile().backend == "cuda" and kernel_type == "leaf_r2c"
@@ -226,6 +230,11 @@ def _metadata(
             real_boundary=real_transform is not None,
             real_transform=real_transform,
         )
+        if kernel_type in {"leaf_packed_r2c", "leaf_packed_c2r"}:
+            from .kernels_common import hcu_packed_cta_batch_pack_for
+            batch_per_block = hcu_packed_cta_batch_pack_for(
+                plan, "packed_r2c" if kernel_type == "leaf_packed_r2c" else "packed_c2r"
+            ) or batch_per_block
     else:
         batch_per_block = 1
     stage_lanes = cooperative_stage_lanes_for(plan)
@@ -259,7 +268,7 @@ def _metadata(
             if override not in {"1", "2", "4"}:
                 raise ValueError("FLAGFFT_CUDA_DIRECT_DFT_WARPS must be auto, 1, 2 or 4")
             num_warps = int(override)
-    if tle_fused_twiddle:
+    if tle_fused_twiddle and not (profile.backend == "hcu" and dtype == "complex64"):
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
     maca_backend = _portable_leaf_backend_active()
@@ -355,6 +364,28 @@ def _metadata(
                 ) from exc
             profile.validate(num_warps)
     warp_pack = 0
+    if kernel_name.startswith("hcu_small_wave_"):
+        import re
+        batch_per_block = int(re.search(r"_p(\d+)_", kernel_name).group(1))
+        num_warps = 1
+        profile.validate(num_warps)
+        if batch_per_block * plan.length != profile.warp_size:
+            raise ValueError("small HCU FFT rows must exactly fill one wave")
+    if kernel_name.startswith("hcu_warp"):
+        import re
+        batch_per_block = int(re.search(r"_p(\d+)_", kernel_name).group(1))
+        wave_lanes = int(kernel_name.split("_lanes", 1)[1].split("_", 1)[0]) if "_lanes" in kernel_name else 64
+        num_warps = max(1, min(8, batch_per_block * wave_lanes // 64))
+        profile.validate(num_warps)
+        chunk = int(kernel_name.split("_chunk", 1)[1].split("_", 1)[0]) if "_chunk" in kernel_name else plan.length // wave_lanes
+        element_bytes = 16 if dtype == "complex128" else 8
+        if batch_per_block * wave_lanes * chunk * element_bytes > profile.max_dynamic_shared_memory:
+            raise ValueError("HCU wave FFT output tile exceeds shared-memory capacity")
+        if kernel_type in {"four_step_row", "four_step_col", "four_step_real_row",
+                           "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"}:
+            inner_pack = batch_per_block
+            batch_per_block = 1
+            tle_fused_twiddle = True
     if kernel_name.startswith("ix_warp"):
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()
@@ -374,6 +405,15 @@ def _metadata(
             batch_per_block=1
             inner_pack=warp_pack
             tle_fused_twiddle=True
+    strided_grid = {}
+    if kernel_name.startswith("hcu_warp") and "_stridedinput" in kernel_name:
+        from .kernels_ix_warp import strided_input_tile_shape
+        if permutation_span <= 0 or permutation_batch <= 0 or permutation_batch % permutation_span:
+            raise ValueError("HCU strided wave requires complete static permutation planes")
+        outer_tile, span_tile = strided_input_tile_shape(batch_per_block, "_outtile" in kernel_name)
+        outer = permutation_batch // permutation_span
+        strided_grid["grid_x_override"] = ((outer + outer_tile - 1)//outer_tile
+                                          * ((permutation_span + span_tile - 1)//span_tile))
     return {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -392,6 +432,7 @@ def _metadata(
         "inner_pack": inner_pack,
         "tle_fused_twiddle": tle_fused_twiddle,
         "ix_warp_fft_pack": warp_pack,
+        **strided_grid,
     }
 
 

@@ -1575,9 +1575,24 @@ struct CompiledRaw3DFusedRealPlaneNode final : CompiledRawNode {
   DeviceAllocation tw_i;
 };
 // 3D C2C/Z2Z that runs the n1 and n0 axes as strided leaves on the natural
-// layout instead of permuting the cube between passes: three launches and no
-// full-cube transpose traffic.  Used when both non-contiguous axis plans are
-// plain leaves.
+// layout instead of permuting the cube between passes.
+// Experimental two-pass Cooley-Tukey with resource-bounded local tiles.
+struct CompiledRaw3DCTNode final : CompiledRawNode {
+  CompiledRaw3DCTNode(int64_t elements,
+                      std::shared_ptr<JitKernel> first,
+                      std::shared_ptr<JitKernel> last,
+                      DeviceAllocation temp);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  int64_t elements;
+  std::shared_ptr<JitKernel> first;
+  std::shared_ptr<JitKernel> last;
+  DeviceAllocation temp;
+};
+
+// Three launches and no full-cube transpose traffic, when both
+// non-contiguous axis plans are plain leaves.
 struct CompiledRaw3DStridedNode final : CompiledRawNode {
   CompiledRaw3DStridedNode(int64_t n0,
                            int64_t n1,
@@ -1815,6 +1830,9 @@ class TritonCompiler {
                                                     const FFTRequest &request,
                                                     int64_t batch,
                                                     bool allow_npu_aiv256_transposed_store = true);
+  std::shared_ptr<CompiledRawNode> compile_raw_hcu_packed_r2c_store(const FFTRequest &request,
+                                                                  int64_t batch, int64_t n,
+                                                                  int64_t span);
   std::shared_ptr<CompiledRawNode> compile_raw_r2c_node(const PlanNodePtr &node,
                                                         const FFTRequest &request,
                                                         int64_t batch,
@@ -2020,6 +2038,12 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              const std::vector<int64_t> &idx);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    bool portable_default = false);
+int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pack);
+bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
+                                    int64_t n0, int64_t n1, int64_t n2);
+std::vector<int64_t> hcu_packed_cta_factors(const FFTRequest &request, const LeafPlanNode &leaf);
+std::vector<int64_t> hcu_real_inverse_factors(const FFTRequest &request, const LeafPlanNode &leaf);
+int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t active_lanes);
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
 bool ix_real_single_pack_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);

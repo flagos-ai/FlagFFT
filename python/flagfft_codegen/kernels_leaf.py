@@ -42,6 +42,7 @@ from .kernels_common import (
     _tl_real_dtype,
     _use_single_smem_buffer,
     contiguous_batch_pack_for,
+    hcu_packed_cta_batch_pack_for,
     cooperative_stage_lanes_for,
     emitted_leaf_factors,
     four_step_col_inner_pack_for,
@@ -87,6 +88,23 @@ _IX_BATCH_INTERLEAVE_MODES = {
 }
 
 
+def _hcu_vector_io(dtype: str) -> bool:
+    if not _hcu_backend_active():
+        return False
+    setting = os.getenv("FLAGFFT_HCU_VECTOR_IO", "0")
+    if setting not in {"0", "1", "packed", "fp32"}:
+        raise ValueError("FLAGFFT_HCU_VECTOR_IO must be 0, 1, packed or fp32")
+    return setting == "1" or (setting in {"packed", "fp32"} and dtype == "complex64")
+
+
+def _packed_hcu_fp32_complex_io(dtype: str) -> bool:
+    # Preserve one logical lane per complex element through HCU lowering.
+    # The pair tensor otherwise introduces a second layout axis at every
+    # global access. Bitcasts retain all FP32 bits without arithmetic casts.
+    return (dtype == "complex64" and _hcu_backend_active()
+            and os.getenv("FLAGFFT_HCU_VECTOR_IO", "0") == "packed")
+
+
 def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
     if not _ix_backend_active():
         return False
@@ -96,7 +114,7 @@ def _ix_batch_smem_interleave(io_mode: str, portable: bool, pack: int) -> bool:
     return setting == "1" and not portable and pack > 1 and io_mode in _IX_BATCH_INTERLEAVE_MODES
 
 
-def _portable_complex_vector_io() -> bool:
+def _portable_complex_vector_io(dtype: str = "complex64") -> bool:
     """Whether to vectorize complex IO without backend inline assembly.
 
     The scalar form issues two 4-byte accesses per complex element, which is
@@ -109,6 +127,7 @@ def _portable_complex_vector_io() -> bool:
         (_maca_backend_active() and _maca_knob("VEC_IO", "0") not in {"", "0"})
         or (_npu_backend_active() and os.environ.get("FLAGFFT_NPU_PORTABLE_VECTOR_IO") == "1")
         or (_ix_backend_active() and _maca_knob("VEC_IO", "0") == "packed")
+        or _hcu_vector_io(dtype)
     )
 
 
@@ -159,7 +178,7 @@ def _emit_vectorized_complex_load(
     dest: str,
     dtype: str,
 ) -> list[str]:
-    if _packed_maca_fp32_complex_io(dtype):
+    if _packed_maca_fp32_complex_io(dtype) or _packed_hcu_fp32_complex_io(dtype):
         pair = "_packed_pair_" + dest.split(",")[0].strip()
         real, imag = (name.strip() for name in dest.split(","))
         return [
@@ -168,7 +187,7 @@ def _emit_vectorized_complex_load(
             f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
             f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
         ]
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io(dtype):
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
             f"{indent}{pair} = tl.load(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
@@ -201,7 +220,7 @@ def _emit_vectorized_complex_store(
     mask: str,
     dtype: str,
 ) -> list[str]:
-    if _packed_maca_fp32_complex_io(dtype):
+    if _packed_maca_fp32_complex_io(dtype) or _packed_hcu_fp32_complex_io(dtype):
         pair = "_packed_store_" + r_name
         return [
             f"{indent}{pair} = tl.cast(tl.cast({r_name}, tl.uint32, bitcast=True), tl.uint64) "
@@ -209,7 +228,7 @@ def _emit_vectorized_complex_store(
             f"{indent}tl.store(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), {pair}, "
             f"mask={mask})",
         ]
-    if _portable_complex_vector_io():
+    if _portable_complex_vector_io(dtype):
         return [
             f"{indent}tl.store(({ptr})[:, None] + {_COMPLEX_PAIR_OFFSETS}, "
             f"tl.join({r_name}, {i_name}), mask={mask}[:, None])",
@@ -532,14 +551,14 @@ def _emit_lane_output_base(
     return lines
 
 
-def _emit_grouped_maca_fp32_permuted_store(
+def _emit_grouped_fp32_permuted_store(
     indent: str,
     factors: tuple[int, ...],
     radix: int,
     pack: int,
     lane_block: int,
 ) -> list[str]:
-    """Transpose a full final radix group once for the MACA FP32 cube path."""
+    """Transpose a full final radix group once before writing complex pairs."""
     lines: list[str] = []
     pairs = []
     for digit in range(radix):
@@ -644,6 +663,15 @@ def _emit_permuted_store(
             f"mask={mask})",
             f"{indent}tl.store(out_ptr + perm_addr{digit} * 2 + 1, i{digit}, "
             f"mask={mask})",
+        ]
+    if (_hcu_backend_active() and len(factors) > 1 and compact_length is None
+            and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1"):
+        address = f"(output_base + {offset}) * perm_k_stride + perm_gbase_vector"
+        return [
+            f"{indent}perm_addr{digit} = {address}",
+            f"{indent}perm_pair{digit} = tl.join(r{digit}, i{digit})",
+            f"{indent}perm_pair_addr{digit} = perm_addr{digit}[:, None] * 2 + tl.arange(0, 2)[None, :]",
+            f"{indent}tl.store(out_ptr + perm_pair_addr{digit}, perm_pair{digit}, mask=lane_mask[:, None])",
         ]
     if _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
         # Keep the register tile in its original (batch, lane) layout.  This
@@ -1270,6 +1298,8 @@ def _emit_stage_block(
     bluestein_real_kind: str = "",
     permuted_smem_store: bool = False,
     perm_inner: bool = False,
+    perm_batched: bool = False,
+    packed_smem_alias: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1335,6 +1365,28 @@ def _emit_stage_block(
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
+    hcu_cyclic_smem = (
+        _hcu_backend_active() and single_smem_buffer and smem_pack > 1
+        and ((os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
+              and io_mode in {"permuted_store", "strided_permuted_store",
+                              "permuted_r2c", "permuted_store_r2c"})
+             or (io_mode.startswith(("four_step_", "bluestein_four_step_"))
+                 and os.getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER", "0") == "1")
+             or (io_mode in {"contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+                             "packed_r2c", "packed_c2r"}
+                 and os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1"))
+    )
+    hcu_cyclic_slot = "inner_slot" if inner_pack > 1 else "batch_slot"
+    if hcu_cyclic_smem:
+        skew = os.getenv("FLAGFFT_HCU_CYCLIC_SKEW", "unit")
+        if skew not in {"unit", "wave"}:
+            raise ValueError("FLAGFFT_HCU_CYCLIC_SKEW must be unit or wave")
+        if skew == "wave":
+            # Adjacent threads own adjacent FFT slots after a direct store
+            # remap, and throughout a FourStep tile. Shift each slot by one
+            # wave's frequency span so that the shared read spans the banks.
+            step = max(1, current_profile().warp_size // smem_pack)
+            hcu_cyclic_slot = f"{hcu_cyclic_slot} * {step}"
     batch_interleave = _ix_batch_smem_interleave(io_mode, portable_exchange, smem_pack)
     smem_interleave = batch_interleave or (
         _ix_backend_active() and not portable_exchange and inner_pack > 1
@@ -1405,6 +1457,32 @@ def _emit_stage_block(
     )
 
     lines: list[str] = []
+    if (_hcu_backend_active() and is_last and len(factors) > 1 and smem_pack > 1
+            and io_mode in {"permuted_store", "strided_permuted_store"}
+            and os.getenv("FLAGFFT_HCU_3D_DIRECT_STORE", "0") == "1"):
+        # Change the thread-to-FFT mapping at the shared-memory boundary.
+        # Adjacent lanes now own adjacent FFT slots, so the final butterflies
+        # write coalesced output directly without a register-tile transpose.
+        lines.extend([
+            f"    batch_slot = lane_vec % {smem_pack}",
+            f"    lane = lane_vec // {smem_pack}",
+            "    current_batch = " + ("perm_base + batch_slot * perm_span" if perm_inner else "batch_id + batch_slot"),
+            f"    smem_offset = batch_slot * {exchange_slot_stride}",
+            f"    base_lane_mask = (lane < {current_lanes}) & (current_batch < nbatch)",
+            # The original mask used FFT-major lanes. Uniform stage lanes
+            # skip the cooperative-mask refresh below, so update it here
+            # after changing to slot-major lanes, including partial CTAs.
+            "    lane_mask = base_lane_mask",
+            "    perm_i0_vector = current_batch // perm_span",
+            "    perm_i1_vector = current_batch - perm_i0_vector * perm_span",
+        ])
+        if perm_inner:
+            if perm_batched:
+                lines.append(f"    perm_gbase_vector = (perm_i0_vector // perm_outer) * ({n} * rows_per_transform) + perm_i1_vector * perm_outer + perm_i0_vector % perm_outer")
+            else:
+                lines.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
+        else:
+            lines.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
     if compact_npu_stage:
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
@@ -1441,7 +1519,7 @@ def _emit_stage_block(
     if stage_lanes is not None:
         lines.append(f"    lane_mask = base_lane_mask & (lane < {current_lanes})")
     vector_io_allowed = not _non_nvidia_backend_active() or (
-        _portable_complex_vector_io()
+        _portable_complex_vector_io(dtype)
         and (_maca_knob("VEC_IO", "0") != "packed" or dtype == "complex64")
     )
     vectorized_four_step_complex_io = (
@@ -1463,7 +1541,9 @@ def _emit_stage_block(
         or (io_mode in {"contiguous_r2c","packed_c2r"} and _ix_backend_active()
             and _packed_maca_fp32_complex_io(dtype))
         or vectorized_four_step_complex_io
-    ) and vector_io_allowed and (not _hcu_backend_active() or io_mode == "permuted_store")
+    ) and vector_io_allowed and (
+        not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io(dtype)
+    )
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
         and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
@@ -1500,6 +1580,8 @@ def _emit_stage_block(
             )
         elif smem_interleave:
             lines.append(f"{indent}phys{j} = logical_phys{j} * {smem_pack} + {interleave_slot}")
+        elif hcu_cyclic_smem:
+            lines.append(f"{indent}phys{j} = ((logical_phys{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
         elif smem_pack > 1:
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
@@ -1511,6 +1593,8 @@ def _emit_stage_block(
             )
             if smem_interleave:
                 lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + {interleave_slot}")
+            elif hcu_cyclic_smem:
+                lines.append(f"{indent}smem_phys{j} = ((smem_phys{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
@@ -1684,7 +1768,8 @@ def _emit_stage_block(
                         f"{indent}packed_q_ptr{j} = in_ptr + (input_batch_base + packed_q{j}) * 2",
                     ]
                 )
-                if _ix_backend_active() and _packed_maca_fp32_complex_io(dtype):
+                if ((_ix_backend_active() and _packed_maca_fp32_complex_io(dtype))
+                        or (_hcu_backend_active() and _hcu_vector_io(dtype))):
                     for ptr,dest in ((f"packed_x_ptr{j}",f"packed_xr{j}, packed_xi{j}"),
                                      (f"packed_q_ptr{j}",f"packed_qr{j}, packed_qi{j}"),
                                      (f"packed_twiddle_ptr + packed_k{j} * 2",f"packed_wr{j}, packed_wi{j}")):
@@ -2137,7 +2222,10 @@ def _emit_stage_block(
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     smem_tail = permuted_smem_store and is_last
-    if (single_smem_buffer and stage > 0 and not is_last) or smem_tail:
+    shared_read = stage > 0 or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 1)
+    shared_write = not is_last or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 0)
+    if ((single_smem_buffer and shared_read and shared_write) or smem_tail
+            or (packed_smem_alias and is_last)):
         # Every old shared-memory input must be read before the final stage
         # reuses that buffer for a different, batch-contiguous layout.
         lines.append(f"{indent}tl.debug_barrier()")
@@ -2197,9 +2285,20 @@ def _emit_stage_block(
         and radix in {2, 4, 8, 16, 32}
         and smem_pack > 1
     )
-    if grouped_maca_cube_store:
+    grouped_hcu_store = (
+        _hcu_backend_active()
+        and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "grouped"
+        and is_last
+        and io_mode in {"permuted_store", "strided_permuted_store"}
+        and dtype == "complex64"
+        and radix in {2, 4, 8, 16, 32}
+        and smem_pack > 1
+        and n == current_lanes * radix
+    )
+    grouped_store = grouped_maca_cube_store or grouped_hcu_store
+    if grouped_store:
         lines.extend(
-            _emit_grouped_maca_fp32_permuted_store(
+            _emit_grouped_fp32_permuted_store(
                 indent, factors, radix, smem_pack, lane_block
             )
         )
@@ -2212,7 +2311,7 @@ def _emit_stage_block(
                 # constructing an empty masked vector in the CANN lowering.
                 continue
             if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
-                if grouped_maca_cube_store:
+                if grouped_store:
                     continue
                 compact_length = (
                     n // 2 + 1
@@ -2554,7 +2653,7 @@ def _emit_stage_block(
                     f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
                 )
                 if fuse_twiddle_into_row:
-                    if _is_double_dtype(dtype):
+                    if _is_double_dtype(dtype) or _hcu_backend_active():
                         if vectorized_complex_io:
                             lines.extend(
                                 _emit_vectorized_complex_load(
@@ -2698,11 +2797,16 @@ def _emit_stage_block(
                 )
                 if smem_interleave:
                     lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + {interleave_slot}")
+                elif hcu_cyclic_smem:
+                    lines.append(f"{indent}smem_dst{j} = ((smem_dst{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
                 elif smem_pack > 1:
                     lines.append(f"{indent}smem_dst{j} += smem_offset")
                 store_index = f"smem_dst{j}"
             elif smem_interleave:
                 lines.append(f"{indent}smem_dst{j} = dst{j} * {smem_pack} + {interleave_slot}")
+                store_index = f"smem_dst{j}"
+            elif hcu_cyclic_smem:
+                lines.append(f"{indent}smem_dst{j} = ((dst{j} + {hcu_cyclic_slot}) & {n - 1}) + smem_offset")
                 store_index = f"smem_dst{j}"
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_dst{j} = dst{j} + smem_offset")
@@ -3387,6 +3491,7 @@ def _build_leaf_kernel_source_for_io(
     four_step_n2: int = 0,
     perm_form: str = "outer",
     permutation_span: int = 0,
+    permutation_batch: int = 0,
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     kernel_perm_form = perm_form
@@ -3400,6 +3505,44 @@ def _build_leaf_kernel_source_for_io(
         "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
     }):
         raise ValueError("a static permutation span requires a permuted-store leaf")
+    if permutation_batch < 0 or (permutation_batch and not permutation_span):
+        raise ValueError("a static permutation batch requires a positive span")
+    from .kernels_hcu_small import small_wave_pack, build_small_wave
+    short_pack = small_wave_pack(plan, io_mode)
+    if short_pack:
+        return build_small_wave(plan, io_mode, _leaf_kernel_params_for_io(plan, io_mode=io_mode), short_pack)
+    from .kernels_hcu_warp import (hcu_warp_store_pack, build_hcu_warp_store,
+                                   hcu_dense_wave_pack, build_hcu_dense_wave,
+                                   hcu_packed_transposed_pack)
+    native_packed_cta = (_hcu_backend_active()
+                         and os.getenv("FLAGFFT_HCU_PACKED_REAL_CTA", "0") == "1")
+    packed_transpose = io_mode == "packed_r2c" and perm_form == "outer_packed"
+    wave_transpose = (native_packed_cta and packed_transpose
+        and os.getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT", "wave") == "resource"
+        and hcu_packed_cta_batch_pack_for(plan, io_mode) < (8 if plan.dtype == "complex128" else 16))
+    if packed_transpose and (not native_packed_cta or wave_transpose):
+        pack = hcu_packed_transposed_pack(plan)
+        if not pack:
+            raise ValueError("transposed packed real boundary requires a supported HCU wave leaf")
+        return build_hcu_dense_wave(plan, io_mode,
+            _leaf_kernel_params_for_io(plan, io_mode=io_mode), pack, packed_transpose=True)
+    dense_wave_pack = hcu_dense_wave_pack(plan, io_mode, four_step_n1, four_step_n2)
+    if dense_wave_pack:
+        return build_hcu_dense_wave(
+            plan, io_mode, _leaf_kernel_params_for_io(
+                plan, io_mode=io_mode, include_four_step_twiddle=io_mode in {
+                    "four_step_row", "four_step_real_row", "four_step_hermitian_row"}),
+            dense_wave_pack, four_step_n1, four_step_n2,
+        )
+    hcu_warp_pack = hcu_warp_store_pack(
+        plan, io_mode, kernel_perm_form, permutation_span, permutation_batch,
+    )
+    if hcu_warp_pack:
+        return build_hcu_warp_store(
+            plan, kernel_perm_form, _leaf_kernel_params_for_io(
+                plan, io_mode=io_mode, batched_permutation=batched_permutation),
+            hcu_warp_pack, permutation_span, permutation_batch, io_mode,
+        )
     bluestein_real_kind = ""
     if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]
@@ -3439,10 +3582,12 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
-    cuda_packed_r2c = (io_mode == "packed_r2c" and current_profile().backend == "cuda"
-        and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
-    if io_mode == "packed_r2c" and not portable_exchange and not cuda_packed_r2c:
-        raise ValueError("packed R2C leaf requires the portable exchange path")
+    native_packed_r2c = (io_mode == "packed_r2c" and (
+        (current_profile().backend == "cuda" and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
+        or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_FUSED_PACKED_REAL") == "1")
+        or native_packed_cta))
+    if io_mode == "packed_r2c" and not portable_exchange and not native_packed_r2c:
+        raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
     inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
@@ -3490,7 +3635,9 @@ def _build_leaf_kernel_source_for_io(
             elif _hcu_backend_active() and perm_form == "inner_middle_c2r_cube":
                 final_pack = 8
         batch_pack = permuted_store_batch_pack_for(
-            plan, force_full_smem=hcu_full_smem, pack_override=final_pack
+            plan, force_full_smem=hcu_full_smem, pack_override=final_pack,
+            permutation_span=permutation_span, permutation_batch=permutation_batch,
+            inner=inner_perm_form,
         )
     elif io_mode in contiguous_modes:
         real_transform = (
@@ -3505,6 +3652,7 @@ def _build_leaf_kernel_source_for_io(
             real_boundary=real_transform is not None,
             real_transform=real_transform,
         )
+        batch_pack = hcu_packed_cta_batch_pack_for(plan, io_mode) or batch_pack
     else:
         batch_pack = 1
     row_modes = {
@@ -3552,6 +3700,8 @@ def _build_leaf_kernel_source_for_io(
         four_step_n1=four_step_n1,
         four_step_n2=four_step_n2,
     )
+    packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
+                         and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
     if portable_exchange and len(factors) > 1:
         # The MetaX plugin cannot lower the warp-shuffle path, so the exchange
@@ -3562,6 +3712,16 @@ def _build_leaf_kernel_source_for_io(
         lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     vector_block = lane_block * smem_pack
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
+    if (_hcu_backend_active() and single_smem_buffer and
+            os.getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER", "0") == "1" and
+            io_mode in {"contiguous", "strided", "contiguous_r2c", "contiguous_c2r",
+                        "packed_r2c", "packed_c2r"}):
+        smem_slot_stride = plan.smem_size
+    if (_hcu_backend_active() and single_smem_buffer
+            and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "cyclic"
+            and io_mode in {"permuted_store", "strided_permuted_store",
+                            "permuted_r2c", "permuted_store_r2c"}):
+        smem_slot_stride = plan.smem_size
     if current_profile().backend == "cuda" and io_mode in {
         "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
     }:
@@ -3584,6 +3744,21 @@ def _build_leaf_kernel_source_for_io(
         and n == stage_lanes[-1] * factors[-1]
         and io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
     )
+    # Reuse the final stage's input allocation after every input has been
+    # consumed. One batch-contiguous exchange replaces per-digit layout
+    # conversions; incomplete register groups and per-cube batching retain
+    # the ordinary store until their lifetime/addressing can be guaranteed.
+    hcu_smem_store = (
+        _hcu_backend_active()
+        and os.getenv("FLAGFFT_HCU_3D_STORE_MODE", "auto") == "smem"
+        and not portable_exchange
+        and not batched_permutation
+        and n > 0 and n & (n - 1) == 0
+        and len(factors) >= 2 and batch_pack > 1
+        and n == stage_lanes[-1] * factors[-1]
+        and io_mode in {"permuted_store", "strided_permuted_store"}
+    )
+    permuted_smem_store = permuted_smem_store or hcu_smem_store
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
@@ -3624,7 +3799,8 @@ def _build_leaf_kernel_source_for_io(
         perm_tag = f"_{perm_form}" if perm_form != "outer" else ""
         kernel_name = f"r2c_permuted_store{perm_tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_r2c":
-        kernel_name = f"packed_r2c_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
+        tag = "_transpose" if packed_transpose else ""
+        kernel_name = f"packed_r2c{tag}_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "packed_c2r":
         kernel_name = f"packed_c2r_leaf_kernel_{suffix}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "contiguous_c2r":
@@ -3667,6 +3843,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_smstore"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
+    if permutation_batch:
+        kernel_name += f"_nb{permutation_batch}"
     cta_disjoint = (n==16384 and factors==(16,16,16,4) and batch_pack==1
         and io_mode=="contiguous"
         and math.prod(factors)==n
@@ -3711,7 +3889,9 @@ def _build_leaf_kernel_source_for_io(
             body.extend([f"    perm_span = {span}", f"    nbatch = {batch}"])
     if permutation_span:
         body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
-    if _portable_complex_vector_io():
+    if permutation_batch:
+        body.append(f"    nbatch = tl.full((), {permutation_batch}, tl.int64)")
+    if _portable_complex_vector_io(plan.dtype):
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     from .target import ix_ct_single_default_enabled
     static_single = (
@@ -3818,6 +3998,17 @@ def _build_leaf_kernel_source_for_io(
                 )
                 body.append("    perm_k_stride = perm_span")
             body.append("    perm_mask = perm_batch < nbatch")
+            contiguous_slots = (
+                permutation_span > 0 and permutation_batch > 0
+                and not batched_permutation and batch_pack > 1
+                and (permutation_batch % permutation_span == 0
+                     and (permutation_batch // permutation_span) % batch_pack == 0
+                     if inner_perm_form else permutation_span % batch_pack == 0)
+            )
+            if contiguous_slots:
+                # The plan proves that no tile crosses an output row.  Each
+                # tile starts on a pack boundary and its FFT slots are adjacent.
+                body.append(f"    perm_gbase = tl.max_contiguous(tl.multiple_of(perm_gbase, {batch_pack}), {batch_pack})")
             if batch_pack > 1 and _ix_backend_active() and os.getenv("FLAGFFT_IX_3D_DIRECT_STORE") == "1":
                 body.append("    perm_i0_vector = current_batch // perm_span")
                 body.append("    perm_i1_vector = current_batch - perm_i0_vector * perm_span")
@@ -3906,16 +4097,19 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
-    if cuda_packed_r2c and not portable_exchange:
+    if native_packed_r2c and not portable_exchange:
         tl_dtype = _tl_real_dtype(plan.dtype)
-        body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
-        body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+        if packed_smem_alias:
+            body.extend(["    packed_r = smem_b_r", "    packed_i = smem_b_i"])
+        else:
+            body.append(f"    packed_r = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
+            body.append(f"    packed_i = tle.gpu.alloc([{smem_n}], dtype={tl_dtype}, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)")
 
     if io_mode in {"bluestein_full_leaf", "rader_full_leaf"}:
         if len(factors) < 2:
             raise ValueError("fused convolution leaf requires at least two FFT stages")
         last_source = "smem_b" if (len(factors) - 1) % 2 == 1 else "smem_a"
-        intermediate_buffer = "smem_a" if last_source == "smem_b" else "smem_b"
+        intermediate_buffer = "smem_b" if single_smem_buffer else ("smem_a" if last_source == "smem_b" else "smem_b")
 
     for stage in range(len(factors)):
         body.extend(
@@ -3946,6 +4140,8 @@ def _build_leaf_kernel_source_for_io(
                 bluestein_real_kind=bluestein_real_kind,
                 permuted_smem_store=permuted_smem_store,
                 perm_inner=inner_perm_form,
+                perm_batched=batched_permutation,
+                packed_smem_alias=packed_smem_alias,
             )
         )
 
@@ -3984,7 +4180,27 @@ def _build_leaf_kernel_source_for_io(
             "    tl.store(out_ptr + packed_nyquist * 2 + 1, 0.0, mask=packed_mask & (packed_k == 0))",
         ])
 
-        if _ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype):
+        if packed_transpose:
+            # Adjacent output lanes own adjacent FFT rows. Source rows may
+            # cross matrix boundaries, including a final partial CTA.
+            replacements = {
+                f"    packed_slot = packed_pos // {smem_slot_stride}":
+                    f"    packed_slot = packed_pos % {batch_pack}",
+                f"    packed_k = packed_pos % {smem_slot_stride}":
+                    f"    packed_k = packed_pos // {batch_pack}",
+                "    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_pos,)), mask=packed_mask, other=0.0)":
+                    f"    packed_ar = tl.load(tle.gpu.local_ptr(packed_r, (packed_slot * {smem_slot_stride} + packed_k,)), mask=packed_mask, other=0.0)",
+                "    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_pos,)), mask=packed_mask, other=0.0)":
+                    f"    packed_ai = tl.load(tle.gpu.local_ptr(packed_i, (packed_slot * {smem_slot_stride} + packed_k,)), mask=packed_mask, other=0.0)",
+                "    packed_dst = (batch_id + packed_slot) * output_distance + packed_k":
+                    f"    packed_dst = ((batch_id + packed_slot) // output_distance) * ({n+1} * output_distance) + packed_k * output_distance + (batch_id + packed_slot) % output_distance",
+                f"    packed_nyquist = (batch_id + packed_slot) * output_distance + {n}":
+                    f"    packed_nyquist = ((batch_id + packed_slot) // output_distance) * ({n+1} * output_distance) + {n} * output_distance + (batch_id + packed_slot) % output_distance",
+            }
+            body = [replacements.get(line, line) for line in body]
+
+        if ((_ix_backend_active() and _packed_maca_fp32_complex_io(plan.dtype))
+                or (_hcu_backend_active() and _hcu_vector_io(plan.dtype))):
             for old_lines,new_lines in (
                 (["    packed_wr = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2, mask=packed_mask, other=0.0)",
                   "    packed_wi = tl.load(packed_twiddle_ptr + packed_twiddle_k * 2 + 1, mask=packed_mask, other=0.0)"],

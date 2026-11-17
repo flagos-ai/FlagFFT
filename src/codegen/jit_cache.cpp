@@ -251,6 +251,69 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 ";ix-fourstep-preset=" + std::to_string(ix_fourstep_preset_) +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  if (adaptor::backend_name() == "hcu") {
+    const char *vector_io = std::getenv("FLAGFFT_HCU_VECTOR_IO");
+    cache_key += ";hcu-vector-io-v2=" + std::string(vector_io ? vector_io : "0");
+    const char *single_buffer = std::getenv("FLAGFFT_HCU_FOURSTEP_SINGLE_BUFFER");
+    cache_key += ";hcu-fourstep-single-buffer-v1=" + std::string(single_buffer ? single_buffer : "0");
+    const char *packing = std::getenv("FLAGFFT_HCU_FOURSTEP_PACKING");
+    cache_key += ";hcu-fourstep-packing-v1=" + std::string(packing ? packing : "resource");
+    const char *row_twiddle = std::getenv("FLAGFFT_HCU_FP32_ROW_TWIDDLE");
+    cache_key += ";hcu-fp32-row-twiddle-v1=" + std::string(row_twiddle ? row_twiddle : "0");
+    const char *leaf_buffer = std::getenv("FLAGFFT_HCU_LEAF_SINGLE_BUFFER");
+    cache_key += ";hcu-leaf-single-buffer-v1=" + std::string(leaf_buffer ? leaf_buffer : "0");
+    const char *leaf_packing = std::getenv("FLAGFFT_HCU_LEAF_PACKING");
+    cache_key += ";hcu-leaf-packing-v1=" + std::string(leaf_packing ? leaf_packing : "resource");
+    const char *cyclic_skew = std::getenv("FLAGFFT_HCU_CYCLIC_SKEW");
+    cache_key += ";hcu-cyclic-skew-v1=" + std::string(cyclic_skew ? cyclic_skew : "unit");
+    const char *small_wave = std::getenv("FLAGFFT_HCU_SMALL_WAVE");
+    cache_key += ";hcu-small-wave-v1=" + std::string(small_wave ? small_wave : "0");
+    const char *dense_wave = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
+    const char *dense_wave_pack = std::getenv("FLAGFFT_HCU_DENSE_WAVE_PACK");
+    const char *dense_wave_fp64 = std::getenv("FLAGFFT_HCU_DENSE_WAVE_FP64");
+    cache_key += ";hcu-dense-wave-v2=" + std::string(dense_wave ? dense_wave : "0") +
+                 ";fp64=" + std::string(dense_wave_fp64 ? dense_wave_fp64 : "0") +
+                 ";pack=" + std::string(dense_wave_pack ? dense_wave_pack : "auto");
+    const char *wave_roots = std::getenv("FLAGFFT_HCU_WAVE_ROOT_TABLE");
+    cache_key += ";hcu-wave-root-table-v1=" + std::string(wave_roots ? wave_roots : "0");
+    const char *root_period = std::getenv("FLAGFFT_HCU_WAVE_ROOT_PERIOD");
+    cache_key += ";hcu-wave-root-period-v1=" + std::string(root_period ? root_period : "0");
+    const char *wave_codelet = std::getenv("FLAGFFT_HCU_WAVE_CODELET");
+    const char *packed_store = std::getenv("FLAGFFT_HCU_PACKED_REAL_STORE");
+    cache_key += ";hcu-packed-real-store-v1=" + std::string(packed_store ? packed_store : "0");
+    const char *fill_wave = std::getenv("FLAGFFT_HCU_PERMUTED_FILL_WAVE");
+    cache_key += ";hcu-permuted-fill-wave-v1=" + std::string(fill_wave ? fill_wave : "0");
+    const char *packed_layout = std::getenv("FLAGFFT_HCU_PACKED_WAVE_LAYOUT");
+    cache_key += ";hcu-packed-wave-layout-v1=" + std::string(packed_layout ? packed_layout : "wave");
+    const char *conv_buffer = std::getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
+    cache_key += ";hcu-conv-single-buffer-v1=" + std::string(conv_buffer ? conv_buffer : "0");
+    const char *packed_cta = std::getenv("FLAGFFT_HCU_PACKED_REAL_CTA");
+    cache_key += ";hcu-packed-cta-v1=" + std::string(packed_cta ? packed_cta : "0");
+    const char *transpose_2d = std::getenv("FLAGFFT_HCU_2D_TRANSPOSE");
+    cache_key += ";hcu-2d-transpose-v1=" + std::string(transpose_2d ? transpose_2d : "auto");
+    if (key.kind == KernelKind::Transpose3D) {
+      for (const char *name : {"FLAGFFT_HCU_3D_TRANSPOSE_MODE", "FLAGFFT_HCU_3D_TRANSPOSE_TILE",
+                               "FLAGFFT_HCU_3D_TRANSPOSE_PAIR", "FLAGFFT_HCU_3D_TRANSPOSE_SLICE_GROUP"}) {
+        const char *value = std::getenv(name);
+        cache_key += ";" + std::string(name) + "=" + (value ? value : "auto");
+      }
+    }
+    cache_key += ";hcu-wave-codelet-v1=" + std::string(wave_codelet ? wave_codelet : "0");
+    const char *wave_budget = std::getenv("FLAGFFT_HCU_WAVE_SCALAR_BUDGET");
+    cache_key += ";hcu-wave-batched-v1;budget=" + std::string(wave_budget ? wave_budget : "64");
+    const char *wide_lanes = std::getenv("FLAGFFT_HCU_WIDE_WAVE_LANES");
+    cache_key += ";hcu-wide-wave-lanes-v1=" + std::string(wide_lanes ? wide_lanes : "64");
+    const char *permuted_wave = std::getenv("FLAGFFT_HCU_3D_WARP_FFT");
+    const char *permuted_pack = std::getenv("FLAGFFT_HCU_3D_WARP_PACK");
+    const char *permuted_wide = std::getenv("FLAGFFT_HCU_3D_WARP_FP64");
+    const char *strided_wave = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_INPUT");
+    cache_key += ";hcu-wave-strided-input-v1=" + std::string(strided_wave ? strided_wave : "0");
+    const char *strided_tile = std::getenv("FLAGFFT_HCU_WAVE_STRIDED_TILE");
+    cache_key += ";strided-tile=" + std::string(strided_tile ? strided_tile : "balanced");
+    cache_key += ";hcu-permuted-wave-v2=" + std::string(permuted_wave ? permuted_wave : "0") +
+                 ";pack=" + std::string(permuted_pack ? permuted_pack : "auto") +
+                 ";fp64=" + std::string(permuted_wide ? permuted_wide : "0");
+  }
   if (musa_1d_batch_policy_) {
     const char *batch_pack = std::getenv("FLAGFFT_MUSA_1D_BATCH_PACK");
     const char *batch_warps = std::getenv("FLAGFFT_MUSA_1D_BATCH_WARPS");
@@ -642,6 +705,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     case KernelKind::Transpose3D:
       kernel_kind = "transpose3d";
       break;
+    case KernelKind::Hcu3DCTFirst:
+      kernel_kind = "hcu_3d_ct_first";
+      break;
+    case KernelKind::Hcu3DCTLast:
+      kernel_kind = "hcu_3d_ct_last";
+      break;
     case KernelKind::Fused16Plane:
       kernel_kind = "fused_16_plane";
       break;
@@ -699,6 +768,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                 << "FLAGFFT_CUDA_PERMUTE_BATCH=" << key.cuda_permute_batch << " ";
   }
   if (key.target.rfind("hcu:", 0) == 0) {
+    if (key.kind == KernelKind::Transpose3D)
+      jit_command << "FLAGFFT_HCU_TRANSPOSE_COMPACT="
+                  << (key.perm_form == "compact_spectrum" ? "1 " : "0 ");
+    jit_command << "FLAGFFT_HCU_PACKED_CTA_MAX_PACK="
+                << (key.hcu_packed_max_pack > 0 ? std::to_string(key.hcu_packed_max_pack) : "auto")
+                << " ";
     jit_command << "FLAGFFT_HCU_3D_MIDDLE_BATCH_PACK="
                 << (key.hcu_3d_middle_batch_pack > 0
                         ? std::to_string(key.hcu_3d_middle_batch_pack)
@@ -767,9 +842,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
-      key.kind == KernelKind::LeafR2CPermutedStore) {
+      key.kind == KernelKind::LeafR2CPermutedStore ||
+      (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
+    if (key.permutation_batch > 0) jit_command << " --permutation-batch " << key.permutation_batch;
   }
   if (key.hcu_full_smem) jit_command << " --hcu-3d-full-smem";
   if (key.kind == KernelKind::DirectDft || key.kind == KernelKind::DirectDftStrided ||
@@ -815,6 +892,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       throw std::runtime_error("NPU vector transpose requires NPU complex64");
     }
     jit_command << " --npu-vector-transpose";
+  }
+  if (key.kind == KernelKind::Hcu3DCTFirst || key.kind == KernelKind::Hcu3DCTLast) {
+    jit_command << " --transpose3d-n0 " << key.transpose3d_n0
+                << " --transpose3d-n1 " << key.transpose3d_n1
+                << " --transpose3d-n2 " << key.transpose3d_n2
+                << " --four-step-n1 " << key.four_step_n1
+                << " --four-step-n2 " << key.four_step_n2
+                << " --direction " << shell_quote(key.direction);
   }
   if (key.kind == KernelKind::Transpose3D) {
     jit_command << " --transpose3d-n0 " << key.transpose3d_n0 << " --transpose3d-n1 " << key.transpose3d_n1
@@ -1099,6 +1184,19 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        kernel->kernel_name == "power_cube_finish" ||
        kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (key.kind == KernelKind::LeafStridedPermutedStore &&
+      kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
+      kernel->kernel_name.find("_stridedinput") != std::string::npos) {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    if (kernel->grid_x_override <= 0)
+      throw std::runtime_error("HCU strided wave requires a positive tile-derived launch grid");
+  }
+  if (key.kind == KernelKind::Hcu3DCTFirst || key.kind == KernelKind::Hcu3DCTLast) {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    if (kernel->grid_x_override <= 0) {
+      throw std::runtime_error("HCU CT requires a positive, tile-derived launch grid");
+    }
+  }
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
     kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");

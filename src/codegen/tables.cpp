@@ -98,8 +98,10 @@ namespace {
     return min_stage_lanes * 4 >= max_stage_lanes;
   }
 
-  int64_t cooperative_stage_lanes(int64_t n, int64_t radix, const FFTRequest &request) {
-    const int64_t lane_limit = cuda_wide_stage_lanes(request) ? 256 : kMaxLanes;
+  int64_t cooperative_stage_lanes(int64_t n, int64_t radix, const FFTRequest &request,
+                                  int64_t hcu_convolution_limit = 0) {
+    const int64_t lane_limit = hcu_convolution_limit > 0 ? hcu_convolution_limit :
+                               cuda_wide_stage_lanes(request) ? 256 : kMaxLanes;
     const int64_t codelets = n / radix;
     const int64_t upper = std::min(codelets, lane_limit);
     for (int64_t candidate = upper; candidate > 0; --candidate) {
@@ -169,6 +171,38 @@ namespace {
 
   bool dtype_is_double(const std::string &dtype) {
     return dtype == "complex128" || dtype == "float64";
+  }
+
+  template <typename Real>
+  void append_hcu_wave_roots(std::pair<std::vector<Real>, std::vector<Real>> &twiddles,
+                              const LeafPlanNode &leaf, const FFTRequest &request, std::size_t stage) {
+    if (request.device_type != "hcu" || stage + 1 != leaf.factors.size() ||
+        leaf.length < 32 || leaf.length > 2048 || (leaf.length & (leaf.length - 1)) != 0) return;
+    const auto enabled = [](const char *name) {
+      const char *value = std::getenv(name);
+      return value && std::string(value) == "1";
+    };
+    const char *dense_mode = std::getenv("FLAGFFT_HCU_DENSE_WAVE");
+    const bool dense = dense_mode && (std::string(dense_mode) == "1" || std::string(dense_mode) == "leaves" ||
+                                      std::string(dense_mode) == "packed" ||
+                                      std::string(dense_mode) == "fourstep_codelets");
+    const bool requested = std::is_same_v<Real, double>
+        ? enabled("FLAGFFT_HCU_PACKED_REAL_STORE") || (dense && enabled("FLAGFFT_HCU_DENSE_WAVE_FP64")) ||
+          (enabled("FLAGFFT_HCU_3D_WARP_FFT") && enabled("FLAGFFT_HCU_3D_WARP_FP64"))
+        : enabled("FLAGFFT_HCU_WAVE_ROOT_TABLE") &&
+          (dense || enabled("FLAGFFT_HCU_3D_WARP_FFT") || enabled("FLAGFFT_HCU_PACKED_REAL_STORE"));
+    if (!requested) return;
+    // Preserve the stage-table prefix and supply exact-dtype roots to the
+    // wave path. Native fallbacks continue to use their original addresses.
+    constexpr long double kPiLong = 3.141592653589793238462643383279502884L;
+    const long double sign = request.direction == "inverse" ? 1.0L : -1.0L;
+    twiddles.first.reserve(static_cast<std::size_t>(2 * leaf.length));
+    twiddles.second.reserve(static_cast<std::size_t>(2 * leaf.length));
+    for (int64_t k = 0; k < leaf.length; ++k) {
+      const long double angle = sign * 2.0L * kPiLong * k / leaf.length;
+      twiddles.first.push_back(static_cast<Real>(std::cos(angle)));
+      twiddles.second.push_back(static_cast<Real>(std::sin(angle)));
+    }
   }
 
 }  // namespace
@@ -370,6 +404,10 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    bool portable_default) {
   const bool is_double = dtype_is_double(request.input_dtype);
+  const char *hcu_conv_buffer = std::getenv("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
+  const int64_t hcu_convolution_limit = request.device_type == "hcu" &&
+      hcu_conv_buffer && std::string(hcu_conv_buffer) == "1" && leaf.lanes > kMaxLanes
+          ? leaf.lanes : 0;
   std::vector<DeviceAllocation> tables;
   const char *portable_setting = std::getenv("FLAGFFT_IX_PORTABLE_LEAF");
   // The full TLE CTA uses fixed-width groups. Its final stage's table shape
@@ -385,16 +423,18 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
     const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda || npu_portable_leaf_enabled(request)) ? leaf.length / leaf.factors[stage]
                           : use_cooperative_stage_lanes(leaf, request)
-                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request)
+                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request, hcu_convolution_limit)
                               : leaf.lanes;
     if (is_double) {
       auto twiddles =
           build_stage_twiddles_d(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);
+      append_hcu_wave_roots(twiddles, leaf, request, stage);
       tables.push_back(adaptor::Memory::from_doubles(twiddles.first));
       tables.push_back(adaptor::Memory::from_doubles(twiddles.second));
     } else {
       auto twiddles =
           build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);
+      append_hcu_wave_roots(twiddles, leaf, request, stage);
       tables.push_back(adaptor::Memory::from_floats(twiddles.first));
       tables.push_back(adaptor::Memory::from_floats(twiddles.second));
     }

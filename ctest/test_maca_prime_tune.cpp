@@ -56,6 +56,518 @@ class ScopedEnv {
 
 }  // namespace
 
+TEST(PermutedStoreGrid, CoversEachPlaneIncludingOddSpansAndTailTiles) {
+  for (int64_t span : {3, 65, 129, 997, 1025}) {
+    for (int64_t batch : {1, 3, 4, 7}) {
+      for (int64_t pack : {1, 2, 4, 8, 16, 32}) {
+        const int64_t rows = batch * span;
+        const int64_t groups = span / pack + (span % pack != 0);
+        const int64_t blocks = flagfft::permuted_store_outer_blocks(rows, span, pack);
+        std::set<int64_t> covered;
+        for (int64_t pid = 0; pid < blocks; ++pid) {
+          for (int64_t slot = 0; slot < pack; ++slot) {
+            const int64_t local_row = (pid % groups) * pack + slot;
+            const int64_t row = (pid / groups) * span + local_row;
+            if (local_row >= span || row >= rows) continue;
+            EXPECT_TRUE(covered.insert(row).second);
+          }
+        }
+        EXPECT_EQ(covered.size(), static_cast<std::size_t>(rows));
+        EXPECT_EQ(*covered.begin(), 0);
+        EXPECT_EQ(*covered.rbegin(), rows - 1);
+      }
+    }
+  }
+  EXPECT_EQ(flagfft::permuted_store_outer_blocks(4 * 1025, 1025, 8), 516);
+}
+
+TEST(HcuPackedCTA, BoundsReconstructionButterfliesWithoutLengthTables) {
+  ScopedEnv enabled("FLAGFFT_HCU_PACKED_REAL_CTA", "1");
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  for (int64_t n = 32; n <= 1024; n *= 2) {
+    const std::vector<int64_t> original = n == 32 ? std::vector<int64_t>{32} :
+        std::vector<int64_t>{32, n/32};
+    flagfft::LeafPlanNode leaf(n, original, 1, 32, 1, {32}, n);
+    auto factors = flagfft::hcu_packed_cta_factors(request, leaf);
+    int64_t product = 1;
+    for (int64_t radix : factors) { product *= radix; EXPECT_GE(radix, 2); EXPECT_LE(radix, 16); }
+    EXPECT_EQ(product, n);
+    if (n >= 128) for (int64_t radix : factors) EXPECT_LE(n/radix, 128);
+    request.device_type = "cuda";
+    EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, leaf), leaf.factors);
+    request.device_type = "hcu";
+  }
+  flagfft::LeafPlanNode mixed(210, {7, 5, 6}, 1, 30, 1, {7, 5, 6}, 210);
+  EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, mixed), mixed.factors);
+  ScopedEnv disabled("FLAGFFT_HCU_PACKED_REAL_CTA", "0");
+  flagfft::LeafPlanNode leaf(1024, {32, 32}, 1, 32, 1, {32}, 1024);
+  EXPECT_EQ(flagfft::hcu_packed_cta_factors(request, leaf), leaf.factors);
+}
+
+TEST(HcuPackedCTA, KeepsWaveAndDeviceGridParallelism) {
+  for (int64_t units : {32, 80, 120}) for (int64_t lanes : {4, 16, 64, 128}) {
+    for (int64_t rows : {1, 64, 127, 4096, 65536}) {
+      const int64_t pack = flagfft::hcu_packed_grid_pack_limit(rows, units, lanes);
+      EXPECT_GT(pack, 0);
+      EXPECT_LE(pack, 16);
+      EXPECT_EQ(pack & (pack - 1), 0);
+      EXPECT_GE(pack * lanes, std::min<int64_t>(64, lanes * 16));
+      if (rows >= 2 * units * std::max<int64_t>(1, 64/lanes))
+        EXPECT_GE((rows + pack - 1) / pack, 2 * units);
+    }
+  }
+  EXPECT_EQ(flagfft::hcu_packed_grid_pack_limit(64, 80, 64), 1);
+  EXPECT_EQ(flagfft::hcu_packed_grid_pack_limit(64, 0, 64), 0);
+}
+
+TEST(HcuRealInput, ExposesACompleteWideGlobalReadWithoutAddingFFTStages) {
+  ScopedEnv resource("FLAGFFT_HCU_PACKED_CTA_PUBLIC", "resource");
+  flagfft::FFTRequest request;
+  request.device_type = "hcu"; request.device_arch = "gfx936";
+  request.origin_rank = 1; request.input_dtype = "complex128";
+  flagfft::LeafPlanNode leaf(1024, {16, 8, 8}, 1, 128, 4, {}, 1024);
+  const auto factors = flagfft::hcu_real_inverse_factors(request, leaf);
+  EXPECT_EQ(factors.size(), leaf.factors.size());
+  EXPECT_GT(leaf.length/factors.front(), leaf.length/leaf.factors.front());
+  EXPECT_LE(leaf.length/factors.front(), 128);
+  int64_t product = 1;
+  for (auto radix : factors) product *= radix;
+  EXPECT_EQ(product, leaf.length);
+  request.device_type = "cuda";
+  EXPECT_EQ(flagfft::hcu_real_inverse_factors(request, leaf), leaf.factors);
+  request.device_type = "hcu"; request.origin_rank = 3;
+  EXPECT_EQ(flagfft::hcu_real_inverse_factors(request, leaf), leaf.factors);
+  request.origin_rank = 1;
+  ScopedEnv control("FLAGFFT_HCU_PACKED_CTA_PUBLIC", "0");
+  EXPECT_EQ(flagfft::hcu_real_inverse_factors(request, leaf), leaf.factors);
+}
+
+TEST(HcuWave3D, SelectsOnlySupportedDenseSinglePrecisionC2CGeometry) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 3;
+  request.input_dtype = request.output_dtype = "complex64";
+  request.input_layout = "contiguous";
+  ScopedEnv wave("FLAGFFT_HCU_3D_WARP_FFT", "1");
+  ScopedEnv roots("FLAGFFT_HCU_WAVE_ROOT_TABLE", "1");
+  for (int64_t n0 : {64, 128, 256}) {
+    for (int64_t n1 : {64, 512, 2048}) {
+      for (int64_t n2 : {64, 128, 256}) {
+        EXPECT_TRUE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, n0, n1, n2));
+      }
+    }
+  }
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 96, 256, 64));
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 32, 512, 64));
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 128, 4096, 64));
+  for (const char *dtype : {"complex128", "float32"}) {
+    auto other = request;
+    other.input_dtype = other.output_dtype = dtype;
+    EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(other, 128, 512, 64));
+  }
+  auto copied = request;
+  copied.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(copied, 128, 512, 64));
+  auto real = request;
+  real.origin_real_transform_kind = "r2c";
+  EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(real, 128, 512, 64));
+  {
+    ScopedEnv disabled("FLAGFFT_HCU_3D_WARP_FFT", "0");
+    EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 128, 512, 64));
+  }
+  {
+    ScopedEnv disabled("FLAGFFT_HCU_WAVE_ROOT_TABLE", "0");
+    EXPECT_FALSE(flagfft::hcu_wave_3d_c2c_policy_enabled(request, 128, 512, 64));
+  }
+}
+
+TEST(HcuFourStep, BalancedRegisterStagesAndPolicyCacheAreBounded) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.batch = 7;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {65536, 131072, 262144, 524288, 1048576}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {request.batch, n};
+    request.input_strides = {n, 1};
+    std::vector<std::string> descriptions;
+    for (const char *cap : {"auto", "8", "16", "auto"}) {
+      ScopedEnv policy("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", cap);
+      auto root = builder.build(n, request);
+      descriptions.push_back(root->describe());
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root);
+      ASSERT_NE(pair, nullptr);
+      for (const auto &child : {pair->row_plan, pair->col_plan}) {
+        auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+        ASSERT_NE(leaf, nullptr);
+        int64_t product = 1;
+        for (auto radix : leaf->factors) {
+          product *= radix;
+          if (std::string(cap) != "auto") {
+            EXPECT_LE(radix, std::stoi(cap));
+            EXPECT_GE(radix, 4);
+          }
+        }
+        EXPECT_EQ(product, leaf->length);
+      }
+    }
+    EXPECT_EQ(descriptions.front(), descriptions.back());
+    EXPECT_NE(descriptions.front(), descriptions[1]);
+  }
+}
+
+TEST(HcuFourStep, MixedRegisterStagesPreserveProductsAndIrreduciblePrimes) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.batch = 7;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {90000, 129600, 340200, 663000}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {request.batch, n};
+    request.input_strides = {n, 1};
+    std::vector<std::string> descriptions;
+    for (const char *cap : {"auto", "8", "16", "auto"}) {
+      ScopedEnv policy("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", cap);
+      auto root = builder.build(n, request);
+      descriptions.push_back(root->describe());
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root);
+      ASSERT_NE(pair, nullptr);
+      for (const auto &child : {pair->row_plan, pair->col_plan}) {
+        auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+        ASSERT_NE(leaf, nullptr);
+        int64_t product = 1;
+        for (auto radix : leaf->factors) {
+          product *= radix;
+          if (std::string(cap) != "auto" && radix > std::stoi(cap)) {
+            for (int64_t d = 2; d <= radix / d; ++d) EXPECT_NE(radix % d, 0);
+          }
+        }
+        EXPECT_EQ(product, leaf->length);
+      }
+    }
+    EXPECT_EQ(descriptions.front(), descriptions.back());
+  }
+}
+
+TEST(HcuFourStep, BoundedLeavesCanRetainTheUncappedMemoryDecomposition) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_layout = "contiguous";
+  flagfft::PlanBuilder builder;
+  for (const char *dtype : {"complex64", "complex128"}) {
+    request.input_dtype = request.output_dtype = dtype;
+    for (int64_t batch : {1, 7, 64}) {
+      request.batch = batch;
+      for (int64_t n : {65536, 90000, 129600, 340200, 524288, 663000}) {
+        request.n = request.requested_n = request.fft_length = n;
+        request.input_shape = {batch, n};
+        request.input_strides = {n, 1};
+        ScopedEnv preserve("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", "1");
+        ScopedEnv original("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+        auto reference = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(n, request));
+        ASSERT_NE(reference, nullptr);
+        const auto original_description = reference->describe();
+        {
+          ScopedEnv bounded("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "16");
+          auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(n, request));
+          ASSERT_NE(pair, nullptr);
+          EXPECT_EQ(pair->n1, reference->n1);
+          EXPECT_EQ(pair->n2, reference->n2);
+          for (const auto &child : {pair->row_plan, pair->col_plan}) {
+            auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+            ASSERT_NE(leaf, nullptr);
+            int64_t product = 1;
+            for (int64_t radix : leaf->factors) {
+              product *= radix;
+              if (radix > 16) {
+                for (int64_t divisor = 2; divisor <= radix / divisor; ++divisor)
+                  EXPECT_NE(radix % divisor, 0);
+              }
+            }
+            EXPECT_EQ(product, leaf->length);
+          }
+        }
+        EXPECT_EQ(builder.build(n, request)->describe(), original_description);
+      }
+    }
+  }
+}
+
+TEST(HcuFourStep, PrecisionAndIrreducibleFactorsSelectPolicyWithoutLengthTables) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 64;
+  ScopedEnv cap("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "fp64");
+  flagfft::PlanBuilder builder;
+  for (auto [length, preserve] : std::vector<std::pair<int64_t, bool>> {
+           {90000, false}, {131072, false}, {185640, true}, {340200, false}, {663000, true}}) {
+    request.n = request.requested_n = request.fft_length = length;
+    request.input_shape = {64, length};
+    request.input_strides = {length, 1};
+    ScopedEnv selected("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", "irreducible");
+    auto candidate = builder.build(length, request)->describe();
+    ScopedEnv expected("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", preserve ? "1" : "0");
+    EXPECT_EQ(candidate, builder.build(length, request)->describe());
+  }
+  request.input_dtype = request.output_dtype = "complex64";
+  ScopedEnv selected("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT", "irreducible");
+  auto candidate = builder.build(request.requested_n, request)->describe();
+  ScopedEnv original("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+  EXPECT_EQ(candidate, builder.build(request.requested_n, request)->describe());
+}
+
+TEST(HcuConvolution, BoundsFp64ChildButterfliesWithoutChangingPrimeExtentOrCachePolicy) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 64;
+  ScopedEnv public_cap("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {131071, 524287}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {64, n};
+    request.input_strides = {n, 1};
+    ScopedEnv original("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
+    auto baseline = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(n, request));
+    ASSERT_NE(baseline, nullptr);
+    const auto original_description = baseline->describe();
+    {
+      ScopedEnv bounded("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "16");
+      auto candidate = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(n, request));
+      ASSERT_NE(candidate, nullptr);
+      EXPECT_EQ(candidate->length, baseline->length);
+      EXPECT_EQ(candidate->conv_length, baseline->conv_length);
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(candidate->fft_plan);
+      ASSERT_NE(pair, nullptr);
+      EXPECT_EQ(pair->n1 * pair->n2, candidate->conv_length);
+      for (const auto &child : {pair->row_plan, pair->col_plan}) {
+        auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(child);
+        ASSERT_NE(leaf, nullptr);
+        int64_t product = 1;
+        for (int64_t radix : leaf->factors) {
+          EXPECT_LE(radix, 16);
+          product *= radix;
+        }
+        EXPECT_EQ(product, leaf->length);
+      }
+      EXPECT_NE(candidate->describe(), original_description);
+    }
+    EXPECT_EQ(builder.build(n, request)->describe(), original_description);
+  }
+  for (const char *backend : {"hcu", "cuda"}) {
+    request.device_type = backend;
+    request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+    request.input_dtype = request.output_dtype = "complex64";
+    ScopedEnv original("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
+    const auto baseline = builder.build(request.requested_n, request)->describe();
+    ScopedEnv bounded("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "16");
+    EXPECT_EQ(builder.build(request.requested_n, request)->describe(), baseline);
+  }
+}
+
+TEST(HcuConvolution, BalancesSupportedLeafMatricesWithoutChangingExtent) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 64;
+  ScopedEnv cap("FLAGFFT_HCU_FP64_CONV_RADIX_CAP", "auto");
+  flagfft::PlanBuilder builder;
+  for (int64_t n : {8191, 16381}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {64, n};
+    request.input_strides = {n, 1};
+    ScopedEnv original("FLAGFFT_HCU_CONV_BALANCE", "0");
+    const auto baseline = builder.build(n, request)->describe();
+    {
+      ScopedEnv selected("FLAGFFT_HCU_CONV_BALANCE", "fp64");
+      auto prime = std::dynamic_pointer_cast<flagfft::RaderPlanNode>(builder.build(n, request));
+      ASSERT_NE(prime, nullptr);
+      auto pair = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(prime->conv_plan);
+      ASSERT_NE(pair, nullptr);
+      EXPECT_EQ(pair->n1 * pair->n2, n - 1);
+      EXPECT_LE(pair->n1, pair->n2);
+      EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(pair->row_plan), nullptr);
+      EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(pair->col_plan), nullptr);
+      for (int64_t divisor = pair->n1 + 1; divisor <= (n - 1) / divisor; ++divisor)
+        EXPECT_NE((n - 1) % divisor, 0);
+    }
+    EXPECT_EQ(builder.build(n, request)->describe(), baseline);
+  }
+}
+
+TEST(PlannerContext, ReuseAgreesWithFreshBuildersAcrossPrecisionBatchAndOrigin) {
+  flagfft::PlanBuilder reused;
+  for (const char *backend : {"hcu", "cuda"}) {
+    for (const char *dtype : {"complex64", "complex128"}) {
+      for (int64_t batch : {1, 7}) {
+        for (int64_t origin : {1, 3}) {
+          for (int64_t n : {128, 256, 1024}) {
+            flagfft::FFTRequest request;
+            request.device_type = backend;
+            request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+            request.input_dtype = request.output_dtype = dtype;
+            request.input_layout = "contiguous";
+            request.origin_rank = origin;
+            request.raw_dim = 1;
+            request.batch = batch;
+            request.n = request.requested_n = request.fft_length = n;
+            request.input_shape = {batch, n};
+            request.input_strides = {n, 1};
+            flagfft::PlanBuilder fresh;
+            EXPECT_EQ(reused.build(n, request)->describe(), fresh.build(n, request)->describe());
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(HcuLeafCost, PhysicalWaveUnitsArePrecisionScopedAndInvalidateFactorChoices) {
+  flagfft::FFTRequest request;
+  request.device_type = "hcu";
+  request.device_arch = "gfx936";
+  request.origin_rank = 3;
+  request.raw_dim = 1;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+  request.batch = 7;
+  flagfft::PlanBuilder builder;
+  bool changed = false;
+  for (int64_t n : {64, 128, 256, 512, 1024}) {
+    request.n = request.requested_n = request.fft_length = n;
+    request.input_shape = {7, n};
+    request.input_strides = {n, 1};
+    ScopedEnv original("FLAGFFT_HCU_PHYSICAL_WAVE_COST", "0");
+    const auto baseline = builder.build(n, request)->describe();
+    const auto baseline_cost = builder.cost_for(n, request);
+    {
+      ScopedEnv physical("FLAGFFT_HCU_PHYSICAL_WAVE_COST", "fp64");
+      const auto candidate = builder.build(n, request)->describe();
+      changed |= candidate != baseline;
+      EXPECT_LE(builder.cost_for(n, request), baseline_cost);
+      flagfft::PlanBuilder fresh;
+      EXPECT_EQ(candidate, fresh.build(n, request)->describe());
+    }
+    EXPECT_EQ(builder.build(n, request)->describe(), baseline);
+  }
+  EXPECT_TRUE(changed);
+}
+
+TEST(HcuLeafCost, StageTrafficChangesShortLeafSchedulesAndPreservesOtherContexts) {
+  for (const char *backend : {"hcu", "cuda"}) {
+    for (const char *dtype : {"complex64", "complex128"}) {
+      flagfft::FFTRequest request;
+      request.device_type = backend;
+      request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+      request.origin_rank = 3;
+      request.raw_dim = 1;
+      request.input_dtype = request.output_dtype = dtype;
+      request.input_layout = "contiguous";
+      request.batch = 7;
+      flagfft::PlanBuilder builder;
+      bool changed = false;
+      for (int64_t n : {64, 128, 256, 512}) {
+        request.n = request.requested_n = request.fft_length = n;
+        request.input_shape = {7, n};
+        request.input_strides = {n, 1};
+        ScopedEnv original("FLAGFFT_HCU_STAGE_TRAFFIC_COST", "0");
+        const auto baseline = builder.build(n, request)->describe();
+        {
+          ScopedEnv candidate("FLAGFFT_HCU_STAGE_TRAFFIC_COST", "fp32");
+          const auto selected = builder.build(n, request)->describe();
+          changed |= selected != baseline;
+          flagfft::PlanBuilder fresh;
+          EXPECT_EQ(selected, fresh.build(n, request)->describe());
+          if (std::string(backend) != "hcu" || std::string(dtype) != "complex64")
+            EXPECT_EQ(selected, baseline);
+        }
+        EXPECT_EQ(builder.build(n, request)->describe(), baseline);
+      }
+      EXPECT_EQ(changed, std::string(backend) == "hcu" && std::string(dtype) == "complex64");
+    }
+  }
+}
+
+TEST(HcuPrimeCost, SupportedConvolutionDoesNotForceRaderBelowTheEstimatedBluesteinCost) {
+  for (const char *backend : {"hcu", "cuda"}) {
+    flagfft::FFTRequest request;
+    request.device_type = backend;
+    request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+    request.origin_rank = request.raw_dim = 1;
+    request.batch = 64;
+    request.input_dtype = request.output_dtype = "complex128";
+    request.input_layout = "contiguous";
+    flagfft::PlanBuilder reused;
+    bool changed = false;
+    for (int64_t n : {23, 1009, 8191, 16381}) {
+      request.n = request.requested_n = request.fft_length = n;
+      request.input_shape = {64, n};
+      request.input_strides = {n, 1};
+      ScopedEnv original("FLAGFFT_HCU_PRIME_COST_COMPARISON", "0");
+      const auto baseline = reused.build(n, request)->describe();
+      {
+        ScopedEnv candidate("FLAGFFT_HCU_PRIME_COST_COMPARISON", "1");
+        const auto selected = reused.build(n, request)->describe();
+        flagfft::PlanBuilder fresh;
+        EXPECT_EQ(selected, fresh.build(n, request)->describe());
+        changed |= selected != baseline;
+        if (std::string(backend) != "hcu") EXPECT_EQ(selected, baseline);
+      }
+      EXPECT_EQ(reused.build(n, request)->describe(), baseline);
+    }
+    EXPECT_EQ(changed, std::string(backend) == "hcu");
+  }
+}
+
+TEST(HcuFourStep, RegisterStageExperimentPreservesPrimeAndOtherBackendPlans) {
+  for (const char *backend : {"hcu", "cuda"}) {
+    flagfft::FFTRequest request;
+    request.device_type = backend;
+    request.device_arch = std::string(backend) == "hcu" ? "gfx936" : "sm_80";
+    request.origin_rank = request.raw_dim = 1;
+    request.batch = 3;
+    request.n = request.requested_n = request.fft_length = 8191;
+    request.input_dtype = request.output_dtype = "complex64";
+    request.input_layout = "contiguous";
+    request.input_shape = {3, 8191};
+    request.input_strides = {8191, 1};
+    flagfft::PlanBuilder builder;
+    ScopedEnv original("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+    auto baseline = builder.build(8191, request)->describe();
+    ScopedEnv candidate("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "8");
+    EXPECT_EQ(builder.build(8191, request)->describe(), baseline);
+    request.n = request.requested_n = request.fft_length = 524287;
+    request.input_shape = {3, 524287};
+    request.input_strides = {524287, 1};
+    auto large_candidate = builder.build(524287, request)->describe();
+    ScopedEnv reset("FLAGFFT_HCU_FOURSTEP_RADIX_CAP", "auto");
+    EXPECT_EQ(builder.build(524287, request)->describe(), large_candidate);
+  }
+}
+
 TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   flagfft::FFTRequest request;
   request.device_type = "maca";
