@@ -16,6 +16,12 @@ GM **1.31066935x**，低于 0.7x 的项数为 **0**。FlagFFT/NumPy、hipFFT/Num
 `acceptance.local.json`、`REPORT.md`、`case_metrics.csv` 和配置快照可供复核。
 最低项是 2048²、batch1 的 FP64 R2C。
 
+图回放另作补验：重复执行工具直接链接原始 `b11a09fb` 共享库，覆盖规范矩阵
+全部 40 个二维实数 case，每项执行三次，在回放前恢复输入并用 NaN 污染独立
+输出。FlagFFT/NumPy、hipFFT/NumPy 各 **40/40** 通过，实际 batch 均与请求
+一致，无捕获失败回退。归档 `remote/20261117_113937_accepted_b11_graph_replay/`
+保存库路径、二进制 SHA-256 和 `replay_summary.json`，区别于首次直接执行检查。
+
 同一冻结实现和配置的矩阵外完整 400 项已结束，目录为
 `remote/20261117_071030_frozen_holdout400_combined/`。逐 case GM **0.92701179x**，
 最低 **0.44956251x**，算子等权 GM **0.94103620x**，**63 项低于 0.7x**，因此
@@ -30,6 +36,14 @@ Four-Step 120 项 GM=0.912236x、最低 0.575985x、10 项低于下限；
 2D 48 项 GM=0.927675x、最低 0.490148x、20 项低于下限；
 3D 64 项 GM=0.842561x、最低 0.497132x、21 项低于下限。
 这些加速比均以 hipFFT 为参考；相对旧实现的增益需独立配对测量。
+
+后续通用图回放实验留在 `codex/hcu-multi-graph`，按编译后节点拓扑选择，不读
+尺寸或 case ID。43 项 CPU、1 项缓存键、2 项设备图测试及 56 项完整 batch
+重复执行双参考校验通过。独立 280 项、两卡反向顺序的配对中，FlagFFT 绝对
+时延改善 GM=1.052960x；拓扑改变的 198 项为 1.072753x，82 项控制为 1.006659x。
+但两种模式仍各有 33 项低于下限，且控制项有逐项波动；该筛查没有对全部
+280 项参考做数值验证。因此保留实验分支，未改变已验收配置。配对数据和数值
+审核位于 `remote/20261117_103457_multi_graph_discovery/`。
 
 代码工作分支为 `codex/hcu-general-opt`，从 `codex/hcu-3d-09@62e2e015` 继续，
 该基线包含 `dev@04f49734` 和此前 prepared native dispatch 改进。
@@ -82,6 +96,8 @@ Gate 同时检查矩阵 SHA-256、30 算子/400 case 覆盖、NumPy/platform 准
 轴比例变化、batch=5 和非二次幂回退。
 
 ## 基线与已完成测量
+
+以下保留试验过程的历史记录，其中的待验证状态对应当时；当前验收结论以文首为准。
 
 历史同环境 `04f49734` 全量：400/400 accuracy、400/400 platform accuracy、
 400/400 performance。逐 case GM 为 1.119951x，算子等权 GM 为 1.100876x；
