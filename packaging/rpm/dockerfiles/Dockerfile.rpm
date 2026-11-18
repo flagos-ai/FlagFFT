@@ -14,6 +14,7 @@ RUN dnf install -y --allowerasing \
     python3-devel \
     python3-pip \
     sqlite-devel \
+    nlohmann-json-devel \
     rpm-build \
     rpmdevtools \
     tar xz \
@@ -21,7 +22,11 @@ RUN dnf install -y --allowerasing \
 
 # Temporary: the pinned libtriton_jit needs nlohmann_json >= 3.11.3 and
 # openEuler 24.03 ships 3.11.2. Header-only, build container only; drop
-# once the submodule carries libtriton_jit#64 (floor 3.10.5).
+# once the submodule carries libtriton_jit#64 (floor 3.10.5). The distro
+# package stays installed as well: rpmbuild resolves the spec's
+# BuildRequires from the rpm database, which the copy under /usr/local
+# is not in, while CMake still picks the newer one (/usr/local is searched
+# before /usr).
 ARG NLOHMANN_JSON_URL=https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
 RUN curl -fsSL -o /tmp/json.tar.xz ${NLOHMANN_JSON_URL} \
     && mkdir -p /tmp/json && tar -xJf /tmp/json.tar.xz -C /tmp/json --strip-components=1 \
