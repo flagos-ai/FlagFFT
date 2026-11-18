@@ -383,7 +383,8 @@ def module_name_for(
             f"_n{four_step_n1}_{four_step_n2}_l{lanes}_b{lane_block}_{dtype_tag}"
         )
     if spec.name == "direct_dft":
-        return f"flagfft_jit_direct_dft_{direction_tag}_n{length}_{dtype_tag}"
+        variant = "_single_reduce" if perm_form == "npu_single_reduce" else ""
+        return f"flagfft_jit_direct_dft{variant}_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_strided":
         return f"flagfft_jit_direct_dft_strided_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "direct_dft_cube":

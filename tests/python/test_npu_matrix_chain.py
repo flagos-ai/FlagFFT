@@ -93,7 +93,10 @@ def test_emitter_and_unsupported_geometry(tmp_path):
         assert new['num_stages'] == (1 if phase==2 else 2)
     for bad in ((17,15,13,2,32),(17,15,13,2,160),(17,15,13,7,100)):
         with pytest.raises(ValueError,match='Matrix chain requires'):build(bad)
-    with pytest.raises(ValueError,match='batched dense Cube'):
+    single = emit_vector_dif((17,15,13,2,100),'forward',2,tmp_path,matrix_chain_columns=128,
+                             aligned=True,cube_prefix=True,dense_prefix=True)
+    assert single['kernel_name'] == 'matrix_chain_finish_batch'
+    with pytest.raises(ValueError,match='aligned dense Cube'):
         emit_vector_dif((17,15,13,2,100),'forward',0,tmp_path,matrix_chain_columns=128)
     with pytest.raises(ValueError,match='Invalid DIF phase'):
         emit_vector_dif((17,15,13,2,100),'forward',3,tmp_path,matrix_chain_columns=128,**options)

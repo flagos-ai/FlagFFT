@@ -46,6 +46,16 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  bool npu_single_public_c2c(const FFTRequest &request, int64_t n, int64_t batch) {
+    return batch == 1 && request.device_type == "npu" &&
+           request.device_arch.rfind("Ascend910B4", 0) == 0 &&
+           request.origin_rank == 1 && request.raw_dim == 1 && request.requested_n == n &&
+           request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+           !request.real_transform && request.real_transform_kind.empty() &&
+           request.origin_real_transform_kind.empty() && !request.packed_real_child &&
+           !request.convolution_child;
+  }
+
   // Compact real boundaries and graph replay are qualified on A100. Keep
   // the policy local to sm_80 and retain explicit rollback for comparisons.
   bool cuda_multid_flag(const FFTRequest &request, const char *name) {
@@ -664,12 +674,16 @@ namespace {
     // Fill at least three quarters of the first 64-frequency tile and keep
     // the existing 13 x 7 fusion when that suffix is already available.
     const int64_t matrix_tail=n%(255*26)==0?n/(255*26):0;
-    const bool matrix_chain=dense_batch && batch>=32 && factors.size()>=5 &&
-        factors[2]==13 && factors[3]!=7 &&
+    // A single large transform can also fill the Cube cores. Use narrower
+    // terminal tiles to expose more independent work within that transform.
+    const bool single_chain = npu_single_public_c2c(request, n, batch) && vector_first17 &&
+        initial_prefix == 255 && padded_prefix == 256 && matrix_tail >= 96 &&
+        flag_or_default("FLAGFFT_NPU_DIF_SINGLE_MATRIX_CHAIN", false);
+    const bool matrix_chain=factors.size()>=5 && factors[2]==13 && factors[3]!=7 &&
         matrix_tail>=48 && matrix_tail<=128 &&
-        matrix_tail*(batch/8)>=192 &&
+        (single_chain || (dense_batch && batch>=32 && matrix_tail*(batch/8)>=192)) &&
         flag_or_default("FLAGFFT_NPU_DIF_MATRIX_CHAIN",true);
-    constexpr int64_t matrix_columns=256;
+    const int64_t matrix_columns=single_chain ? 128 : 256;
     if (matrix_chain) factors={17,15,13,2,matrix_tail};
     // A 13 x 7 suffix fits one 128-lane matrix basis. Fuse it directly
     // after the dense producer, before the physical prefix has expanded.
@@ -680,9 +694,9 @@ namespace {
     const int64_t late_pair_batch=late_pair && batch>=32 &&
         (n/(initial_prefix*91))*(padded_prefix/64)*(batch/8)>=192 &&
         flag_or_default("FLAGFFT_NPU_DIF_LATE_PAIR_BATCH",true) ? 8 : 1;
-    constexpr int64_t batch_dense_columns=64, batch_dense_frequencies=64;
-    const int64_t dense_columns=dense_batch?batch_dense_columns:32;
-    const int64_t dense_frequencies=dense_batch?batch_dense_frequencies:32;
+    const bool wide_dense_tile = dense_batch || matrix_chain;
+    const int64_t dense_columns = wide_dense_tile ? 64 : 32;
+    const int64_t dense_frequencies = wide_dense_tile ? 64 : 32;
     std::vector<CompiledRawVectorDIFNode::Pass> passes;
     int64_t prefix=1, previous_prefix=1;
     bool switched=false;
@@ -698,7 +712,7 @@ namespace {
       if (global_inverse) key.perm_form+="_globalconj";
       if (matrix_first17) key.perm_form+="_half17";
       if (prefix_pitch && !matrix_chain && (passes.size()==1 || passes.size()==2)) key.perm_form+="_pitch32";
-      if (dense_batch) key.perm_form+="_dense_batch_f"+std::to_string(dense_frequencies)+
+      if (wide_dense_tile) key.perm_form+="_dense_batch_f"+std::to_string(dense_frequencies)+
           "_c"+std::to_string(dense_columns);
       else if (dense_single) key.perm_form+="_dense_short";
       if (codelet_reuse) key.perm_form+="_codeletreuse";
@@ -707,7 +721,7 @@ namespace {
       if (late_pair) key.perm_form+="_latepair91";
       if (late_pair_batch>1) key.perm_form+="_latepairbatch8";
       if (matrix_chain) key.perm_form+="_matrixchain"+std::to_string(matrix_columns);
-      if ((dense_prefix && passes.empty()) || (matrix_first && passes.size()<3) ||
+      if (((dense_prefix || matrix_chain) && passes.empty()) || (matrix_first && passes.size()<3) ||
           (first_auto && passes.empty()) ||
           (cube_prefix && !matrix_first && passes.size()==1) ||
           (late_auto && switched && !transpose))
@@ -4010,10 +4024,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool complex_api=!request.real_transform && request.real_transform_kind.empty() &&
           request.origin_real_transform_kind.empty() && !request.packed_real_child &&
           !request.convolution_child && request.origin_rank<=1 && request.raw_dim==1;
-      const bool complex_half=fused_pack_kernel && complex_finish_kernel && complex_api &&
+      const bool direct_input_enabled=flag_or_default("FLAGFFT_NPU_MATRIX_DIRECT_INPUT",true);
+      const bool single_half_last_enabled=flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",false);
+      // Axes above 192 keep at least 16 independent final-pass tiles with
+      // the two-pass direct-input and half-spectrum schedule.
+      const bool single_direct=npu_single_public_c2c(request,n1*n2,batch) &&
+          n1>192 && n2>192 && direct_input_enabled && !wide && !single_half_last_enabled &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
+          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_DIRECT",false);
+      const bool complex_half=complex_api && (single_direct || (fused_pack_kernel && complex_finish_kernel)) &&
           flag_or_default("FLAGFFT_NPU_MATRIX_COMPLEX_HALF",true);
-      const bool complex_direct_input=complex_half &&
-          flag_or_default("FLAGFFT_NPU_MATRIX_DIRECT_INPUT",true);
+      const bool complex_direct_input=complex_half && direct_input_enabled;
       const bool complex_direct_combined=complex_direct_input &&
           flag_or_default("FLAGFFT_NPU_MATRIX_DIRECT_COMBINED",true);
       // A single transform retains the narrow first axis, which has enough
@@ -4021,7 +4042,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       // end-to-end measurements vary across otherwise identical plans.
       const bool single_half_last=complex_api && batch==1 && !wide &&
           n1>=128 && n2>=128 && flag_or_default("FLAGFFT_NPU_MATRIX_AUTO_BLOCK",false) &&
-          flag_or_default("FLAGFFT_NPU_MATRIX_SINGLE_HALF_LAST",false);
+          single_half_last_enabled;
       if (complex_half || single_half_last) {
         if (complex_half) {
           for (const char *phase:{"cube0_complex_half_pack","cube1_complex_half_finish"}) {
@@ -5263,10 +5284,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_direct_dft(const Di
   DeviceAllocation input_copy =
       adaptor::Memory(static_cast<std::size_t>(batch * node.length * element_bytes));
   const bool cube_dft = use_npu_2d_cube_dft(request, node.length);
+  auto key = KernelKey::direct_dft(triton_target_for_request(request), request.direction,
+                                   request.input_dtype, node.length);
+  if (cube_dft) key.kind = KernelKind::DirectDftCube;
+  const bool single_reduce = node.length > 16 && node.length < 32 && node.length % 2 == 1 &&
+      npu_single_public_c2c(request, node.length, batch) &&
+      !performance_env("FLAGFFT_NPU_DIRECT_DFT_BT") &&
+      flag_or_default("FLAGFFT_NPU_DIRECT_DFT_SINGLE_REDUCE", false);
+  if (single_reduce) key.perm_form = "npu_single_reduce";
+  auto tables = cube_dft ? build_raw_cube_dft_tables(node.length, request)
+                         : build_raw_direct_dft_tables(node.length, request,
+                               single_reduce ? ceil_power_of_two(node.length) : 0);
   return std::make_shared<CompiledRawDirectDftNode>(node.length,
-                                                    compile_direct_dft_kernel(request, node.length),
-                                                    cube_dft ? build_raw_cube_dft_tables(node.length, request)
-                                                             : build_raw_direct_dft_tables(node.length, request),
+                                                    compile_kernel(key),
+                                                    std::move(tables),
                                                     std::move(input_copy));
 }
 
@@ -5368,14 +5399,6 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
                                       leaf.smem_size);
   mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
-  return compile_kernel(key);
-}
-
-std::shared_ptr<JitKernel> TritonCompiler::compile_direct_dft_kernel(const FFTRequest &request, int64_t n) {
-  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
-  std::string target = triton_target_for_request(request);
-  KernelKey key = KernelKey::direct_dft(target, request.direction, request.input_dtype, n);
-  if (use_npu_2d_cube_dft(request, n)) key.kind = KernelKind::DirectDftCube;
   return compile_kernel(key);
 }
 

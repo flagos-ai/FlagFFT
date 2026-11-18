@@ -759,7 +759,12 @@ def emit_jit_kernel(
         )
         n1 = n2 = 0
     elif spec.family == DIRECT_DFT:
-        if kernel in {"direct_dft_r2c", "direct_dft_c2r"}:
+        if kernel == "direct_dft" and perm_form == "npu_single_reduce":
+            if dtype != "complex64" or current_profile().backend != "npu":
+                raise ValueError("Single direct DFT requires NPU complex64")
+            from .kernels_npu_direct_prefetch import build_single_direct_dft
+            kernel_name, kernel_source, _ = build_single_direct_dft(length, direction)
+        elif kernel in {"direct_dft_r2c", "direct_dft_c2r"}:
             expected_direction = "inverse" if kernel == "direct_dft_c2r" else "forward"
             if direction != expected_direction:
                 raise ValueError(f"{kernel} requires direction={expected_direction}")
@@ -858,7 +863,10 @@ def emit_jit_kernel(
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
         metadata["batch_per_block"] = 16
     if kernel in {"direct_dft", "direct_dft_r2c", "direct_dft_c2r"}:
-        metadata["batch_per_block"] = direct_dft_batch_tile(length, dtype=dtype)
+        metadata["batch_per_block"] = (
+            1 if kernel == "direct_dft" and perm_form == "npu_single_reduce"
+            else direct_dft_batch_tile(length, dtype=dtype)
+        )
     if kernel == "direct_dft_cube_transposed":
         metadata["grid_y_override"] = 1
     if kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:

@@ -3,6 +3,29 @@
 """Tiny direct DFTs with contiguous input and coefficient windows."""
 
 
+def build_single_direct_dft(n, direction):
+    """Reduce contiguous, padded coefficient rows for one complex transform."""
+    if not 2 <= n <= 32 or direction not in ('forward', 'inverse'):
+        raise ValueError('Single direct DFT requires length 2..32 and a valid direction')
+    size = 1 << (n - 1).bit_length()
+    name = f'single_direct_dft_n{n}_{direction}'
+    source = f'''@triton.jit
+def {name}(in_ptr, out_ptr, dft_r_ptr, dft_i_ptr, nbatch):
+    word = tl.arange(0, {2 * size})
+    value = tl.load(in_ptr + word, word < {2 * n}, 0.)
+    xr, xi = tl.split(tl.reshape(value, ({size}, 2)))
+    lane = tl.arange(0, {size})
+    offset = lane[:, None] * {size} + lane[None, :]
+    wr = tl.load(dft_r_ptr + offset)
+    wi = tl.load(dft_i_ptr + offset)
+    real = tl.sum(xr[None, :] * wr - xi[None, :] * wi, axis=1)
+    imag = tl.sum(xr[None, :] * wi + xi[None, :] * wr, axis=1)
+    result = tl.reshape(tl.join(real, imag), ({2 * size},))
+    tl.store(out_ptr + word, result, word < {2 * n})
+'''
+    return name, source, ['in_ptr', 'out_ptr', 'dft_r_ptr', 'dft_i_ptr', 'nbatch']
+
+
 def build_prefetched_direct_dft(n, mode, direction, batch_tile, pair=False):
     if not 2 <= n <= 32 or mode not in ('c2c', 'r2c', 'c2r'):
         raise ValueError('Prefetched direct DFT requires length 2..32')

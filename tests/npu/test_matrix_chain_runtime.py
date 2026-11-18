@@ -12,6 +12,7 @@ def matrix_options(monkeypatch,selected_options):
 
 @pytest.mark.parametrize('n,batch,admitted',[
     (663000,64,True),(331500,33,True),(530400,32,True),(663000,32,True),
+    (663000,1,True),(331500,1,False),
     (265200,64,False),(185640,64,False),(331500,17,False),(255*26*160,64,False),
     (371280,64,False)])
 def test_selection_and_cache(library,monkeypatch,n,batch,admitted):
@@ -31,6 +32,7 @@ def test_selection_and_cache(library,monkeypatch,n,batch,admitted):
 
 @pytest.mark.parametrize('n,batch,pattern,alias,global_inverse',[
     (663000,64,'random',False,True),(663000,33,'tone',True,True),
+    (663000,1,'random',False,True),(663000,1,'cancellation',True,True),
     (331500,33,'cancellation',False,True),(530400,32,'random',True,True),
     (331500,64,'basis',False,True),(663000,32,'random',False,False)])
 @pytest.mark.parametrize('direction',[-1,1])

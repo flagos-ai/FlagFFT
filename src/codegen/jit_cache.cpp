@@ -861,6 +861,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::DirectDftCube2DCol ||
       key.kind == KernelKind::DirectDftR2C || key.kind == KernelKind::DirectDftC2R) {
     jit_command << " --length " << key.length << " --direction " << shell_quote(key.direction);
+    if (key.kind == KernelKind::DirectDft && key.perm_form == "npu_single_reduce")
+      jit_command << " --perm-form " << shell_quote(key.perm_form);
   }
   if (key.kind == KernelKind::StockhamStage) {
     jit_command << " --length " << key.length << " --factors " << shell_quote(join_ints(key.factors))

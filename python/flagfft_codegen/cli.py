@@ -207,6 +207,7 @@ def main() -> None:
             "inner_middle",
             "inner_middle_c2r_cube",
             "outer_last",
+            "npu_single_reduce",
         ),
         default="outer",
         help="axis placement for the permuted store's fused permutation",
@@ -287,6 +288,8 @@ def main() -> None:
         parser.error("--npu-fft-radix4-pair requires --kernel npu_grouped_fft64")
     if args.npu_stockham_aiv and args.kernel != "stockham_stage":
         parser.error("--npu-stockham-aiv requires --kernel stockham_stage")
+    if args.perm_form == "npu_single_reduce" and args.kernel != "direct_dft":
+        parser.error("npu_single_reduce requires --kernel direct_dft")
     if args.npu_vector_transpose and args.kernel != "tiled_transpose":
         parser.error("--npu-vector-transpose requires --kernel tiled_transpose")
     if args.npu_table_transpose3d and (
@@ -755,6 +758,7 @@ def main() -> None:
                 prime_n=0,
                 four_step_n1=0,
                 four_step_n2=0,
+                perm_form=args.perm_form,
                 out_dir=args.out_dir,
             )
     elif spec.is_leaf_like:

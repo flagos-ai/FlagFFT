@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flagfft/core.hpp"
+#include <algorithm>
 #include <cstdlib>
 
 namespace flagfft {
@@ -453,7 +454,8 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   return tables;
 }
 
-std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request) {
+std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request,
+                                                          int64_t padded_length) {
   const bool is_double = dtype_is_double(request.input_dtype);
   std::vector<DeviceAllocation> tables;
   tables.reserve(2);
@@ -463,8 +465,16 @@ std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRe
     tables.push_back(adaptor::Memory::from_doubles(dft.second));
   } else {
     auto dft = build_dft_matrix(n, request.direction);
-    tables.push_back(adaptor::Memory::from_floats(dft.first));
-    tables.push_back(adaptor::Memory::from_floats(dft.second));
+    for (const auto *matrix : {&dft.first, &dft.second}) {
+      if (padded_length > n) {
+        std::vector<float> padded(padded_length * padded_length, 0.0f);
+        for (int64_t row = 0; row < n; ++row)
+          std::copy_n(matrix->begin() + row * n, n, padded.begin() + row * padded_length);
+        tables.push_back(adaptor::Memory::from_floats(padded));
+      } else {
+        tables.push_back(adaptor::Memory::from_floats(*matrix));
+      }
+    }
   }
   return tables;
 }

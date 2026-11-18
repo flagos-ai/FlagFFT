@@ -128,8 +128,8 @@ def emit_vector_dif(factors,direction,phase,out_dir,aligned=False,cube_prefix=Fa
                          for r in factors))
     if matrix_chain_columns:
         valid_factors=(len(factors)==5 and tuple(factors[:4])==(17,15,13,2) and 40<=factors[-1]<=128)
-        if matrix_chain_columns not in (128,256) or not (cube_prefix and aligned and batch_pack and dense_prefix):
-            raise ValueError('Matrix chain requires the batched dense Cube schedule')
+        if matrix_chain_columns not in (128,256) or not (cube_prefix and aligned and dense_prefix):
+            raise ValueError('Matrix chain requires an aligned dense Cube schedule')
     if not factors or not valid_factors:
         raise ValueError('Unsupported DIF factors')
     if direction not in ('forward','inverse'):

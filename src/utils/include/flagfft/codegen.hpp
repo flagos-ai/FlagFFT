@@ -1922,7 +1922,6 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_raw_cube_transposed_direct_dft(const DirectDFTPlanNode &node,
                                                                           const FFTRequest &request,
                                                                           int64_t batch);
-  std::shared_ptr<JitKernel> compile_direct_dft_kernel(const FFTRequest &request, int64_t n);
   std::shared_ptr<CompiledRawNode> compile_raw_real_direct_dft(const FFTRequest &request,
                                                             bool inverse);
   std::shared_ptr<CompiledRawNode> compile_raw_four_step_generic(const FourStepPlanNode &node,
@@ -2056,7 +2055,8 @@ bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
                                  int64_t n0, int64_t n1, int64_t n2);
 bool ix_small_real_warp_default_enabled(const FFTRequest &request);
 bool ix_short_real_warp_default_enabled(const FFTRequest &request);
-std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request);
+std::vector<DeviceAllocation> build_raw_direct_dft_tables(int64_t n, const FFTRequest &request,
+                                                          int64_t padded_length = 0);
 std::vector<DeviceAllocation> build_raw_cube_dft_tables(int64_t n, const FFTRequest &request);
 
 }  // namespace flagfft

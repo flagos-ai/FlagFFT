@@ -3,8 +3,38 @@ import math
 import pytest
 
 torch = pytest.importorskip('torch')
-from flagfft_codegen.kernels_npu_direct_prefetch import build_prefetched_direct_dft
+from flagfft_codegen.kernels_npu_direct_prefetch import (
+    build_prefetched_direct_dft,
+    build_single_direct_dft,
+)
 from test_npu_structured_fft import Pointer, execute_module
+
+
+@pytest.mark.parametrize("n", [17, 23, 31])
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_single_direct_dft(tmp_path, n, direction):
+    name, source, _ = build_single_direct_dft(n, direction)
+    path = tmp_path / "single_dft.py"
+    path.write_text(source)
+    namespace, _ = execute_module(path)
+    namespace["tl"].sum = lambda value, axis: torch.sum(value, dim=axis)
+    k = torch.arange(n, dtype=torch.float64)
+    sign = -1 if direction == "forward" else 1
+    angle = sign * 2 * math.pi * k[:, None] * k[None, :] / n
+    real = torch.zeros((32, 32))
+    imag = torch.zeros_like(real)
+    real[:n, :n] = torch.cos(angle)
+    imag[:n, :n] = torch.sin(angle)
+    x = torch.randn((n, 2), generator=torch.Generator().manual_seed(23))
+    saved = x.clone()
+    guarded = torch.full((2 * n + 64,), 31415.25)
+    namespace[name](Pointer(x), Pointer(guarded, 32), Pointer(real), Pointer(imag), 1)
+    z = torch.view_as_complex(x).to(torch.complex128)
+    expected = torch.fft.fft(z) if direction == "forward" else torch.fft.ifft(z) * n
+    got = torch.view_as_complex(guarded[32:-32].reshape(n, 2))
+    assert torch.linalg.vector_norm(got - expected) / torch.linalg.vector_norm(expected) < 5e-7
+    assert torch.equal(x, saved)
+    assert (guarded[:32] == 31415.25).all() and (guarded[-32:] == 31415.25).all()
 
 
 @pytest.mark.parametrize('pair', [False, True])

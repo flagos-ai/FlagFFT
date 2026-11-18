@@ -6,7 +6,7 @@ import pytest
 torch=pytest.importorskip('torch')
 pytest.importorskip('torch_npu')
 
-@pytest.mark.parametrize('n,batch',[(16,1),(210,1),(1024,1),(16,3),(210,3),(1024,3),(90,1),(231,3),(252,1),(23,64),(29,17),(210,64)])
+@pytest.mark.parametrize('n,batch',[(16,1),(210,1),(1024,1),(16,3),(210,3),(1024,3),(90,1),(231,3),(252,1),(23,1),(23,64),(29,17),(210,64)])
 @pytest.mark.parametrize('direction',[-1,1])
 @pytest.mark.parametrize('in_place',[False,True])
 def test_small_graph_live(n,batch,direction,in_place):
