@@ -129,17 +129,18 @@ def fft_backend(fft_build_dir):
     # The native runtimes may also read the older aliases set by run_tests.py.
     # Copy the scheduler's assignment without renumbering the device.
     aliases = {
-        "ix": ("IX_VISIBLE_DEVICES", ("ILUVATAR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")),
-        "ppu": ("PPU_VISIBLE_DEVICES", ("CUDA_VISIBLE_DEVICES",)),
-        "maca": ("MC_VISIBLE_DEVICES", ("MACA_VISIBLE_DEVICES",)),
-        "npu": ("ASCEND_VISIBLE_DEVICES", ("ASCEND_RT_VISIBLE_DEVICES",)),
+        "ix": (("IX_VISIBLE_DEVICES",), ("ILUVATAR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")),
+        "ppu": (("PPU_VISIBLE_DEVICES",), ("CUDA_VISIBLE_DEVICES",)),
+        "maca": (("MC_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"), ("MACA_VISIBLE_DEVICES",)),
+        "npu": (("ASCEND_VISIBLE_DEVICES",), ("ASCEND_RT_VISIBLE_DEVICES",)),
     }
     with pytest.MonkeyPatch.context() as env:
         if backend in aliases:
-            target, sources = aliases[backend]
+            targets, sources = aliases[backend]
             for source in sources:
                 if source in os.environ:
-                    env.setenv(target, os.environ[source])
+                    for target in targets:
+                        env.setenv(target, os.environ[source])
                     break
         if backend in {"ix", "hcu"} and "FLAGFFT_NUMPY_CAPTURE_FULL_BATCH" not in os.environ:
             env.setenv("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH", "1")
