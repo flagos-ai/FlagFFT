@@ -70,6 +70,14 @@ def _is_benchmark(path):
     return path.is_relative_to(ROOT / "benchmark")
 
 
+def pytest_ignore_collect(collection_path, config):
+    if config.getoption("--record") == "json" or config.getoption("--collect-marks") is not None:
+        # These suites have their own entry points. During an OpTest run only
+        # collect operator cases under tests/, regardless of the vendor SDK.
+        return collection_path in {ROOT / "tests" / "python", ROOT / "tests" / "npu"}
+    return None
+
+
 def _representative_cases(cases):
     first_shape = {}
     for case in cases:

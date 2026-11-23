@@ -160,8 +160,8 @@ def test_optest_records_cases_on_the_scheduled_device(tmp_path):
     }
     op = "1d_ct_single_c2c"
     for path, option, argument, phase in (
-        ("tests/test_optest_accuracy.py", "--ref", "cpu", "accuracy"),
-        ("benchmark/test_optest_performance.py", "--level", "core", "performance"),
+        ("tests/", "--ref", "cpu", "accuracy"),
+        ("benchmark/", "--level", "core", "performance"),
     ):
         output = tmp_path / f"{phase}.json"
         result = subprocess.run(
