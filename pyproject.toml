@@ -39,5 +39,6 @@ flagfft_codegen = ["codelet/*.py"]
 
 [tool.pytest.ini_options]
 addopts = ""
+testpaths = ["tests/python", "tests/npu"]
 pythonpath = ["."]
 markers = ["codegen: Python codegen unit tests"]
