@@ -73,23 +73,23 @@ std::string JitKernel::execution_description() const {
 }
 
 namespace {
-// Pre-compile at plan creation when libtriton_jit offers the hook; releases
-// without it compile the kernel on the first launch instead.
-template <typename Function>
-concept HasPrecompile = requires(Function &function, const std::string &signature) {
-  function.compile(signature, 0u, 0u, 0);
-};
+  // Pre-compile at plan creation when libtriton_jit offers the hook; releases
+  // without it compile the kernel on the first launch instead.
+  template <typename Function>
+  concept HasPrecompile = requires(Function &function, const std::string &signature) {
+    function.compile(signature, 0u, 0u, 0);
+  };
 
-template <typename Function>
-void precompile(Function &function,
-                const std::string &signature,
-                unsigned int num_warps,
-                unsigned int num_stages,
-                int device_index) {
-  if constexpr (HasPrecompile<Function>) {
-    function.compile(signature, num_warps, num_stages, device_index);
+  template <typename Function>
+  void precompile(Function &function,
+                  const std::string &signature,
+                  unsigned int num_warps,
+                  unsigned int num_stages,
+                  int device_index) {
+    if constexpr (HasPrecompile<Function>) {
+      function.compile(signature, num_warps, num_stages, device_index);
+    }
   }
-}
 }  // namespace
 
 void JitKernel::compile() {
