@@ -36,12 +36,15 @@ from .kernels_common import (
     _ix_backend_active,
     _maca_backend_active,
     _maca_knob,
+    _npu_backend_active,
     _zero_other,
     codelet_radices_for,
+    direct_dft_batch_tile,
     emitted_leaf_factors,
     lane_block_for,
 )
 from .kernels_layout import (
+    _build_complex_pair_transpose_kernel_source,
     _build_packed_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
@@ -52,10 +55,15 @@ from .kernels_layout import (
     _build_tiled_transpose3d_v2_kernel_source,
     _build_tiled_transpose_kernel_source,
     _build_twiddle_reshape_pack_kernel_source,
+    npu_reshape_pack_grid,
+    npu_tiled_reshape_pack,
 )
 from .kernels_leaf import _build_leaf_kernel_source_for_io
 from .kernels_real import (
+    _npu_packed_boundary_groups,
+    _npu_packed_boundary_direct_midpoint,
     _build_c2r_packed_preprocess_kernel_source,
+    _build_real_pair_kernel_source,
     _build_compact_to_hermitian_full_kernel_source,
     _build_complex_to_real_kernel_source,
     _build_r2c_half_pack_kernel_source,
@@ -65,6 +73,7 @@ from .kernels_real import (
 from .kernels_special import _build_cube_dft_2d_kernel_source, _build_direct_dft_kernel_source
 from .kernels_real import _build_real_direct_dft_kernel_source
 from .kernels_stockham import build_stockham_stage
+from .backend_profile import current_profile
 from .metadata import _metadata, _module_source, _signature
 from .registry import (
     DIRECT_DFT,
@@ -87,8 +96,40 @@ _RESHAPE_NUM_STAGES = 1
 
 def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]]:
     zero = _zero_other(dtype)
+    npu = current_profile().backend == "npu" and dtype == "complex64"
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
     if kind == "bluestein_prepare":
+        if npu:
+            return (
+                "_bluestein_prepare_kernel",
+                dedent(
+                    f"""
+                    @triton.jit
+                    def _bluestein_prepare_kernel(in_ptr, chirp_ptr, out_ptr, n, m, nbatch):
+                        pid_block = tl.program_id(0)
+                        pid_batch = tl.program_id(1)
+                        base = pid_block * 512
+                        lane = tl.arange(0, 512)
+                        lane2 = tl.arange(0, 1024)
+                        in_mask = lane2 < 2 * (n - base)
+                        out_mask = lane2 < 2 * (m - base)
+                        src = tl.load(in_ptr + (pid_batch * n + base) * 2 + lane2, mask=in_mask, other={zero})
+                        xr = tl.gather(src, lane * 2, 0)
+                        xi = tl.gather(src, lane * 2 + 1, 0)
+                        chirp = tl.load(chirp_ptr + base * 2 + lane2, mask=in_mask, other={zero})
+                        cr = tl.gather(chirp, lane * 2, 0)
+                        ci = tl.gather(chirp, lane * 2 + 1, 0)
+                        yr, yi = _cmul(xr, xi, cr, ci)
+                        packed = tl.zeros((1024,), tl.float32)
+                        packed = tle.dsa.insert_slice(packed, yr, [0], [512], [1])
+                        packed = tle.dsa.insert_slice(packed, yi, [512], [512], [1])
+                        index = lane2 // 2 + (lane2 % 2) * 512
+                        result = tl.gather(packed, index, 0)
+                        tl.store(out_ptr + (pid_batch * m + base) * 2 + lane2, result, mask=out_mask)
+                    """
+                ),
+                ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+            )
         return (
             "_bluestein_prepare_kernel",
             dedent(
@@ -123,6 +164,36 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
             ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "bluestein_pointwise":
+        if npu:
+            return (
+                "_bluestein_pointwise_kernel",
+                dedent(
+                    f"""
+                    @triton.jit
+                    def _bluestein_pointwise_kernel(a_ptr, b_ptr, out_ptr, m, nbatch):
+                        pid_block = tl.program_id(0)
+                        pid_batch = tl.program_id(1)
+                        base = pid_block * 512
+                        lane = tl.arange(0, 512)
+                        lane2 = tl.arange(0, 1024)
+                        mask = lane2 < 2 * (m - base)
+                        a = tl.load(a_ptr + (pid_batch * m + base) * 2 + lane2, mask=mask, other={zero})
+                        b = tl.load(b_ptr + base * 2 + lane2, mask=mask, other={zero})
+                        ar = tl.gather(a, lane * 2, 0)
+                        ai = tl.gather(a, lane * 2 + 1, 0)
+                        br = tl.gather(b, lane * 2, 0)
+                        bi = tl.gather(b, lane * 2 + 1, 0)
+                        pr, pi = _cmul(ar, ai, br, bi)
+                        packed = tl.zeros((1024,), tl.float32)
+                        packed = tle.dsa.insert_slice(packed, pr, [0], [512], [1])
+                        packed = tle.dsa.insert_slice(packed, -pi, [512], [512], [1])
+                        index = lane2 // 2 + (lane2 % 2) * 512
+                        result = tl.gather(packed, index, 0)
+                        tl.store(out_ptr + (pid_batch * m + base) * 2 + lane2, result, mask=mask)
+                    """
+                ),
+                ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+            )
         return (
             "_bluestein_pointwise_kernel",
             dedent(
@@ -156,6 +227,36 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
             ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
         )
     if kind == "bluestein_finalize":
+        if npu:
+            return (
+                "_bluestein_finalize_kernel",
+                dedent(
+                    f"""
+                    @triton.jit
+                    def _bluestein_finalize_kernel(in_ptr, chirp_ptr, out_ptr, n, m, nbatch):
+                        pid_block = tl.program_id(0)
+                        pid_batch = tl.program_id(1)
+                        base = pid_block * 512
+                        lane = tl.arange(0, 512)
+                        lane2 = tl.arange(0, 1024)
+                        mask = lane2 < 2 * (n - base)
+                        src = tl.load(in_ptr + (pid_batch * m + base) * 2 + lane2, mask=mask, other={zero})
+                        xr = tl.gather(src, lane * 2, 0) / {div_cast}
+                        xi = -tl.gather(src, lane * 2 + 1, 0) / {div_cast}
+                        chirp = tl.load(chirp_ptr + base * 2 + lane2, mask=mask, other={zero})
+                        cr = tl.gather(chirp, lane * 2, 0)
+                        ci = tl.gather(chirp, lane * 2 + 1, 0)
+                        yr, yi = _cmul(xr, xi, cr, ci)
+                        packed = tl.zeros((1024,), tl.float32)
+                        packed = tle.dsa.insert_slice(packed, yr, [0], [512], [1])
+                        packed = tle.dsa.insert_slice(packed, yi, [512], [512], [1])
+                        index = lane2 // 2 + (lane2 % 2) * 512
+                        result = tl.gather(packed, index, 0)
+                        tl.store(out_ptr + (pid_batch * n + base) * 2 + lane2, result, mask=mask)
+                    """
+                ),
+                ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+            )
         return (
             "_bluestein_finalize_kernel",
             dedent(
@@ -217,7 +318,7 @@ def _emit_bluestein_jit_kernel(
         "dtype": dtype,
         "bluestein_n": int(n),
         "bluestein_m": int(m),
-        "block": _BLUESTEIN_BLOCK,
+        "block": 512 if current_profile().backend == "npu" and dtype == "complex64" else _BLUESTEIN_BLOCK,
     }
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
@@ -434,6 +535,8 @@ def _emit_reshape_jit_kernel(
         "reshape_n2": int(n2),
         "block": 256,
     }
+    if npu_tiled_reshape_pack(n1, n2, dtype):
+        metadata["grid_x_override"] = npu_reshape_pack_grid(n1, n2)
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
@@ -447,6 +550,10 @@ def _emit_r2c_pointwise_jit_kernel(
     target: str = "",
 ) -> dict[str, Any]:
     elements_per_program = 256
+    if target.startswith("npu:") and dtype == "complex64" and n >= 512:
+        elements_per_program = int(os.getenv("FLAGFFT_NPU_REAL_BOUNDARY_TILE", "256"))
+        if elements_per_program not in {256, 512, 1024, 2048}:
+            raise ValueError("NPU real boundary tile must be 256, 512, 1024 or 2048")
     num_warps = _RESHAPE_NUM_WARPS
     if target.startswith("npu:") and n == 256:
         # AIV conversion kernels are sensitive to work per block. Keep the
@@ -465,7 +572,9 @@ def _emit_r2c_pointwise_jit_kernel(
         if num_warps not in {4, 8, 16, 32}:
             raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
         elements_per_program *= rows_per_program
-    if kernel == "real_to_complex":
+    if kernel in {"r2c_pair_pack", "r2c_pair_unpack", "c2r_pair_pack", "c2r_pair_unpack"}:
+        kernel_name, kernel_source, arg_names, rows_per_block = _build_real_pair_kernel_source(n, dtype, kernel)
+    elif kernel == "real_to_complex":
         (
             kernel_name,
             kernel_source,
@@ -523,6 +632,18 @@ def _emit_r2c_pointwise_jit_kernel(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     arg_names = list(getattr(module, kernel_name).arg_names)
+    grid_columns = (n // 2 + 1 if kernel in {"r2c_half_pack", "r2c_packed_postprocess"}
+                    else n // 2 if kernel == "c2r_packed_preprocess" else n)
+    if (target.startswith("npu:") and dtype == "complex64" and n >= 512
+            and kernel in {"r2c_packed_postprocess", "c2r_packed_preprocess"}
+            and os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "0") == "1"):
+        grid_columns = n // 4 + 1 - int(_npu_packed_boundary_direct_midpoint(n, True, elements_per_program))
+        elements_per_program *= _npu_packed_boundary_groups(n, True)
+    column_block=256
+    if kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
+        from .kernels_real import packed_real_boundary_block, _packed_layout
+        width=n//2 + (1 if kernel=="r2c_packed_postprocess" else 0)
+        column_block,_=_packed_layout(width,packed_real_boundary_block(n,dtype))
     metadata = {
         "module_path": str(module_path),
         "kernel_name": kernel_name,
@@ -534,9 +655,16 @@ def _emit_r2c_pointwise_jit_kernel(
         "kernel_type": kernel,
         "dtype": dtype,
         "length": int(n),
-        # `block` is the column extent used by raw_nodes.cpp to build grid.x;
-        # `rows_per_block` carries the selected row grouping in grid.y.
-        "block": 256,
+        # Keep the historical block ABI; the explicit column grid also
+        # supports wider NPU tiles. Row grouping belongs to grid.y.
+        "block": column_block,
+        "grid_x_override": (
+            (grid_columns + elements_per_program - 1) // elements_per_program
+            if kernel in {"real_to_complex", "r2c_half_pack",
+                          "compact_to_hermitian_full", "complex_to_real"}
+            or (target.startswith("npu:") and dtype == "complex64" and n >= 512)
+            else 0
+        ),
         "rows_per_block": int(rows_per_block),
     }
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
@@ -570,6 +698,8 @@ def emit_jit_kernel(
     four_step_n1: int,
     four_step_n2: int,
     perm_form: str = "outer",
+    permutation_span: int = 0,
+    permutation_batch: int = 0,
     hcu_full_smem: bool = False,
     out_dir: Path,
 ) -> dict[str, Any]:
@@ -613,6 +743,8 @@ def emit_jit_kernel(
             four_step_n1=four_step_n1,
             four_step_n2=four_step_n2,
             perm_form=perm_form,
+            permutation_span=permutation_span,
+            permutation_batch=permutation_batch,
             hcu_full_smem=hcu_full_smem,
         )
         n1 = four_step_n1 if spec.is_four_step else 0
@@ -672,6 +804,13 @@ def emit_jit_kernel(
     if spec.family == STOCKHAM:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
+    if kernel_name.startswith("ix_warp256_"):
+        from .target import ix_warp_fft_pack
+        module_name += f"_warp{ix_warp_fft_pack()}"
+    if permutation_span:
+        module_name += f"_s{permutation_span}"
+    if permutation_batch:
+        module_name += f"_nb{permutation_batch}"
     module_name += variant_suffix()
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -707,11 +846,19 @@ def emit_jit_kernel(
         n2=n2,
         dtype=dtype,
         hcu_full_smem=hcu_full_smem,
+        permutation_span=permutation_span,
+        permutation_batch=permutation_batch,
     )
+    if permutation_span:
+        metadata["permutation_span"] = permutation_span
+    if permutation_batch:
+        metadata["permutation_batch"] = permutation_batch
     if spec.family == STOCKHAM:
         metadata["butterflies_per_block"] = stockham_block
     if kernel in {"direct_dft_cube", "direct_dft_cube_strided", "direct_dft_cube_transposed"}:
         metadata["batch_per_block"] = 16
+    if kernel in {"direct_dft", "direct_dft_r2c", "direct_dft_c2r"}:
+        metadata["batch_per_block"] = direct_dft_batch_tile(length, dtype=dtype)
     if kernel == "direct_dft_cube_transposed":
         metadata["grid_y_override"] = 1
     if kernel in {"direct_dft_cube_2d_row", "direct_dft_cube_2d_col"}:
@@ -726,20 +873,39 @@ def _emit_tiled_transpose_jit_kernel(
     n0: int,
     n1: int,
     dtype: str = "complex64",
-    tile_size: int = 32,  # must match constexpr tile_size in raw_nodes.cpp CompiledRaw2DNode::execute()
+    tile_size: int = 32,
     out_dir: Path,
+    npu_vector_transpose: bool = False,
 ) -> dict[str, Any]:
-    if (
-        _maca_backend_active()
-        and dtype == "complex64"
-        and _maca_knob("2D_TRANSPOSE") == "packed"
+    cuda_mode = os.environ.get("FLAGFFT_CUDA_2D_TRANSPOSE", "auto") if _declared_backend() == "cuda" else "auto"
+    hcu_mode = os.environ.get("FLAGFFT_HCU_2D_TRANSPOSE", "auto") if _hcu_backend_active() else "auto"
+    if hcu_mode not in {"auto", "register", "scalar", "coalesced"}:
+        raise ValueError("FLAGFFT_HCU_2D_TRANSPOSE must be auto, register, scalar or coalesced")
+    if cuda_mode not in {"auto", "register", "scalar", "packed"}:
+        raise ValueError("FLAGFFT_CUDA_2D_TRANSPOSE must be auto, register, scalar or packed")
+    if cuda_mode == "packed" and dtype != "complex64":
+        raise ValueError("CUDA packed 2D transpose requires complex64")
+    if npu_vector_transpose:
+        if not _npu_backend_active() or dtype != "complex64":
+            raise ValueError("NPU vector transpose requires NPU complex64")
+        from .kernels_npu_transpose2d import build_npu_table_transpose2d_source
+        kernel_name, kernel_source, arg_names, npu_programs = build_npu_table_transpose2d_source(
+            n0, n1, tile_size
+        )
+    elif (
+        cuda_mode == "packed" or (hcu_mode == "coalesced" and dtype == "complex64")
+        or ((_maca_backend_active() or _ix_backend_active())
+            and dtype == "complex64"
+            and _maca_knob("2D_TRANSPOSE") == "packed")
     ):
         kernel_name, kernel_source, arg_names = _build_packed_transpose_kernel_source(
             n0, n1, tile_size
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
-            n0, n1, dtype, tile_size
+            n0, n1, dtype, tile_size,
+            register_transpose={"register": True, "scalar": False, "coalesced": True}.get(
+                hcu_mode if _hcu_backend_active() else cuda_mode),
         )
     suffix = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_tiled_transpose_n{n0}_{n1}_{suffix}"
@@ -761,6 +927,10 @@ def _emit_tiled_transpose_jit_kernel(
         "tile_size": int(tile_size),
         "block": tile_size * tile_size,
     }
+    if npu_vector_transpose:
+        metadata["grid_x_override"] = npu_programs
+        metadata["grid_y_override"] = 1
+        metadata["npu_table_transpose"] = True
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
@@ -804,6 +974,15 @@ def _emit_tiled_transpose3d_jit_kernel(
     out_dir: Path,
 ) -> dict[str, Any]:
     transpose_warps = 4
+    cuda_fp64_mode = (
+        os.environ.get("FLAGFFT_CUDA_3D_FP64_TRANSPOSE", "v1")
+        if _declared_backend() == "cuda" and dtype == "complex128"
+        else "v1"
+    )
+    if cuda_fp64_mode not in {"v1", "tile16", "tile32", "tile64", "tile16vec", "tile32vec"}:
+        raise ValueError(
+            "FLAGFFT_CUDA_3D_FP64_TRANSPOSE must be v1, tile16, tile32, tile64, tile16vec or tile32vec"
+        )
     if _declared_backend() == "npu":
         raw_warps = os.environ.get("FLAGFFT_NPU_3D_TRANSPOSE_WARPS")
         if raw_warps is not None:
@@ -962,6 +1141,41 @@ def _emit_tiled_transpose3d_jit_kernel(
             row_group=2,
             tile_traversal=maca_traversal,
         )
+    elif (_hcu_backend_active()
+          and os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") in {"flat", "resource"}
+          and order in {"201", "120"}):
+        # Rotating an outer axis is a single matrix transpose after merging
+        # the two adjacent axes. Keep tiles contiguous across slice boundaries.
+        rows, cols = ((n0 * n1, n2) if order == "201" else (n0, n1 * n2))
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            1, rows, cols, "021", dtype,
+            tile=32 if dtype == "complex64" else 16,
+        )
+    elif (_hcu_backend_active()
+          and (os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "packed"
+               or (os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_MODE", "auto") == "resource"
+                   and os.getenv("FLAGFFT_HCU_TRANSPOSE_COMPACT", "0") == "1"))):
+        tile_setting = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
+        if tile_setting == "resource":
+            capacity = (current_profile().max_dynamic_shared_memory or 65536) // 2
+            element_bytes = 16 if dtype == "complex128" else 8
+            tile = 16
+            while tile < 64 and (tile * 2) ** 2 * element_bytes <= capacity:
+                tile *= 2
+        else:
+            tile = 32 if tile_setting == "auto" else int(tile_setting)
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=tile,
+            packed_complex=dtype == "complex64",
+            component_pair=dtype == "complex128",
+        )
+    elif cuda_fp64_mode != "v1":
+        # CUDA's FP64 fallback gathers strided source values. Screen the
+        # portable tile that coalesces both sides, independently of FP32 PTX.
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
+            n0, n1, n2, order, dtype, tile=int(cuda_fp64_mode[4:6]),
+            vec_store=cuda_fp64_mode.endswith("vec"),
+        )
     elif dtype == "complex64" and _transpose3d_v2_supported():
         (
             kernel_name,
@@ -1037,7 +1251,7 @@ def _emit_tiled_transpose3d_jit_kernel(
                 )
             if dtype == "complex64":
                 transpose_tile = os.getenv("FLAGFFT_HCU_3D_TRANSPOSE_TILE", "auto")
-                if transpose_tile == "auto":
+                if transpose_tile in {"auto", "resource"}:
                     tile = (
                         16
                         if (n0, n1, n2, order)

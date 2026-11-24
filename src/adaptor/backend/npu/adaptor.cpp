@@ -206,26 +206,46 @@ void Stream::sync() {
   check(aclrtSynchronizeStream(as_stream(stream_)), "aclrtSynchronizeStream");
 }
 
-// Ascend Graph/ACL graph capture is intentionally not used in the first NPU
-// backend.  The execution layer catches this exception and keeps the direct
-// launch path, which also avoids introducing a graph-specific dependency into
-// the plain-Triton MVP.
-CudaGraph::~CudaGraph() = default;
-
-void CudaGraph::begin_capture(StreamHandle) {
-  throw std::runtime_error("Ascend graph capture is not enabled in the plain-Triton MVP");
+CudaGraph::~CudaGraph() {
+  if (graph_ != nullptr) {
+    aclmdlRI discarded = nullptr;
+    if (aclmdlRICaptureEnd(as_stream(graph_), &discarded) == ACL_SUCCESS && discarded != nullptr) {
+      aclmdlRIDestroy(discarded);
+    }
+  }
+  if (exec_ != nullptr) aclmdlRIDestroy(reinterpret_cast<aclmdlRI>(exec_));
 }
 
-void CudaGraph::end_capture(StreamHandle) {
-  throw std::runtime_error("Ascend graph capture is not enabled in the plain-Triton MVP");
+void CudaGraph::begin_capture(StreamHandle stream) {
+  ensure_current_device();
+  aclmdlRICaptureStatus status = ACL_MODEL_RI_CAPTURE_STATUS_NONE;
+  aclmdlRI active = nullptr;
+  check(aclmdlRICaptureGetInfo(as_stream(stream), &status, &active), "aclmdlRICaptureGetInfo");
+  if (status != ACL_MODEL_RI_CAPTURE_STATUS_NONE) {
+    throw std::runtime_error("NPU stream is already being captured");
+  }
+  check(aclmdlRICaptureBegin(as_stream(stream), ACL_MODEL_RI_CAPTURE_MODE_RELAXED),
+        "aclmdlRICaptureBegin");
+  graph_ = stream;
 }
 
-void CudaGraph::launch(StreamHandle) {
-  throw std::runtime_error("Ascend graph replay is not enabled in the plain-Triton MVP");
+void CudaGraph::end_capture(StreamHandle stream) {
+  ensure_current_device();
+  aclmdlRI model = nullptr;
+  check(aclmdlRICaptureEnd(as_stream(stream), &model), "aclmdlRICaptureEnd");
+  graph_ = nullptr;
+  exec_ = reinterpret_cast<void *>(model);
+}
+
+void CudaGraph::launch(StreamHandle stream) {
+  ensure_current_device();
+  if (exec_ == nullptr) throw std::runtime_error("NPU graph replay requires a captured model");
+  check(aclmdlRIExecuteAsync(reinterpret_cast<aclmdlRI>(exec_), as_stream(stream)),
+        "aclmdlRIExecuteAsync");
 }
 
 bool CudaGraph::valid() const noexcept {
-  return false;
+  return exec_ != nullptr;
 }
 
 EventTimer::EventTimer() {

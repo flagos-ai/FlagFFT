@@ -18,6 +18,8 @@
 #include "adaptor/adaptor.h"
 #include "adaptor/test_adaptor.h"
 #include "flagfft.h"
+#include "stdout_channel.hpp"
+#include "batch_capture.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -70,6 +72,7 @@ struct Spec {
   Placement placement = Placement::kOutOfPlace;
   bool input_from_stdin = false;
   bool output_to_stdout = false;
+  bool preserve_batch = false;
 };
 
 struct Layout {
@@ -115,7 +118,7 @@ void usage() {
   std::cout << "Usage: numpy_fft_capture --api API --shape N[,N[,N]] --batch B "
                "--direction forward|inverse --placement in-place|out-of-place "
                "--input INPUT.bin --output-dir DIR "
-               "[--implementation both|flagfft|platform]\n"
+               "[--implementation both|flagfft|platform] [--preserve-batch 0|1]\n"
                "\n"
                "API is one of c2c, z2z, r2c, d2z, c2r, z2d.\n"
                "\n"
@@ -334,6 +337,12 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
   if (implementation != args.end()) {
     spec.implementation = parse_implementation(implementation->second);
   }
+  if (auto preserve = args.find("preserve-batch"); preserve != args.end()) {
+    if (preserve->second != "0" && preserve->second != "1") {
+      throw std::runtime_error("--preserve-batch must be 0 or 1");
+    }
+    spec.preserve_batch = preserve->second == "1";
+  }
 
   if (is_real_forward(spec.type) && spec.direction != FLAGFFT_FORWARD) {
     throw std::runtime_error(spec.api + " only supports forward direction");
@@ -354,7 +363,7 @@ Spec parse_spec(const std::map<std::string, std::string>& args) {
 // platform reference, but a single invocation still used to materialize the
 // entire batch in host memory and in two device buffers.  That exceeded the
 // 8 GiB MUSA test cgroup for the largest double-complex batch cases.
-constexpr std::size_t kMaxChunkBytes = 128ULL * 1024ULL * 1024ULL;
+// --preserve-batch bypasses this policy when validating a batch-sensitive plan.
 
 void validate_file_size(const fs::path& path, std::size_t expected) {
   std::error_code error;
@@ -437,14 +446,15 @@ void release_file_cache(const fs::path& path, std::size_t offset, std::size_t by
 }
 
 int chunk_batch_size(const Spec& spec, const Layout& full_layout) {
-  if (spec.batch <= 1) {
-    return spec.batch;
+  if (const char* setting = std::getenv("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH")) {
+    const std::string value(setting);
+    if (value != "0" && value != "1") {
+      throw std::runtime_error("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH must be 0 or 1");
+    }
+    if (value == "1") return spec.batch;
   }
-  const std::size_t batch = static_cast<std::size_t>(spec.batch);
-  const std::size_t bytes_per_batch = full_layout.input_bytes / batch + full_layout.output_bytes / batch;
-  const std::size_t max_batch =
-      bytes_per_batch == 0 ? batch : std::max<std::size_t>(1, kMaxChunkBytes / bytes_per_batch);
-  return static_cast<int>(std::min(batch, max_batch));
+  return flagfft::validation::capture_batch_chunk(
+      spec.batch, full_layout.input_bytes, full_layout.output_bytes, spec.preserve_batch);
 }
 
 void check_flagfft(flagfftResult result, const std::string& context) {
@@ -487,7 +497,9 @@ FlagPlan make_flag_plan(const Spec& spec, const Layout& layout) {
 
 RefPlanHandle make_reference_plan(const Spec& spec) {
   RefPlanHandle plan;
-  plan.configure_case(spec.direction, spec.batch);
+  const bool cuda_inplace_multid = flagfft::test_adaptor::backend_name() == "cuda" &&
+      spec.shape.size() > 1 && spec.placement == Placement::kInPlace;
+  plan.configure_case(spec.direction, cuda_inplace_multid ? 1 : spec.batch);
   if (spec.shape.size() == 1) {
     flagfft::test_adaptor::ref_plan_1d(plan, spec.shape[0], spec.type, spec.batch);
   } else if (spec.shape.size() == 2) {
@@ -585,10 +597,12 @@ void execute_reference_one(RefPlanHandle& plan, const Spec& spec, void* input, v
 
 void execute_reference(
     RefPlanHandle& plan, const Spec& spec, const Layout& layout, void* input, void* output) {
-  // The platform reference creates one rank-2/rank-3 transform at a time;
-  // execute each batch with compact input and output offsets.
+  // CUDA and SiP can execute a native dense multidimensional batch. Other
+  // platform adaptors retain the per-transform reference fallback.
+  const bool cuda_native_batch = flagfft::test_adaptor::backend_name() == "cuda" &&
+                                 spec.placement == Placement::kOutOfPlace;
   if (spec.shape.size() == 1 || spec.batch == 1 ||
-      flagfft::test_adaptor::backend_name() == "npu-sip") {
+      cuda_native_batch || flagfft::test_adaptor::backend_name() == "npu-sip") {
     execute_reference_one(plan, spec, input, output);
     return;
   }
@@ -628,12 +642,14 @@ void write_plan_description(flagfftHandle plan, const Spec& spec) {
   output << description;
 }
 
-void run_implementation(const Spec& spec, Implementation implementation) {
+void run_implementation(const Spec& spec, Implementation implementation,
+                        std::ostream* binary_stdout) {
   const Layout full_layout = make_layout(spec);
   if (!spec.input_from_stdin) {
     validate_file_size(spec.input, full_layout.input_bytes);
   }
   const int batch_chunk = chunk_batch_size(spec, full_layout);
+  std::cerr << "[capture-batch] requested=" << spec.batch << " execution=" << batch_chunk << '\n';
   const fs::path output_path =
       spec.output_dir / (implementation == Implementation::kFlagFFT ? "flagfft.bin" : "platform.bin");
 
@@ -647,7 +663,7 @@ void run_implementation(const Spec& spec, Implementation implementation) {
     input = &input_file;
   }
   std::ofstream output_file;
-  std::ostream* output = &std::cout;
+  std::ostream* output = binary_stdout;
   if (!spec.output_to_stdout) {
     output_file.open(output_path, std::ios::binary | std::ios::trunc);
     if (!output_file.is_open()) {
@@ -761,14 +777,17 @@ void run_implementation(const Spec& spec, Implementation implementation) {
 }
 
 int run(const Spec& spec) {
+  std::optional<flagfft::validation::BinaryStdoutChannel> binary_stdout;
+  if (spec.output_to_stdout) binary_stdout.emplace();
+  std::ostream* channel = binary_stdout ? &binary_stdout->stream() : nullptr;
   if (!spec.output_to_stdout) {
     fs::create_directories(spec.output_dir);
   }
   if (spec.implementation != Implementation::kPlatform) {
-    run_implementation(spec, Implementation::kFlagFFT);
+    run_implementation(spec, Implementation::kFlagFFT, channel);
   }
   if (spec.implementation != Implementation::kFlagFFT) {
-    run_implementation(spec, Implementation::kPlatform);
+    run_implementation(spec, Implementation::kPlatform, channel);
   }
   return 0;
 }

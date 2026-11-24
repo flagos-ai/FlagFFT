@@ -112,6 +112,9 @@ struct FFTRequest {
   std::string origin_real_transform_kind;
   // True only for the dense half-length complex child of a packed real FFT.
   bool packed_real_child = false;
+  // Bluestein/Rader internal FFTs participate in a convolution pipeline;
+  // keep their boundary-aware two-axis schedule separate from public DIF.
+  bool convolution_child = false;
   // Propagated from the public descriptor to rank-1 axis plans so narrow 3D
   // policies can distinguish a single 32^3 FP64 C2C cube from arbitrary
   // length-32 batched transforms.
@@ -130,6 +133,12 @@ struct FFTRequest {
   // Explicit experimental packing for the HCU 3D middle-axis 2048 leaf.
   // Zero keeps the default policy.
   int64_t hcu_3d_middle_batch_pack = 0;
+  // Parent-qualified IX layouts pass their measured tile to axis compilers.
+  // Zero preserves the ordinary leaf policy.
+  int64_t ix_warp_fft_pack_default = 0;
+  bool ix_prime_3d_default = false;
+  // Public-request preset, retained by convolution and packed-real children.
+  int ix_fourstep_preset = 0;
 };
 
 enum class PlanNodeKind { CtLeaf, FourStep, DirectDft, StockhamAutosort, Bluestein, Rader, TwoDim, ThreeDim };
@@ -175,6 +184,10 @@ enum class KernelKind {
   RaderFinalize,
   ReshapePack,
   TwiddleReshapePack,
+  RealPairR2CPack,
+  RealPairR2CUnpack,
+  RealPairC2RPack,
+  RealPairC2RUnpack,
   RealToComplex,
   R2CHalfPack,
   R2CPackedPostprocess,
@@ -194,7 +207,10 @@ enum class KernelKind {
   Fused2D,
   LeafRaderPrepare,
   LeafRaderFinish,
-  LeafPackedC2R
+  LeafPackedC2R,
+  NpuGroupedFFT64,
+  Hcu3DCTFirst,
+  Hcu3DCTLast
 };
 
 int64_t complex_element_bytes(const std::string &input_dtype);

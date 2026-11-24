@@ -66,7 +66,7 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   // Keep NPU convolution children on the validated small-radix path, including
   // lengths above the GPU-specific power-of-two preference threshold.
   if (context.device_type == "npu") {
-    const char *smooth_setting = std::getenv("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV");
+    const char *smooth_setting = performance_env("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV");
     if (smooth_setting != nullptr && std::string(smooth_setting) != "0" &&
         std::string(smooth_setting) != "1" && std::string(smooth_setting) != "auto") {
       throw std::runtime_error("FLAGFFT_NPU_2D_BLUESTEIN_SMOOTH_CONV must be 0, 1 or auto");
@@ -151,6 +151,52 @@ int64_t PlanBuilder::next_supported_convolution_length(int64_t minimum) {
   return best;
 }
 
+PlanNodePtr PlanBuilder::build_convolution_fft(int64_t length) {
+  const auto &context = request_context();
+  const bool wide = context.input_dtype == "complex128" || context.input_dtype == "float64";
+  const bool bounded = context.hcu_fp64_convolution_radix_cap && wide && length >= 65536 &&
+      factorize_supported_radices(length).remainder == 1;
+  if (bounded || context.hcu_balance_convolution) {
+    // The convolution extent and prime algorithm are already selected.
+    // Bound its FFT's local butterflies in an isolated planning context;
+    // do not change the public prime request or process-wide settings.
+    PlanBuilder convolution_builder;
+    convolution_builder.request_context_ = context;
+    auto &child = *convolution_builder.request_context_;
+    child.hcu_balance_convolution = false;
+    if (bounded) {
+      child.origin_rank = 1;
+      child.requested_n = length;
+      child.hcu_fourstep_radix_cap = context.hcu_fp64_convolution_radix_cap;
+      child.hcu_preserve_fourstep_split = false;
+    }
+    child.hcu_fp64_convolution_radix_cap = 0;
+    auto automatic = convolution_builder.build_auto_node(length, false);
+    if (!context.hcu_balance_convolution ||
+        !std::dynamic_pointer_cast<FourStepPlanNode>(automatic)) return automatic;
+    // Avoid a tiny matrix side feeding a long, poorly cooperating mixed
+    // leaf. Enumerate divisors, retaining only pairs of supported leaves,
+    // and minimize their aspect ratio without changing the convolution size.
+    int64_t best_n1 = 0;
+    PlanNodePtr best_row, best_col;
+    for (int64_t n1 : convolution_builder.enumerate_divisors(length)) {
+      if (n1 <= 1 || n1 > length / n1) continue;
+      auto row = convolution_builder.build_auto_node(n1, false);
+      auto col = convolution_builder.build_auto_node(length / n1, false);
+      if (std::dynamic_pointer_cast<LeafPlanNode>(row) &&
+          std::dynamic_pointer_cast<LeafPlanNode>(col) && n1 > best_n1) {
+        best_n1 = n1;
+        best_row = std::move(row);
+        best_col = std::move(col);
+      }
+    }
+    if (best_n1) return std::make_shared<FourStepPlanNode>(length, best_n1, length / best_n1,
+                                                        std::move(best_row), std::move(best_col));
+    return automatic;
+  }
+  return build_auto_node(length, false);
+}
+
 PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
   int64_t conv_length = next_supported_convolution_length(2 * n - 1);
   const auto &context = request_context();
@@ -178,7 +224,7 @@ PlanNodePtr PlanBuilder::make_bluestein_plan(int64_t n) {
                              ? std::make_shared<FourStepPlanNode>(
                                    conv_length, 1024, 1024,
                                    build_auto_node(1024, false), build_auto_node(1024, false))
-                             : build_auto_node(conv_length, false);
+                             : build_convolution_fft(conv_length);
   return std::make_shared<BluesteinPlanNode>(n, conv_length, std::move(fft_plan));
 }
 
@@ -203,7 +249,7 @@ PlanNodePtr PlanBuilder::make_rader_plan(int64_t n) {
                               ? std::make_shared<FourStepPlanNode>(
                                     n - 1, n1, n2,
                                     build_auto_node(n1, false), build_auto_node(n2, false))
-                              : build_auto_node(n - 1, false);
+                              : build_convolution_fft(n - 1);
   return std::make_shared<RaderPlanNode>(n, root, std::move(idx), std::move(conv_plan));
 }
 
@@ -223,7 +269,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // the compact real-row path for 2D R2C/C2R. Keep 128-point axes on the
     // existing policy until their batched performance is competitive.
     int64_t npu_2d_direct_dft_max = 128;
-    if (const char *raw = std::getenv("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
+    if (const char *raw = performance_env("FLAGFFT_NPU_2D_DIRECT_DFT_MAX"); raw != nullptr) {
       std::size_t parsed = 0;
       try {
         npu_2d_direct_dft_max = std::stoll(raw, &parsed);
@@ -238,14 +284,25 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     const bool npu_2d_real_transform = context.real_transform_kind == "r2c" ||
                                        context.real_transform_kind == "c2r";
     const bool npu_2d_c2c = context.real_transform_kind.empty();
-    const char *npu_3d_leaf_setting = std::getenv("FLAGFFT_NPU_3D_LEAF");
+    // Ascend Stockham stages launch once per radix and the scalar kernel
+    // serialises across active butterflies, so a short 1D transform costs more
+    // in stage launches than a single batch-tiled direct DFT.
+    const char *npu_1d_direct_setting = performance_env("FLAGFFT_NPU_1D_DIRECT_DFT");
+    const bool npu_1d_direct_enabled =
+        npu_1d_direct_setting == nullptr || std::string(npu_1d_direct_setting) != "0";
+    if (npu_1d_direct_enabled && context.origin_rank <= 1 &&
+        context.input_dtype == "complex64" && n > 1 && n <= kDirectDftMaxN) {
+      PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
+      return {{node, estimate_direct_dft_cost(n), priority(node)}};
+    }
+    const char *npu_3d_leaf_setting = performance_env("FLAGFFT_NPU_3D_LEAF");
     if (npu_3d_leaf_setting != nullptr && std::string(npu_3d_leaf_setting) != "0" &&
         std::string(npu_3d_leaf_setting) != "1") {
       throw std::runtime_error("FLAGFFT_NPU_3D_LEAF must be 0 or 1");
     }
     const bool use_npu_3d_leaf = npu_3d_leaf_setting != nullptr &&
                                  std::string(npu_3d_leaf_setting) == "1";
-    const char *npu_3d_aiv_small_setting = std::getenv("FLAGFFT_NPU_3D_AIV_SMALL");
+    const char *npu_3d_aiv_small_setting = performance_env("FLAGFFT_NPU_3D_AIV_SMALL");
     if (npu_3d_aiv_small_setting != nullptr &&
         std::string(npu_3d_aiv_small_setting) != "0" &&
         std::string(npu_3d_aiv_small_setting) != "1") {
@@ -273,7 +330,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
       }
     }
-    const char *cube_dft_setting = std::getenv("FLAGFFT_NPU_2D_CUBE_DFT");
+    const char *cube_dft_setting = performance_env("FLAGFFT_NPU_2D_CUBE_DFT");
     if (cube_dft_setting != nullptr && std::string(cube_dft_setting) != "0" &&
         std::string(cube_dft_setting) != "1") {
       throw std::runtime_error("FLAGFFT_NPU_2D_CUBE_DFT must be 0 or 1");
@@ -290,11 +347,11 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       PlanNodePtr node = std::make_shared<DirectDFTPlanNode>(n);
       return {{node, estimate_direct_dft_cost(n), priority(node)}};
     }
-    const bool npu_2d_leaf_explicit = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
+    const bool npu_2d_leaf_explicit = performance_env("FLAGFFT_NPU_2D_LEAF_LENGTH") != nullptr;
     const bool npu_2d_measured_leaf = context.origin_rank == 2 && n == 64 &&
                                       (npu_2d_real_transform || npu_2d_c2c);
     int64_t npu_2d_leaf_length = npu_2d_measured_leaf ? n : 0;
-    if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
+    if (const char *raw = performance_env("FLAGFFT_NPU_2D_LEAF_LENGTH"); raw != nullptr) {
       std::size_t parsed = 0;
       try {
         npu_2d_leaf_length = std::stoll(raw, &parsed);
@@ -310,7 +367,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
         n == npu_2d_leaf_length) {
       std::vector<int64_t> factors = select_leaf_factors(n);
       if (n == 64) factors = {8, 8};
-      if (const char *raw = std::getenv("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
+      if (const char *raw = performance_env("FLAGFFT_NPU_2D_LEAF_FACTORS"); raw != nullptr) {
         const std::string spec(raw);
         std::size_t start = 0;
         int64_t product = 1;
@@ -354,7 +411,66 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     }
 
     Factorization factorization = factorize_supported_radices(n);
-    const char *factor_split_setting = std::getenv("FLAGFFT_NPU_2D_FACTOR_SPLIT");
+    const char *structured_pair = performance_env("FLAGFFT_NPU_STRUCTURED_FOURSTEP");
+    if (structured_pair != nullptr && std::string(structured_pair) == "1" &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        n > 2048 && n <= 2048 * 2048 && (n & (n-1)) == 0) {
+      int64_t n1 = 1;
+      while (n1 * n1 < n) n1 *= 2;
+      const int64_t n2 = n / n1;
+      PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,n1,n2,
+          build_auto_node(n1,false),build_auto_node(n2,false));
+      return {{node, static_cast<double>(2*n), priority(node)}};
+    }
+    const char *mixed_pair = performance_env("FLAGFFT_NPU_MIXED_FOURSTEP");
+    if (mixed_pair != nullptr && std::string(mixed_pair) == "1" &&
+        context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+        n > 2048 && n <= 2048*2048 && (n & (n-1)) != 0 &&
+        factorization.remainder == 1) {
+      int64_t best_a = 0, best_b = 0;
+      const char *matrix_setting=performance_env("FLAGFFT_NPU_MATRIX_FFT");
+      const bool matrix_enabled=matrix_setting && std::string(matrix_setting)=="1";
+      bool best_matrix=false;
+      std::vector<int64_t> best_row, best_col;
+      double best_cost = std::numeric_limits<double>::infinity();
+      for (int64_t a : enumerate_divisors(n)) {
+        const int64_t b = n/a;
+        if (a < 16 || a > b || b > 2048) continue;
+        auto row = select_leaf_factors(a), col = select_leaf_factors(b);
+        if (!should_use_leaf(a,row) || !should_use_leaf(b,col)) continue;
+        const bool matrix_candidate=matrix_enabled && a<=256 && b<=256;
+        const double cost = matrix_candidate ? static_cast<double>(a+b) :
+            estimate_leaf_warm_cost(a,row)/a + estimate_leaf_warm_cost(b,col)/b;
+        if ((matrix_candidate && !best_matrix) ||
+            (matrix_candidate==best_matrix && cost < best_cost)) {
+          best_matrix=matrix_candidate;
+          best_cost = cost; best_a = a; best_b = b;
+          best_row = std::move(row); best_col = std::move(col);
+        }
+      }
+      if (best_a != 0) {
+        PlanNodePtr node = std::make_shared<FourStepPlanNode>(n,best_a,best_b,
+            make_leaf_plan(best_a,best_row),make_leaf_plan(best_b,best_col));
+        return {{node, static_cast<double>(n)*best_cost, priority(node)}};
+      }
+    }
+    // Resource-bounded experiment: reuse the portable fused leaf codelets
+    // instead of one global-memory Stockham launch per radix.
+    if (const char *raw = performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX")) {
+      std::size_t parsed = 0;
+      const int64_t limit = std::stoll(raw, &parsed);
+      if (parsed != std::string(raw).size() || limit < 0 || limit > 2048)
+        throw std::runtime_error("FLAGFFT_NPU_PORTABLE_LEAF_MAX must be in [0,2048]");
+      if (n > 1 && n <= limit && (n & (n-1)) != 0 && context.input_dtype == "complex64" &&
+          context.output_dtype == "complex64" && factorization.remainder == 1) {
+        const auto factors = select_leaf_factors(n);
+        if (should_use_leaf(n, factors)) {
+          PlanNodePtr node = make_leaf_plan(n, factors);
+          return {{node, estimate_leaf_warm_cost(n, factors), priority(node)}};
+        }
+      }
+    }
+    const char *factor_split_setting = performance_env("FLAGFFT_NPU_2D_FACTOR_SPLIT");
     if (factor_split_setting != nullptr && std::string(factor_split_setting) != "0" &&
         std::string(factor_split_setting) != "1") {
       throw std::runtime_error("FLAGFFT_NPU_2D_FACTOR_SPLIT must be 0 or 1");
@@ -408,7 +524,7 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
     // Large prime codelets produce expensive compiler scheduling on CANN 9
     // (radix 13 exceeded several minutes). Keep 13/17/19 on the existing DFT
     // or Bluestein route until their vector lowering is qualified separately.
-    const char *prime_mode = std::getenv("FLAGFFT_NPU_STOCKHAM_PRIME");
+    const char *prime_mode = performance_env("FLAGFFT_NPU_STOCKHAM_PRIME");
     const bool small_radices = (prime_mode != nullptr && std::string(prime_mode) != "0") ||
                                (n % 13 != 0 && n % 17 != 0 && n % 19 != 0);
     if (n > 1 && factorization.remainder == 1 && small_radices) {
@@ -452,10 +568,14 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   const bool thread_local_complex =
       (context.input_dtype == "complex64" && context.output_dtype == "complex64") ||
       (context.input_dtype == "complex128" && context.output_dtype == "complex128");
+  const bool hcu_bounded_fourstep = context.hcu_fourstep_radix_cap &&
+      context.origin_rank == 1 && context.requested_n >= 65536 &&
+      factorize_supported_radices(context.requested_n).remainder == 1;
   if (context.device_type != "maca" && thread_local_complex && n % kThreadLocalColLength == 0) {
     const int64_t n1 = n / kThreadLocalColLength;
     const int64_t register_radix = n1 / kThreadLocalCrossRadix;
-    if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix)) {
+    if (n1 % kThreadLocalCrossRadix == 0 && contains(kThreadLocalRegisterRadices, register_radix) &&
+        !hcu_bounded_fourstep) {
       auto make_thread_local_leaf = [](int64_t local_register_radix) -> PlanNodePtr {
         const int64_t length = local_register_radix * kThreadLocalCrossRadix;
         const int64_t num_warps = local_register_radix == 32 ? 2 : 1;
@@ -522,7 +642,8 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
       PlanNodePtr rader = make_rader_plan(n);
       double rader_candidate_cost = rader_cost(n);
       const Factorization rader_factorization = factorize_supported_radices(n - 1);
-      if (rader_factorization.remainder == 1 && !rader_factorization.factors.empty()) {
+      if (rader_factorization.remainder == 1 && !rader_factorization.factors.empty() &&
+          !context.hcu_prime_cost_comparison) {
         rader_candidate_cost = std::min(rader_candidate_cost, bluestein_candidate_cost * 0.99);
       }
       candidates.push_back({rader, rader_candidate_cost, priority(rader)});

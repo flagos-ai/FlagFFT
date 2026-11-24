@@ -27,6 +27,7 @@ import multiprocessing
 import os
 import platform
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -542,10 +543,12 @@ def read_exactly(stream, count: int) -> bytes:
     return blocks[0] if len(blocks) == 1 else b"".join(blocks)
 
 
-def kill_process_group(process: subprocess.Popen) -> None:
-    """Kill the whole capture session; the child may have spawned helpers."""
+def kill_test_process(process: subprocess.Popen, own_session: bool) -> None:
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        if own_session:
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
     except (ProcessLookupError, PermissionError):
         pass
 
@@ -828,7 +831,16 @@ def parse_scales(raw: str | None, matrix_scales: list[float]) -> list[float]:
 
 def load_test_matrix(path: Path) -> dict[str, Any]:
     matrix = yaml.safe_load(path.read_text())
-    for mode, values in matrix.get("batches", {}).items():
+    if not isinstance(matrix, dict):
+        raise ValueError("test matrix must be a mapping")
+    profile = matrix.get("profile", "acceptance")
+    if profile not in ("acceptance", "generalization"):
+        raise ValueError("matrix profile must be acceptance or generalization")
+    batches = matrix.get("batches")
+    batch_modes = {"single", "batch", "2d", "2d_batch", "3d", "3d_batch"}
+    if not isinstance(batches, dict) or set(batches) != batch_modes:
+        raise ValueError("batches must define single, batch, 2d, 2d_batch, 3d, 3d_batch")
+    for mode, values in batches.items():
         if not isinstance(values, list) or not values:
             raise ValueError(f"batches.{mode} must be a nonempty list")
         if any(type(value) is not int or value <= 0 for value in values) or len(
@@ -837,11 +849,17 @@ def load_test_matrix(path: Path) -> dict[str, Any]:
             raise ValueError(f"batches.{mode} must contain distinct positive integers")
         if mode in ("single", "2d", "3d") and values != [1]:
             raise ValueError(f"batches.{mode} must be [1]")
-        if mode == "batch" and any(value <= 1 for value in values):
-            raise ValueError("batches.batch values must be greater than 1")
-        if mode in ("2d_batch", "3d_batch") and values != [4]:
+        if mode in ("batch", "2d_batch", "3d_batch") and any(
+            value <= 1 for value in values
+        ):
+            raise ValueError(f"batches.{mode} values must be greater than 1")
+        if (
+            profile == "acceptance"
+            and mode in ("2d_batch", "3d_batch")
+            and values != [4]
+        ):
             raise ValueError(f"batches.{mode} must be [4]")
-    if matrix.get("batches", {}).get("batch") != [64]:
+    if profile == "acceptance" and batches["batch"] != [64]:
         raise ValueError("batches.batch must be [64]")
     parse_scales(None, matrix.get("scales", [1.0]))
     return matrix
@@ -960,6 +978,10 @@ def expand_test_cases(
                                     "scale": scale,
                                     "direction": direction,
                                 }
+                                if matrix.get("profile") == "generalization":
+                                    # The group labels stratify inputs; the planner
+                                    # remains free to select another legal route.
+                                    case["require_fourstep_plan"] = False
                                 case["case_id"] = case_name(case)
                                 if case["case_id"] in seen:
                                     raise ValueError(f"duplicate case: {case['case_id']}")
@@ -984,13 +1006,14 @@ def performance_cases(cases: list[dict]) -> list[dict]:
 
 
 def build_accuracy_cmd(
-    case: dict, capture_bin: Path, case_dir: Path, implementation: str
+    case: dict, capture_bin: Path, case_dir: Path, implementation: str,
+    *, preserve_batch: bool = False,
 ) -> list[str]:
     """File-mode capture command, kept for the standalone profiling tools.
 
     The acceptance runner streams instead; see build_stream_accuracy_cmd.
     """
-    return [
+    command = [
         str(capture_bin),
         f"--api={case['api']}",
         f"--shape={'x'.join(str(value) for value in case['shape'])}",
@@ -1001,17 +1024,20 @@ def build_accuracy_cmd(
         f"--output-dir={case_dir}",
         f"--implementation={implementation}",
     ]
+    if preserve_batch:
+        command.append("--preserve-batch=1")
+    return command
 
 
 def build_stream_accuracy_cmd(
-    case: dict, capture_bin: Path, implementation: str
+    case: dict, capture_bin: Path, implementation: str, *, preserve_batch: bool = False,
 ) -> list[str]:
     """Streaming capture command: input on stdin, output on stdout.
 
     Neither the multi-gigabyte input nor the output ever lands in the result
     directory, which is what the acceptance platform has to upload and parse.
     """
-    return [
+    command = [
         str(capture_bin),
         f"--api={case['api']}",
         f"--shape={'x'.join(str(value) for value in case['shape'])}",
@@ -1022,6 +1048,9 @@ def build_stream_accuracy_cmd(
         "--output-dir=-",
         f"--implementation={implementation}",
     ]
+    if preserve_batch:
+        command.append("--preserve-batch=1")
+    return command
 
 
 def build_perf_cmd(case: dict, build_dir: Path, warmup: int, iters: int) -> list[str]:
@@ -1212,6 +1241,7 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
             "python": platform.python_version(),
             "numpy": np.__version__,
             "git_commit": source_commit,
+            "capture_full_batch": os.environ.get("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH", "0") == "1",
             "backend": detect_backend(build_dir),
         }
     )
@@ -1293,21 +1323,22 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         ENV_INFO["device"] = {"status": "unknown", "reason": str(exc)}
 
 
-def capture_env(gpu_id: int) -> dict[str, str]:
+def capture_env(gpu_id: int | None) -> dict[str, str]:
     env = os.environ.copy()
-    for variable in (
-        "CUDA_VISIBLE_DEVICES",
-        "MUSA_VISIBLE_DEVICES",
-        "PPU_VISIBLE_DEVICES",
-        "IX_VISIBLE_DEVICES",
-        "MACA_VISIBLE_DEVICES",
-        "MC_VISIBLE_DEVICES",
-        "ASCEND_VISIBLE_DEVICES",
-        "ASCEND_RT_VISIBLE_DEVICES",
-        "NPU_VISIBLE_DEVICES",
-        "HIP_VISIBLE_DEVICES",
-    ):
-        env[variable] = str(gpu_id)
+    if gpu_id is not None:
+        for variable in (
+            "CUDA_VISIBLE_DEVICES",
+            "MUSA_VISIBLE_DEVICES",
+            "PPU_VISIBLE_DEVICES",
+            "IX_VISIBLE_DEVICES",
+            "MACA_VISIBLE_DEVICES",
+            "MC_VISIBLE_DEVICES",
+            "ASCEND_VISIBLE_DEVICES",
+            "ASCEND_RT_VISIBLE_DEVICES",
+            "NPU_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+        ):
+            env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")
     return env
 
@@ -1367,8 +1398,22 @@ def read_plan(log_path: Path) -> str | None:
 
 
 def fourstep_path_error(case: dict, plan: str | None) -> str | None:
-    if case.get("algorithm") == "fourstep" and (not plan or "FourStep(n=" not in plan):
+    if (
+        case.get("require_fourstep_plan", True)
+        and case.get("algorithm") == "fourstep"
+        and (not plan or "FourStep(n=" not in plan)
+    ):
         return "four-step operator selected a plan without a FourStep node"
+    return None
+
+
+def capture_batch_error(case: dict, plan: str | None) -> str | None:
+    match = re.search(r"(?m)^rank=\d+ n=\[[^\]]+\] batch=(\d+) type=", plan or "")
+    if match is None:
+        return "capture plan is missing the executed batch size"
+    executed = int(match.group(1))
+    if executed != case["batch"]:
+        return f"capture executed batch={executed}, requested batch={case['batch']}"
     return None
 
 
@@ -1394,20 +1439,20 @@ def run_accuracy_capture(
     capture_bin: Path,
     case_scratch: Path,
     implementation: str,
-    gpu_id: int,
+    gpu_id: int | None,
     timeout: int,
+    *, preserve_batch: bool = False,
 ) -> dict:
     """Run one native capture and judge its streamed output against NumPy.
 
     The input arrives on stdin and the output leaves on stdout, so neither the
-    multi-gigabyte input nor the output is written anywhere.  A watchdog kills
-    the whole process group at the deadline, which also unblocks the reader and
-    the writer thread.
+    multi-gigabyte input nor the output is written anywhere. A watchdog stops
+    the capture at the deadline, unblocking the reader and writer thread.
     """
     limits = accuracy_limit(case["api"], product(case["shape"]))
     case_scratch.mkdir(parents=True, exist_ok=True)
     log_path = case_scratch / f"{implementation}.log"
-    command = build_stream_accuracy_cmd(case, capture_bin, implementation)
+    command = build_stream_accuracy_cmd(case, capture_bin, implementation, preserve_batch=preserve_batch)
     result: dict[str, Any] = {
         "status": "Error",
         "reference": "numpy.fft",
@@ -1420,6 +1465,8 @@ def run_accuracy_capture(
     timed_out = threading.Event()
     stop = threading.Event()
     process = None
+    # OpTest owns the device mask and process group when it calls pytest.
+    own_session = gpu_id is not None
     writer = None
     watchdog = None
     # Unbounded on purpose -- see offer_group.  Gating the writer on the reader
@@ -1435,10 +1482,10 @@ def run_accuracy_capture(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=log_stream,
-                start_new_session=True,
+                start_new_session=own_session,
             )
             watchdog = threading.Timer(
-                timeout, lambda: (timed_out.set(), kill_process_group(process))
+                timeout, lambda: (timed_out.set(), kill_test_process(process, own_session))
             )
             watchdog.daemon = True
             watchdog.start()
@@ -1465,6 +1512,8 @@ def run_accuracy_capture(
                     case["direction"],
                     case["batch"],
                 )
+                if process.stdout.read(1):
+                    raise ValueError("capture emitted bytes beyond the expected binary output")
             finally:
                 stop.set()
                 close_quietly(process.stdout)
@@ -1501,7 +1550,7 @@ def run_accuracy_capture(
         result.update({"status": "Error", "error": str(error)})
     except BaseException:
         if process is not None and process.poll() is None:
-            kill_process_group(process)
+            kill_test_process(process, own_session)
             process.wait()
         raise
     finally:
@@ -1514,14 +1563,34 @@ def run_accuracy_capture(
             close_quietly(process.stdin)
             close_quietly(process.stdout)
             if process.poll() is None:
-                kill_process_group(process)
+                kill_test_process(process, own_session)
                 process.wait()
         result["duration"] = time.monotonic() - started
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if line.startswith("[capture-batch] "):
+            try:
+                fields = dict(item.split("=",1) for item in line.split()[1:])
+                result["capture_batch"] = {key:int(value) for key,value in fields.items()}
+            except (ValueError,TypeError):
+                pass
+    if os.environ.get("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH") == "1" and result["status"] == "Passed":
+        captured = result.get("capture_batch", {})
+        if captured.get("execution") != case["batch"] or captured.get("requested") != case["batch"]:
+            result["status"] = "Failed"
+            result["error"] = "capture did not verify the requested full batch"
     if implementation == "flagfft":
         result["plan"] = read_plan(log_path)
-        if path_error := fourstep_path_error(case, result["plan"]):
-            result["status"] = "Failed"
-            result["error"] = path_error
+        if preserve_batch and result["status"] == "Passed":
+            if batch_error := capture_batch_error(case, result["plan"]):
+                result.update(status="Error", error=batch_error)
+        if result["status"] not in ("Error", "Timeout", "Skipped"):
+            if path_error := fourstep_path_error(case, result["plan"]):
+                result["status"] = "Failed"
+                result["error"] = path_error
     if result["status"] in ("Error", "Timeout"):
         detail = tail_text(log_path)
         if detail:
@@ -1537,7 +1606,7 @@ def run_accuracy_case(
     case: dict,
     capture_bin: Path,
     output_dir: Path,
-    gpu_id: int,
+    gpu_id: int | None,
     timeout: int,
     scratch_dir: Path,
     backend: str = "cuda",
@@ -1595,6 +1664,7 @@ def run_accuracy_case(
                 implementation,
                 gpu_id,
                 timeout,
+                preserve_batch=backend == "npu",
             )
     except Exception as error:
         for field in ("accuracy", "platform_accuracy"):
@@ -1646,12 +1716,13 @@ def parse_perf_result(
 
 
 def run_logged_command(
-    command: list[str], timeout: int, gpu_id: int, cwd: Path, log_path: Path
+    command: list[str], timeout: int, gpu_id: int | None, cwd: Path, log_path: Path
 ) -> dict:
     """Run a command with both streams captured to one scratch log file."""
     started = time.monotonic()
     result: dict[str, Any] = {"command": command, "log_file": str(log_path)}
     process = None
+    own_session = gpu_id is not None
     try:
         with log_path.open("wb") as log_stream:
             process = subprocess.Popen(
@@ -1660,7 +1731,7 @@ def run_logged_command(
                 env=capture_env(gpu_id),
                 stdout=log_stream,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                start_new_session=own_session,
             )
             returncode = process.wait(timeout=timeout)
         result.update(
@@ -1676,14 +1747,14 @@ def run_logged_command(
         if returncode != 0:
             result["error"] = f"process exited with code {returncode}"
     except subprocess.TimeoutExpired:
-        kill_process_group(process)
+        kill_test_process(process, own_session)
         process.wait()
         result.update({"status": "Timeout", "error": f"exceeded {timeout}s timeout"})
     except OSError as error:
         result.update({"status": "Error", "error": str(error)})
     except BaseException:
         if process is not None and process.poll() is None:
-            kill_process_group(process)
+            kill_test_process(process, own_session)
             process.wait()
         raise
     finally:
@@ -1699,7 +1770,7 @@ def run_performance_case(
     case: dict,
     build_dir: Path,
     output_dir: Path,
-    gpu_id: int,
+    gpu_id: int | None,
     timeout: int,
     warmup: int,
     iters: int,
@@ -1808,6 +1879,11 @@ def worker_proc(
 
 def policy_skip_message(case: dict, phase: str) -> dict:
     """Create a report/CSV message for a case excluded by backend policy."""
+    if phase == "performance":
+        # Timing identities have no accuracy scale. Keep the skip on the same
+        # key as the pre-created performance row instead of adding a duplicate.
+        case = {key: value for key, value in case.items() if key != "scale"}
+        case["case_id"] = case_name(case, performance=True)
     reason = case.get("skip_reason", "unsupported by backend policy")
     reference = ENV_INFO.get("reference_library", "unknown")
     result = {
@@ -2356,6 +2432,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="full",
         help="Group filter: full/all, or comma-separated " + ",".join(GROUPS),
     )
+    parser.add_argument(
+        "--matrix-file",
+        type=Path,
+        default=ROOT / "conf" / "test_matrix.yaml",
+        help="YAML shape/batch matrix; default conf/test_matrix.yaml (acceptance)",
+    )
     parser.add_argument("--gpus", default="0", help="Comma-separated GPU IDs or all")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--accuracy-only", action="store_true")
@@ -2369,7 +2451,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        help="Result directory; default workspace results/<timestamp>_acceptance30",
+        help="Result directory; default workspace results/<timestamp>_<suite>",
     )
     parser.add_argument(
         "--incremental-csv", help="CSV path; default <output-dir>/incremental.csv"
@@ -2425,7 +2507,12 @@ def main(argv: list[str] | None = None) -> int:
     backend = detect_backend(build_dir)
     ENV_INFO["backend"] = backend
     ops = load_operators(ROOT / "conf" / "operators.yaml")
-    matrix = load_test_matrix(ROOT / "conf" / "test_matrix.yaml")
+    matrix_path = args.matrix_file.resolve()
+    matrix = load_test_matrix(matrix_path)
+    matrix_source = {
+        "matrix_file": str(matrix_path),
+        "matrix_sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
+    }
     all_ids = {op["id"] for op in ops}
     selected = None
     if args.ops:
@@ -2503,6 +2590,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "backend": backend,
+                    **matrix_source,
+                    "test_matrix": matrix,
                     "operators": [op["id"] for op in ops],
                     "omitted_dtypes": omitted_dtypes,
                     "cases": all_cases,
@@ -2556,7 +2645,14 @@ def main(argv: list[str] | None = None) -> int:
         else (
             ROOT.parent
             / "results"
-            / (datetime.now().astimezone().strftime("%Y%m%d_%H%M%S") + "_acceptance30")
+            / (
+                datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+                + (
+                    "_generalization30"
+                    if matrix.get("profile") == "generalization"
+                    else "_acceptance30"
+                )
+            )
         )
     )
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -2570,6 +2666,7 @@ def main(argv: list[str] | None = None) -> int:
     if csv_path.exists():
         raise ValueError(f"incremental CSV already exists: {csv_path}")
     config = {
+        **matrix_source,
         "ops": [op["id"] for op in ops],
         "omitted_dtypes": omitted_dtypes,
         "combinations": combinations,
@@ -2723,7 +2820,7 @@ def main(argv: list[str] | None = None) -> int:
                     messages.append(message)
                     writer.writerow(incremental_row(message))
                     stream.flush()
-            for case in reference_skipped_cases:
+            for case in performance_cases(reference_skipped_cases):
                 if not args.accuracy_only:
                     message = policy_skip_message(case, "performance")
                     messages.append(message)

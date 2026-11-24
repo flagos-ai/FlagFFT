@@ -17,6 +17,7 @@
 #include <cuda.h>
 
 #include <algorithm>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -63,18 +64,26 @@ namespace {
     return reinterpret_cast<CUgraphExec>(exec);
   }
 
-  CUdevice ensure_current_context() {
-    check(cuInit(0), "cuInit");
+  void ensure_cuda_context() {
+    // Driver initialization is process-wide; a current context is per-thread.
+    // call_once retries if initialization throws, while every call still
+    // honors an explicitly selected context or initializes a fresh thread.
+    static std::once_flag initialized;
+    std::call_once(initialized, [] { check(cuInit(0), "cuInit"); });
     CUcontext context = nullptr;
     check(cuCtxGetCurrent(&context), "cuCtxGetCurrent");
-    CUdevice device = 0;
     if (context == nullptr) {
+      CUdevice device = 0;
       check(cuDeviceGet(&device, 0), "cuDeviceGet");
       check(cuDevicePrimaryCtxRetain(&context, device), "cuDevicePrimaryCtxRetain");
       check(cuCtxSetCurrent(context), "cuCtxSetCurrent");
-    } else {
-      check(cuCtxGetDevice(&device), "cuCtxGetDevice");
     }
+  }
+
+  CUdevice ensure_current_context() {
+    ensure_cuda_context();
+    CUdevice device = 0;
+    check(cuCtxGetDevice(&device), "cuCtxGetDevice");
     return device;
   }
 
@@ -109,7 +118,7 @@ void Memory::allocate(std::size_t bytes) {
   if (bytes == 0) {
     return;
   }
-  ensure_current_context();
+  ensure_cuda_context();
   CUdeviceptr ptr = 0;
   check(cuMemAlloc(&ptr, bytes), "cuMemAlloc");
   ptr_ = static_cast<DevicePtr>(ptr);
@@ -179,13 +188,13 @@ void copy_device_to_device(DevicePtr destination, DevicePtr source, std::size_t 
   if (bytes == 0) {
     return;
   }
-  ensure_current_context();
+  ensure_cuda_context();
   check(cuMemcpyDtoDAsync(as_device_ptr(destination), as_device_ptr(source), bytes, as_stream(stream)),
         "cuMemcpyDtoDAsync");
 }
 
 Stream::Stream() {
-  ensure_current_context();
+  ensure_cuda_context();
   CUstream stream = nullptr;
   check(cuStreamCreate(&stream, CU_STREAM_DEFAULT), "cuStreamCreate");
   stream_ = reinterpret_cast<StreamHandle>(stream);
@@ -215,12 +224,12 @@ CudaGraph::~CudaGraph() {
 }
 
 void CudaGraph::begin_capture(StreamHandle stream) {
-  ensure_current_context();
+  ensure_cuda_context();
   check(cuStreamBeginCapture(as_stream(stream), CU_STREAM_CAPTURE_MODE_RELAXED), "cuStreamBeginCapture");
 }
 
 void CudaGraph::end_capture(StreamHandle stream) {
-  ensure_current_context();
+  ensure_cuda_context();
   CUgraph graph = nullptr;
   check(cuStreamEndCapture(as_stream(stream), &graph), "cuStreamEndCapture");
   CUgraphExec exec = nullptr;
@@ -231,7 +240,7 @@ void CudaGraph::end_capture(StreamHandle stream) {
 }
 
 void CudaGraph::launch(StreamHandle stream) {
-  ensure_current_context();
+  ensure_cuda_context();
   if (exec_ == nullptr) {
     throw std::runtime_error("CudaGraph::launch called before end_capture");
   }
@@ -243,7 +252,7 @@ bool CudaGraph::valid() const noexcept {
 }
 
 EventTimer::EventTimer() {
-  ensure_current_context();
+  ensure_cuda_context();
   CUevent start = nullptr;
   CUevent stop = nullptr;
   check(cuEventCreate(&start, CU_EVENT_DEFAULT), "cuEventCreate(start)");
@@ -367,7 +376,7 @@ std::string device_capabilities_json() {
 }
 
 void synchronize() {
-  ensure_current_context();
+  ensure_cuda_context();
   check(cuCtxSynchronize(), "cuCtxSynchronize");
 }
 

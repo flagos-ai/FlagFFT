@@ -12,14 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <optional>
 #include "flagfft/core.hpp"
 
 #include "triton_jit/triton_jit_function.h"
 
 namespace flagfft {
+#if defined(BACKEND_NPU)
+namespace {
+triton_jit::CompileOptions npu_compile_options(const JitKernel &kernel) {
+  triton_jit::CompileOptions options;
+  options.num_warps = static_cast<int>(kernel.num_warps);
+  options.num_stages = static_cast<int>(kernel.num_stages);
+  options.extra["structured_join_lowering"] = kernel.npu_join_lowering;
+  options.extra["enable_auto_blockify"] = kernel.npu_auto_blockify ? "true" : "false";
+  if (kernel.npu_single_buffer)
+    options.extra["multibuffer"] = "false";
+  return options;
+}
+}
+#endif
 
 JitKernelArg JitKernelArg::device(adaptor::DevicePtr value) {
   JitKernelArg arg;
@@ -77,10 +93,9 @@ void precompile(Function &function,
 }  // namespace
 
 void JitKernel::compile() {
+  if (compiled.load(std::memory_order_acquire)) return;
   std::lock_guard<std::mutex> lock(mutex);
-  if (jit_function != nullptr) {
-    return;
-  }
+  if (compiled.load(std::memory_order_relaxed)) return;
   if (warp_size != triton_jit::DefaultBackend::WARP_SIZE)
     throw std::runtime_error("codegen warp size disagrees with launch backend");
 #if defined(BACKEND_MACA)
@@ -96,12 +111,24 @@ void JitKernel::compile() {
 #else
   jit_function = &triton_jit::TritonJITFunction::get_instance(module_path, kernel_name);
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+#if defined(BACKEND_NPU)
+  function->compile(signature,npu_compile_options(*this),
+                    triton_jit::DefaultBackend::get_device_index());
+#else
   precompile(*function,
              signature,
              static_cast<unsigned int>(num_warps),
              static_cast<unsigned int>(num_stages),
              triton_jit::DefaultBackend::get_device_index());
+#if defined(BACKEND_HCU)
+  triton_jit::CompileOptions options;
+  options.num_warps = static_cast<int>(num_warps);
+  options.num_stages = static_cast<int>(num_stages);
+  direct_launch = function->prepare_direct_launch(signature, options);
 #endif
+#endif
+#endif
+  compiled.store(true, std::memory_order_release);
 }
 
 void JitKernel::launch(adaptor::StreamHandle stream,
@@ -114,31 +141,46 @@ void JitKernel::launch(adaptor::StreamHandle stream,
   adaptor::DevicePtr global_scratch = 0;
   adaptor::DevicePtr profile_scratch = 0;
 #endif
-  std::vector<void *> args;
+  // Most FFT launch signatures fit on the stack. Retain an unbounded
+  // fallback for larger generated codelet tables.
+  constexpr size_t inline_capacity = 32;
 #if defined(BACKEND_NPU)
-  args.reserve(kernel_args.size());
+  const size_t num_args = kernel_args.size();
 #else
-  args.reserve(kernel_args.size() + 2);
+  const size_t num_args = kernel_args.size() + 2;
 #endif
+  std::array<void *, inline_capacity> inline_args;
+  std::vector<void *> overflow_args;
+  if (num_args > inline_capacity) overflow_args.resize(num_args);
+  void **args = num_args > inline_capacity ? overflow_args.data() : inline_args.data();
+  size_t index = 0;
   for (const JitKernelArg &arg : kernel_args) {
     switch (arg.kind) {
       case JitArgKind::DevicePtr:
-        args.push_back(const_cast<adaptor::DevicePtr *>(&arg.device_ptr));
+        args[index++] = const_cast<adaptor::DevicePtr *>(&arg.device_ptr);
         break;
       case JitArgKind::Int32:
-        args.push_back(const_cast<int32_t *>(&arg.int32_value));
+        args[index++] = const_cast<int32_t *>(&arg.int32_value);
         break;
       case JitArgKind::Int64:
-        args.push_back(const_cast<int64_t *>(&arg.int64_value));
+        args[index++] = const_cast<int64_t *>(&arg.int64_value);
         break;
     }
   }
 #if !defined(BACKEND_NPU)
-  args.push_back(&global_scratch);
-  args.push_back(&profile_scratch);
+  args[index++] = &global_scratch;
+  args[index++] = &profile_scratch;
 #endif
 #if !defined(BACKEND_MACA)
   auto *function = static_cast<triton_jit::TritonJITFunction *>(jit_function);
+#endif
+#if defined(BACKEND_NPU)
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (direct_launch == nullptr) {
+      direct_launch = function->prepare_direct_launch(signature,npu_compile_options(*this));
+    }
+  }
 #endif
   // Diagnostic timings synchronise each launch and must not be used as
   // end-to-end benchmark results. Disabled unless explicitly requested.
@@ -148,16 +190,41 @@ void JitKernel::launch(adaptor::StreamHandle stream,
     timer.emplace();
     timer->start(stream);
   }
-#if defined(BACKEND_MACA)
+#if defined(BACKEND_NPU)
+  auto *direct = static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
+  direct->launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+                 static_cast<unsigned int>(grid_x),
+                 static_cast<unsigned int>(grid_y),
+                 static_cast<unsigned int>(grid_z),
+                 args);
+#elif defined(BACKEND_MACA)
   auto *kernel = static_cast<triton_jit::TritonKernelImpl<triton_jit::DefaultBackend> *>(jit_function);
   kernel->launch_with_signature(static_cast<unsigned int>(grid_x),
                                 static_cast<unsigned int>(grid_y),
                                 static_cast<unsigned int>(grid_z),
                                 num_warps,
                                 reinterpret_cast<triton_jit::DefaultStreamType>(stream),
-                                args.data(),
+                                args,
                                 signature,
-                                args.size());
+                                num_args);
+#elif defined(BACKEND_HCU)
+  const char *prepared_setting = std::getenv("FLAGFFT_HCU_PREPARED_LAUNCH");
+  const bool prepared_enabled = prepared_setting == nullptr || std::strcmp(prepared_setting, "1") == 0;
+  // Explicit streams and the compiled module identify the launch device.
+  // Preserve the generic launcher when hooks are installed or the caller
+  // uses a default stream, whose device can change independently.
+  if (prepared_enabled && direct_launch != nullptr && stream != nullptr &&
+      !triton_jit::detail::get_launch_hooks_snapshot()) {
+    const auto &prepared = *static_cast<triton_jit::DefaultBackend::DirectLaunch *>(direct_launch.get());
+    prepared.launch(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+        static_cast<unsigned int>(grid_x), static_cast<unsigned int>(grid_y),
+        static_cast<unsigned int>(grid_z), static_cast<unsigned int>(num_warps), args);
+  } else {
+    function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
+        static_cast<unsigned int>(grid_x), static_cast<unsigned int>(grid_y),
+        static_cast<unsigned int>(grid_z), static_cast<unsigned int>(num_warps),
+        static_cast<unsigned int>(num_stages), signature, args, num_args);
+  }
 #else
   function->launch_with_raw_args(reinterpret_cast<triton_jit::DefaultStreamType>(stream),
                                  static_cast<unsigned int>(grid_x),
@@ -166,8 +233,8 @@ void JitKernel::launch(adaptor::StreamHandle stream,
                                  static_cast<unsigned int>(num_warps),
                                  static_cast<unsigned int>(num_stages),
                                  signature,
-                                 args.data(),
-                                 args.size());
+                                 args,
+                                 num_args);
 #endif
   if (timer) {
     timer->stop(stream);

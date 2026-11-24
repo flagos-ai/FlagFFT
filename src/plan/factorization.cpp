@@ -15,6 +15,7 @@
 #include "flagfft/core.hpp"
 
 #include <cstdlib>
+#include <charconv>
 #include <sstream>
 
 namespace flagfft {
@@ -93,7 +94,11 @@ int64_t PlanBuilder::choose_lanes(int64_t n, const std::vector<int64_t> &factors
       request_context_.has_value() && request_context_->device_type == "ix" &&
       request_context_->batch == 1 && request_context_->input_dtype == "complex64" &&
       request_context_->output_dtype == "complex64" && n == 4096;
-  int64_t upper = std::min(gcd_all, ix_wide_4096 ? int64_t{256} : kMaxLanes);
+  const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  const bool cuda_wide_leaf = request_context_.has_value() && request_context_->device_type == "cuda" &&
+      request_context_->device_arch == "sm_80" && request_context_->input_dtype == "complex64" &&
+      (n == 4096 || n == 8192) && cuda_wide && std::string(cuda_wide) == "1";
+  int64_t upper = std::min(gcd_all, (ix_wide_4096 || cuda_wide_leaf) ? int64_t{256} : kMaxLanes);
   for (int64_t candidate = upper; candidate > 0; --candidate) {
     if (gcd_all % candidate == 0) {
       return candidate;
@@ -124,8 +129,108 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.hcu_fourstep_radix_cap && context.origin_rank == 1 &&
+      context.requested_n >= 65536 &&
+      (context.requested_n & (context.requested_n - 1)) == 0 &&
+      n >= 64 && n <= 4096 && n < context.requested_n && (n & (n - 1)) == 0) {
+    // Balance the exponent across bounded register butterflies. This fills
+    // HCU's 64-lane waves without a large radix-32 per-thread live set or a
+    // radix-2 tail. The root-size domain excludes prime convolution children.
+    int bits = 0;
+    for (int64_t remaining = n; remaining > 1; remaining >>= 1) ++bits;
+    const int cap_bits = context.hcu_fourstep_radix_cap == 8 ? 3 : 4;
+    const int stages = (bits + cap_bits - 1) / cap_bits;
+    std::vector<int64_t> factors;
+    for (int stage = 0; stage < stages; ++stage) {
+      factors.push_back(int64_t {1} << (bits / stages + (stage < bits % stages)));
+    }
+    return factors;
+  }
+  if (context.hcu_fourstep_radix_cap && context.origin_rank == 1 &&
+      context.requested_n >= 65536 && n >= 64 && n <= 4096 && n < context.requested_n &&
+      factorize_supported_radices(context.requested_n).remainder == 1) {
+    const int64_t cap = context.hcu_fourstep_radix_cap;
+    std::vector<int64_t> best, best_score;
+    for (const auto &candidate : enumerate_supported_factorizations(n)) {
+      if (!std::all_of(candidate.begin(), candidate.end(), [cap](int64_t radix) {
+            if (radix <= cap) return true;
+            // Irreducible supported primes cannot be split; the resource
+            // bound limits composite butterflies such as 25, 27 and 28.
+            for (int64_t divisor = 2; divisor <= radix / divisor; ++divisor)
+              if (radix % divisor == 0) return false;
+            return true;
+          })) continue;
+      auto score = score_leaf_factorization(n, candidate);
+      if (best.empty() || score > best_score) {
+        best = candidate;
+        best_score = std::move(score);
+      }
+    }
+    if (!best.empty()) return best;
+  }
+  const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  if (context.device_type == "cuda" && context.device_arch == "sm_80" &&
+      context.input_dtype == "complex64" && cuda_wide && std::string(cuda_wide) == "1") {
+    if (n == 4096) return {16, 16, 16};
+    if (n == 8192) return {16, 16, 32};
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64") {
+    if (const char *value = std::getenv("FLAGFFT_IX_LEAF_FACTORS")) {
+      const std::string text(value);
+      const auto fail = []() -> void {
+        throw std::runtime_error("FLAGFFT_IX_LEAF_FACTORS requires <length>:<supported radices separated by x>");
+      };
+      const auto parse = [&](const std::string &token) {
+        int64_t parsed=0;
+        const auto result=std::from_chars(token.data(),token.data()+token.size(),parsed);
+        if (result.ec!=std::errc{} || result.ptr!=token.data()+token.size()) fail();
+        return parsed;
+      };
+      const auto colon=text.find(':');
+      if (colon==std::string::npos || text.find(':',colon+1)!=std::string::npos) fail();
+      const int64_t length=parse(text.substr(0,colon));
+      if (length<2 || length>4096) fail();
+      std::vector<int64_t> factors;
+      int64_t product=1;
+      std::size_t start=colon+1;
+      while (start<=text.size()) {
+        auto end=text.find('x',start);
+        if (end==std::string::npos) end=text.size();
+        const auto radix=parse(text.substr(start,end-start));
+        if (!contains(kSupportedRadices,radix) || product>length/radix) fail();
+        product*=radix; factors.push_back(radix);
+        if (end==text.size()) break;
+        start=end+1;
+      }
+      if (product!=length) fail();
+      if (length==n) return factors;
+    }
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
+    const char *small_radix = std::getenv("FLAGFFT_IX_RADIX8");
+    if (small_radix && std::string(small_radix) != "0" && std::string(small_radix) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_RADIX8 must be 0 or 1");
+    }
+    if (small_radix && std::string(small_radix) == "1") {
+      // Smaller register butterflies give each FFT more cooperating lanes.
+      // Keep a radix-2/4 tail rather than putting a large codelet in one lane.
+      std::vector<int64_t> factors;
+      int64_t remaining = n;
+      while (remaining >= 8) { factors.push_back(8); remaining /= 8; }
+      if (remaining > 1) factors.push_back(remaining);
+      return factors;
+    }
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      context.ix_fourstep_preset == 11 && n == 1024 && context.requested_n == n) {
+    return {16, 8, 8};
+  }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 256) {
-    const char *override_value = std::getenv("FLAGFFT_HCU_3D_256_FACTORS");
+    const char *override_value = performance_env("FLAGFFT_HCU_3D_256_FACTORS");
     if (override_value != nullptr) {
       const std::string choice(override_value);
       if (choice == "auto" || choice == "16,16") return {16, 16};
@@ -139,7 +244,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
     }
   }
   if (context.device_type == "hcu" && context.origin_rank == 3 && n == 128) {
-    if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_128_FACTORS")) {
+    if (const char *override_value = performance_env("FLAGFFT_HCU_3D_128_FACTORS")) {
       const std::string choice(override_value);
       if (choice == "4,4,8") return {4, 4, 8};
       if (choice == "4,8,4") return {4, 8, 4};
@@ -159,13 +264,13 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
                            context.origin_real_transform_kind == "d2z") &&
                           context.input_dtype == "complex128" && context.requested_n == n;
     const char *c2r_fp64_override =
-        c2r_fp64 ? std::getenv("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
+        c2r_fp64 ? performance_env("FLAGFFT_HCU_3D_C2R_FP64_2048_FACTORS") : nullptr;
     const char *r2c_fp64_override =
-        r2c_fp64 ? std::getenv("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS") : nullptr;
+        r2c_fp64 ? performance_env("FLAGFFT_HCU_3D_R2C_FP64_2048_FACTORS") : nullptr;
     const char *fp64_override =
         r2c_fp64_override != nullptr ? r2c_fp64_override : c2r_fp64_override;
     const char *override_value =
-        fp64_override != nullptr ? fp64_override : std::getenv("FLAGFFT_HCU_3D_2048_FACTORS");
+        fp64_override != nullptr ? fp64_override : performance_env("FLAGFFT_HCU_3D_2048_FACTORS");
     if (c2r_fp64_override != nullptr && std::string(c2r_fp64_override) != "auto" &&
         std::string(c2r_fp64_override) != "16,16,8" && std::string(c2r_fp64_override) != "8,16,16" &&
         std::string(c2r_fp64_override) != "16,8,16") {
@@ -276,7 +381,7 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       (context.origin_rank <= 1 || context.origin_rank == 3) &&
       context.requested_n == n && n == 16) {
     if (context.origin_rank == 3) {
-      if (const char *override_value = std::getenv("FLAGFFT_HCU_3D_16_FACTORS")) {
+      if (const char *override_value = performance_env("FLAGFFT_HCU_3D_16_FACTORS")) {
         const std::string choice(override_value);
         if (choice == "4,4") return {4, 4};
         if (choice == "2,2,2,2") return {2, 2, 2, 2};
@@ -300,6 +405,34 @@ std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
       context.requested_n == n && n == 1024 && context.batch == 64) {
     // Two radix-32 stages underuse BW1000's 64-lane wavefront for batch=64.
     return {16, 8, 8};
+  }
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && context.output_dtype == "complex64" &&
+      n >= 64 && n <= 4096 && (n & (n - 1)) == 0) {
+    const char *setting = std::getenv("FLAGFFT_IX_BALANCED_RADICES");
+    if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+      throw std::runtime_error("FLAGFFT_IX_BALANCED_RADICES must be 0 or 1");
+    }
+    if (setting ? std::string(setting) == "1"
+                : (context.ix_fourstep_preset > 0 && context.ix_fourstep_preset < 9)) {
+      // Screen smaller codelets without a radix-2 tail that greatly widens
+      // cooperative stages. Existing explicitly qualified policies above
+      // retain precedence; the ordinary cost model orders the remaining
+      // radix-8/16 factorizations across leaf lengths and axis roles.
+      std::vector<int64_t> best;
+      std::vector<int64_t> best_score;
+      for (const auto &candidate : enumerate_supported_factorizations(n)) {
+        if (!std::all_of(candidate.begin(), candidate.end(), [](int64_t radix) {
+              return radix == 8 || radix == 16;
+            })) continue;
+        auto score = score_leaf_factorization(n, candidate);
+        if (best.empty() || score > best_score) {
+          best = candidate;
+          best_score = std::move(score);
+        }
+      }
+      if (!best.empty()) return best;
+    }
   }
   auto it = best_leaf_factors_cache_.find(n);
   if (it != best_leaf_factors_cache_.end()) {
@@ -384,7 +517,11 @@ std::optional<int64_t> PlanBuilder::leaf_smem_bytes(int64_t n,
 bool PlanBuilder::should_use_leaf(int64_t n, const std::vector<int64_t> &factors) {
   const RequestContext &context = request_context();
   auto smem_bytes = leaf_smem_bytes(n, factors, context.input_dtype);
-  return n <= kLeafMaxN && smem_bytes.has_value() && *smem_bytes <= context.max_dynamic_smem_bytes;
+  const char *cuda_wide = std::getenv("FLAGFFT_CUDA_WIDE_LEAF");
+  const bool cuda_large_leaf = context.device_type == "cuda" && context.device_arch == "sm_80" &&
+      context.input_dtype == "complex64" && n == 8192 && cuda_wide && std::string(cuda_wide) == "1";
+  return (n <= kLeafMaxN || cuda_large_leaf) && smem_bytes.has_value() &&
+         *smem_bytes <= context.max_dynamic_smem_bytes;
 }
 
 PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &factors, int64_t rem) {
@@ -396,6 +533,14 @@ PlanNodePtr PlanBuilder::make_leaf_plan(int64_t n, const std::vector<int64_t> &f
         "inputs");
   }
   int64_t lanes = choose_lanes(n, factors);
+  if (context.device_type == "ix" && context.device_arch == "71" &&
+      context.input_dtype == "complex64" && n >= 64 && n <= 4096 &&
+      std::getenv("FLAGFFT_IX_RADIX8") && std::string(std::getenv("FLAGFFT_IX_RADIX8")) == "1" &&
+      !factors.empty() && std::all_of(factors.begin(), factors.end(), [](int64_t r) {
+        return r == 2 || r == 4 || r == 8;
+      })) {
+    lanes = n / *std::max_element(factors.begin(), factors.end());
+  }
   int64_t execution_lanes = lanes;
   if (context.device_type == "maca") {
     for (int64_t radix : factors) {

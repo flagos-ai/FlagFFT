@@ -127,7 +127,12 @@ double PlanBuilder::estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t
     stage_lanes = estimated_stage_lanes(n, factors, lanes, is_double);
   }
   const int64_t active_lanes = *std::max_element(stage_lanes.begin(), stage_lanes.end());
-  const int64_t warps = choose_num_warps(active_lanes);
+  const int64_t planner_warps = choose_num_warps(active_lanes);
+  // Serialized hints use 32-thread units. The HCU emitter maps them onto
+  // 64-lane physical waves; costing 64 cooperating lanes as two waves can
+  // incorrectly favor a larger butterfly with fewer participating lanes.
+  const int64_t warps = context.hcu_physical_wave_cost
+                            ? std::max<int64_t>(1, (planner_warps + 1) / 2) : planner_warps;
   double base = 0.0;
   for (int64_t stage_lane_count : stage_lanes) {
     base += static_cast<double>(n * warps) / static_cast<double>(stage_lane_count);
@@ -140,6 +145,14 @@ double PlanBuilder::estimate_leaf_warm_cost(int64_t n, const std::vector<int64_t
     }
   }
   const int64_t real_bytes = is_double ? 8 : 4;
+  if (context.hcu_stage_traffic_cost && factors.size() > 1) {
+    // Each boundary between register butterflies writes and reads one full
+    // complex FFT through LDS. Express those bytes in 64-lane, 32-bit wave
+    // transfers so the arithmetic-only score also accounts for extra stages.
+    // This is a resource model, independent of the public shape and batch.
+    base += static_cast<double>(factors.size() - 1) * 4.0 *
+            static_cast<double>(n) * real_bytes / (64.0 * 4.0);
+  }
   const int64_t shared_bytes = 4 * ceil_power_of_two(n) * real_bytes;
   constexpr int64_t kFullResidencySharedBytes = 64 * 1024;
   const double shared_pressure =
@@ -169,6 +182,10 @@ double PlanBuilder::four_step_cost(int64_t n1, int64_t n2) {
     preferred_n1 = measured_small_batch_four_step_n1(n, context.batch, context.device_arch);
   } else if (context.batch >= kLargeBatchFourStepMinBatch) {
     preferred_n1 = measured_large_batch_four_step_n1(n, context.input_dtype, context.device_arch);
+  } else if (n == 8192 && context.device_arch == kMeasuredFourStepDeviceArch) {
+    // The middle batch range previously missed both measured policies. A100
+    // no-save candidate measurements at batch 64 favor 128x64 in both precisions.
+    preferred_n1 = 128;
   }
   if (preferred_n1 > 0 && n1 != preferred_n1) {
     cost += static_cast<double>(n) * kMeasuredFourStepPenaltyScale;
@@ -182,7 +199,18 @@ double PlanBuilder::bluestein_cost(int64_t n, int64_t conv_length) {
 
 double PlanBuilder::rader_cost(int64_t n) {
   int64_t conv_length = n - 1;
-  return 3.0 * cost_for(conv_length) + static_cast<double>(n + 3 * conv_length);
+  double cost = 3.0 * cost_for(conv_length) + static_cast<double>(n + 3 * conv_length);
+  if (request_context().hcu_prime_cost_comparison &&
+      std::dynamic_pointer_cast<FourStepPlanNode>(build_auto_node(conv_length, false))) {
+    // Separate Rader boundaries gather and scatter through index tables.
+    // Charge their loss of contiguous transfers using the same 128-byte I/O
+    // budget as HCU's permuted stores. A fused leaf keeps its existing cost.
+    const bool wide = request_context().input_dtype == "complex128" ||
+                      request_context().input_dtype == "float64";
+    const double elements_per_transfer = 128.0 / (wide ? 16.0 : 8.0);
+    cost += 2.0 * static_cast<double>(conv_length) * (elements_per_transfer - 1.0);
+  }
+  return cost;
 }
 
 int PlanBuilder::priority(const PlanNodePtr &node) {

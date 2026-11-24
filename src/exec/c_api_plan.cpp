@@ -20,9 +20,6 @@
 #include "flagfft/maca_tail_policy.hpp"
 #include "plan/rader_utils.hpp"
 
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-#include "adaptor/backend/npu/sip_executor.hpp"
-#endif
 
 namespace flagfft {
 namespace {
@@ -62,111 +59,6 @@ namespace {
     return builder.build(request.requested_n, request);
   }
 
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-  enum class NpuExecutionBackend { Auto, Triton, SiP };
-
-  NpuExecutionBackend npu_execution_backend() {
-    const char *raw = std::getenv("FLAGFFT_NPU_EXECUTION_BACKEND");
-    if (raw == nullptr || *raw == '\0' || std::string(raw) == "auto") {
-      return NpuExecutionBackend::Auto;
-    }
-    if (std::string(raw) == "triton" || std::string(raw) == "native") {
-      return NpuExecutionBackend::Triton;
-    }
-    if (std::string(raw) == "sip") {
-      return NpuExecutionBackend::SiP;
-    }
-    throw std::runtime_error(
-        "FLAGFFT_NPU_EXECUTION_BACKEND must be auto, sip, or triton");
-  }
-
-  bool sip_factor_limit(int64_t length) {
-    for (int64_t factor = 2; factor <= 199 && factor * factor <= length; ++factor) {
-      while (length % factor == 0) length /= factor;
-    }
-    return length <= 199;
-  }
-
-  bool npu_sip_supports(const FlagFFTPlanDesc &desc) {
-    if (desc.batch <= 0 || desc.istride != 1 || desc.ostride != 1 ||
-        (desc.type != FLAGFFT_C2C && desc.type != FLAGFFT_R2C && desc.type != FLAGFFT_C2R)) {
-      return false;
-    }
-    constexpr int64_t kMaxDimension = int64_t{1} << 27;
-    constexpr int64_t kMaxBatch = int64_t{1} << 30;
-    if (desc.rank == 1 && desc.n.size() == 1) {
-      const int64_t n = desc.n[0];
-      if (n <= 0 || n > kMaxDimension || desc.batch > kMaxBatch / n ||
-          !sip_factor_limit(n)) {
-        return false;
-      }
-      const int64_t half = n / 2 + 1;
-      const int64_t input_length = desc.type == FLAGFFT_C2R ? half : n;
-      const int64_t output_length = desc.type == FLAGFFT_R2C ? half : n;
-      return desc.idist == input_length && desc.odist == output_length &&
-             desc.inembed.size() == 1 && desc.inembed[0] == input_length &&
-             desc.onembed.size() == 1 && desc.onembed[0] == output_length;
-    }
-    if (desc.rank != 2 || desc.n.size() != 2 ||
-        desc.batch > std::numeric_limits<int32_t>::max()) {
-      return false;
-    }
-
-    const int64_t n0 = desc.n[0];
-    const int64_t n1 = desc.n[1];
-    if (n0 <= 0 || n1 <= 0 || n0 > kMaxDimension || n1 > kMaxDimension ||
-        desc.batch > kMaxBatch / n0 || n1 > kMaxBatch / (n0 * desc.batch) ||
-        !sip_factor_limit(n0) || !sip_factor_limit(n1)) {
-      return false;
-    }
-    const int64_t half_n1 = n1 / 2 + 1;
-    const int64_t input_n1 = desc.type == FLAGFFT_C2R ? half_n1 : n1;
-    const int64_t output_n1 = desc.type == FLAGFFT_R2C ? half_n1 : n1;
-    return desc.idist == n0 * input_n1 && desc.odist == n0 * output_n1 &&
-           desc.inembed.size() == 2 && desc.inembed[0] == n0 &&
-           desc.inembed[1] == input_n1 && desc.onembed.size() == 2 &&
-           desc.onembed[0] == n0 && desc.onembed[1] == output_n1;
-  }
-
-  flagfftResult configure_npu_sip_execution(FlagFFTPlan &plan) {
-    const NpuExecutionBackend backend = npu_execution_backend();
-    if (backend == NpuExecutionBackend::Triton) return FLAGFFT_SUCCESS;
-    if (!npu_sip_supports(plan.desc)) {
-      return backend == NpuExecutionBackend::SiP ? FLAGFFT_NOT_SUPPORTED : FLAGFFT_SUCCESS;
-    }
-
-    void *forward = nullptr;
-    void *inverse = nullptr;
-    const auto create_sip_plan = [&](int direction) {
-      if (plan.desc.rank == 1) {
-        return adaptor::npu::sip_plan_create(plan.desc.n[0], plan.desc.batch,
-                                             plan.desc.type, direction);
-      }
-      return adaptor::npu::sip_plan_create_2d(plan.desc.n[0], plan.desc.n[1],
-                                              plan.desc.batch, plan.desc.type,
-                                              direction);
-    };
-    try {
-      if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_R2C) {
-        forward = create_sip_plan(FLAGFFT_FORWARD);
-      }
-      if (plan.desc.type == FLAGFFT_C2C || plan.desc.type == FLAGFFT_C2R) {
-        inverse = create_sip_plan(FLAGFFT_INVERSE);
-      }
-    } catch (const std::exception &e) {
-      adaptor::npu::sip_plan_destroy(forward);
-      adaptor::npu::sip_plan_destroy(inverse);
-      if (backend == NpuExecutionBackend::SiP) throw;
-      std::fprintf(stderr, "[flagfft] SiP plan unavailable; using Triton: %s\n", e.what());
-      std::fflush(stderr);
-      return FLAGFFT_SUCCESS;
-    }
-    plan.npu_sip_forward = forward;
-    plan.npu_sip_inverse = inverse;
-    plan.npu_sip_enabled = true;
-    return FLAGFFT_SUCCESS;
-  }
-#endif
 
 }  // namespace
 
@@ -175,6 +67,13 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     return FLAGFFT_INVALID_VALUE;
   }
   *out = nullptr;
+
+  if (adaptor::backend_name() == "npu") {
+    const char *backend = std::getenv("FLAGFFT_NPU_EXECUTION_BACKEND");
+    if (backend != nullptr && std::string(backend) == "sip") {
+      return FLAGFFT_NOT_SUPPORTED;  // SiP is available only to the test oracle.
+    }
+  }
 
   // Check if this is a supported 2D descriptor
   const bool is_2d = is_supported_2d_desc(desc);
@@ -194,6 +93,7 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
   }
 
   try {
+    const BackendPerformanceScope performance_policy(adaptor::backend_name(), desc.device_arch, "complex64");
     auto plan = std::make_unique<FlagFFTPlan>();
     plan->desc = std::move(desc);
 
@@ -455,8 +355,8 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
         plan->executable.inverse =
             compiler.compile_raw_3d_node(three_dim, plan->executable.inverse_request, plan->desc.batch);
       }
-      const char *graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH");
-      const char *large_graph_override = std::getenv("FLAGFFT_HCU_3D_GRAPH_LARGE");
+      const char *graph_override = performance_env("FLAGFFT_HCU_3D_GRAPH");
+      const char *large_graph_override = performance_env("FLAGFFT_HCU_3D_GRAPH_LARGE");
       const int64_t graph_max_elements = large_graph_override != nullptr &&
                                           std::string(large_graph_override) == "1"
                                               ? 4 * 1024 * 1024
@@ -502,10 +402,84 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
                                                              plan->desc.batch);
       }
     }
-#if defined(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
-    const flagfftResult sip_result = configure_npu_sip_execution(*plan);
-    if (sip_result != FLAGFFT_SUCCESS) return sip_result;
-#endif
+    const auto &multid_request = plan->executable.forward_request;
+    const bool real_multid = plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_D2Z ||
+                            plan->desc.type == FLAGFFT_C2R || plan->desc.type == FLAGFFT_Z2D;
+    const char *cuda_graph = std::getenv("FLAGFFT_CUDA_MULTID_GRAPH");
+    const char *cuda_1d_graph = std::getenv("FLAGFFT_CUDA_1D_GRAPH");
+    const bool graph_requested =
+        ((is_3d || (is_2d && real_multid)) &&
+         (cuda_graph == nullptr || std::string(cuda_graph) == "1")) ||
+        (is_2d && !real_multid && cuda_graph != nullptr && std::string(cuda_graph) == "1") ||
+        (!is_2d && !is_3d && cuda_1d_graph != nullptr && std::string(cuda_1d_graph) == "1");
+    if (multid_request.device_type == "cuda" && multid_request.device_arch == "sm_80" &&
+        graph_requested && std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+      if (plan->executable.forward) {
+        plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+      }
+      if (plan->executable.inverse) {
+        plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+      }
+    }
+    const char *npu_graph = performance_env("FLAGFFT_NPU_GRAPH");
+    if (plan->executable.forward_request.device_type == "npu" && npu_graph != nullptr &&
+        (std::string(npu_graph) == "1" || std::string(npu_graph) == "auto") &&
+        std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+      const bool force = std::string(npu_graph) == "1";
+      const auto wrap = [force](std::shared_ptr<CompiledRawNode> &node) {
+        if (node && (force || !node->is_single_kernel())) {
+          node = std::make_shared<CompiledRawGraphNode>(node);
+        }
+      };
+      wrap(plan->executable.forward);
+      wrap(plan->executable.inverse);
+    }
+    const auto &request = plan->executable.forward_request;
+    const auto kind = plan->executable.root->kind;
+    const bool multi_launch_1d = !is_2d && !is_3d &&
+        (kind == PlanNodeKind::FourStep || kind == PlanNodeKind::Bluestein || kind == PlanNodeKind::Rader);
+    const bool real_2d = is_2d && (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_C2R);
+    const bool real_1d = !is_2d && !is_3d &&
+        (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_C2R);
+    // Qualified with compact real rows at three input scales and a separate
+    // mixed-radix/batch-tail case. Large and degenerate axes keep direct
+    // execution unless graph replay is explicitly requested.
+    const bool small_real_2d = real_2d &&
+        plan->desc.n[0] >= 16 && plan->desc.n[0] <= 256 &&
+        plan->desc.n[1] >= 16 && plan->desc.n[1] <= 256;
+    if (request.device_type == "ix" && request.device_arch == "71" &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        (multi_launch_1d || real_1d || real_2d || is_3d)) {
+      const char *setting = std::getenv("FLAGFFT_IX_PLAN_GRAPH");
+      if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
+        throw std::runtime_error("FLAGFFT_IX_PLAN_GRAPH must be 0 or 1");
+      }
+      const bool enable_graph = setting ? std::string(setting) == "1" : small_real_2d;
+      if (enable_graph &&
+          std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+        if (plan->executable.forward) {
+          plan->executable.forward = std::make_shared<CompiledRawGraphNode>(plan->executable.forward);
+        }
+        if (plan->executable.inverse) {
+          plan->executable.inverse = std::make_shared<CompiledRawGraphNode>(plan->executable.inverse);
+        }
+      }
+    }
+    if (request.device_type == "hcu") {
+      const char *setting = performance_env("FLAGFFT_HCU_PLAN_GRAPH");
+      const std::string graph_mode = setting ? setting : "0";
+      if (graph_mode != "0" && graph_mode != "1" && graph_mode != "real_2d")
+        throw std::runtime_error("FLAGFFT_HCU_PLAN_GRAPH must be 0, 1 or real_2d");
+      if ((graph_mode == "1" || (graph_mode == "real_2d" && is_2d && real_multid)) &&
+          std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+        const auto wrap = [](std::shared_ptr<CompiledRawNode> &node) {
+          if (node && !std::dynamic_pointer_cast<CompiledRawGraphNode>(node))
+            node = std::make_shared<CompiledRawGraphNode>(node);
+        };
+        wrap(plan->executable.forward);
+        wrap(plan->executable.inverse);
+      }
+    }
     plan->state.initialized = true;
 
     std::unique_ptr<flagfftPlan_t> handle(new flagfftPlan_t());

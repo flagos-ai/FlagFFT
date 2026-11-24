@@ -22,13 +22,10 @@ option(FLAGFFT_BUILD_CLI "Build the unified native validation/benchmark/tuning C
 option(FLAGFFT_BUILD_TESTS "Build C++ tests (requires Google Test)" OFF)
 set(BACKEND "CUDA" CACHE STRING "FlagFFT adaptor and libtriton_jit backend")
 set_property(CACHE BACKEND PROPERTY STRINGS "CUDA" "MUSA" "PPU" "IX" "MACA" "NPU" "HCU")
-set(_FLAGFFT_NPU_SIP_EXECUTION_DEFAULT OFF)
-if(BACKEND STREQUAL "NPU")
-    set(_FLAGFFT_NPU_SIP_EXECUTION_DEFAULT ON)
+option(FLAGFFT_NPU_ENABLE_SIP_EXECUTION "Retired: SiP is a test reference only" OFF)
+if(FLAGFFT_NPU_ENABLE_SIP_EXECUTION)
+    message(FATAL_ERROR "SiP is a test reference only; FlagFFT execution uses Triton")
 endif()
-option(FLAGFFT_NPU_ENABLE_SIP_EXECUTION
-       "Enable the installed Ascend SiP FFT as an optional NPU execution backend"
-       ${_FLAGFFT_NPU_SIP_EXECUTION_DEFAULT})
 
 if(NOT (BACKEND STREQUAL "CUDA" OR BACKEND STREQUAL "MUSA" OR BACKEND STREQUAL "PPU" OR BACKEND STREQUAL "IX" OR BACKEND STREQUAL "MACA" OR BACKEND STREQUAL "NPU" OR BACKEND STREQUAL "HCU"))
     message(FATAL_ERROR "FlagFFT currently supports only BACKEND=CUDA, BACKEND=MUSA, BACKEND=PPU, BACKEND=IX, BACKEND=MACA, BACKEND=NPU, or BACKEND=HCU")
@@ -160,101 +157,14 @@ set(FLAGFFT_CORE_SOURCES
 add_library(flagfft SHARED ${FLAGFFT_CORE_SOURCES})
 add_subdirectory(src/adaptor)
 
-# CANN 9 ships the Ascend C toolchain and runtime helpers in the toolkit.
-# Keep the native AIV leaf isolated to the NPU backend so other builds remain
-# independent of the vendor SDK.  The leaf is opt-in at runtime while its
-# correctness and performance are being evaluated.
+if(BACKEND STREQUAL "HCU")
+    # The header-defined HCU launcher is instantiated in FlagFFT as well as
+    # libtriton_jit. Strip its INFO logging from both translation units.
+    target_compile_definitions(flagfft PRIVATE GOOGLE_STRIP_LOG=1)
+endif()
+
+# NPU kernels are generated Triton; ACL is used only for runtime/launch glue.
 if(BACKEND STREQUAL "NPU")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
-        set(_FLAGFFT_ASCEND_ARCH_DIR "aarch64-linux")
-    else()
-        set(_FLAGFFT_ASCEND_ARCH_DIR "x86_64-linux")
-    endif()
-    set(ASCEND_CANN_PACKAGE_PATH "${ASCEND_TOOLKIT_HOME}")
-    set(ASCENDC_CMAKE_DIR
-        "${ASCEND_TOOLKIT_HOME}/${_FLAGFFT_ASCEND_ARCH_DIR}/tikcpp/ascendc_kernel_cmake")
-    if(NOT EXISTS "${ASCENDC_CMAKE_DIR}/ascendc.cmake")
-        message(FATAL_ERROR "Ascend C CMake helpers not found at ${ASCENDC_CMAKE_DIR}")
-    endif()
-    set(SOC_VERSION "Ascend910B4")
-    set(RUN_MODE "npu")
-    set(ASCEND_PYTHON_EXECUTABLE "${Python_EXECUTABLE}")
-    include("${ASCENDC_CMAKE_DIR}/ascendc.cmake")
-    ascendc_library(flagfft_npu_aiv_fft64 STATIC
-        src/adaptor/backend/npu/ascendc_fft64_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft16 STATIC
-        src/adaptor/backend/npu/ascendc_fft16_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft16_g1 STATIC
-        src/adaptor/backend/npu/ascendc_fft16_g1_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft32 STATIC
-        src/adaptor/backend/npu/ascendc_fft32_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft32_g1 STATIC
-        src/adaptor/backend/npu/ascendc_fft32_g1_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft128 STATIC
-        src/adaptor/backend/npu/ascendc_fft128_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_stockham_stage STATIC
-        src/adaptor/backend/npu/ascendc_stockham_stage_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft2048 STATIC
-        src/adaptor/backend/npu/ascendc_fft2048_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft_radix4_pair STATIC
-        src/adaptor/backend/npu/ascendc_fft_radix4_pair_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_group4 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_group4_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_group8 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_group8_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_pair_group8 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_pair_group8_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_real_forward_group8 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_real_forward_group8_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_real_inverse_group8 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_real_inverse_group8_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_pair_store_group8 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_pair_store_group8_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_fft256_pair_radix4_store_group8 STATIC
-        src/adaptor/backend/npu/ascendc_fft256_pair_radix4_store_group8_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_transpose3d STATIC
-        src/adaptor/backend/npu/ascendc_transpose3d_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_transpose2d STATIC
-        src/adaptor/backend/npu/ascendc_transpose2d_kernel.cpp)
-    ascendc_library(flagfft_npu_aiv_packed_real_boundary STATIC
-        src/adaptor/backend/npu/ascendc_packed_real_boundary_kernel.cpp)
-    target_sources(flagfft PRIVATE
-        src/adaptor/backend/npu/ascendc_fft64_host.cpp
-        src/adaptor/backend/npu/ascendc_fft_small_host.cpp
-        src/adaptor/backend/npu/ascendc_fft128_host.cpp
-        src/adaptor/backend/npu/ascendc_stockham_stage_host.cpp
-        src/adaptor/backend/npu/ascendc_fft2048_host.cpp
-        src/adaptor/backend/npu/ascendc_fft_radix4_pair_host.cpp
-        src/adaptor/backend/npu/ascendc_fft256_host.cpp
-        src/adaptor/backend/npu/ascendc_packed_real_boundary_host.cpp
-        src/adaptor/backend/npu/ascendc_transpose3d_host.cpp
-        src/adaptor/backend/npu/ascendc_transpose2d_host.cpp)
-    target_link_libraries(flagfft PRIVATE
-        flagfft_npu_aiv_fft64
-        flagfft_npu_aiv_fft16
-        flagfft_npu_aiv_fft16_g1
-        flagfft_npu_aiv_fft32
-        flagfft_npu_aiv_fft32_g1
-        flagfft_npu_aiv_fft128
-        flagfft_npu_aiv_stockham_stage
-        flagfft_npu_aiv_fft2048
-        flagfft_npu_aiv_fft_radix4_pair
-        flagfft_npu_aiv_fft256
-        flagfft_npu_aiv_fft256_group4
-        flagfft_npu_aiv_fft256_group8
-        flagfft_npu_aiv_fft256_pair_group8
-        flagfft_npu_aiv_fft256_real_forward_group8
-        flagfft_npu_aiv_fft256_real_inverse_group8
-        flagfft_npu_aiv_fft256_pair_store_group8
-        flagfft_npu_aiv_fft256_pair_radix4_store_group8
-        flagfft_npu_aiv_packed_real_boundary
-        flagfft_npu_aiv_transpose3d
-        flagfft_npu_aiv_transpose2d)
-    # AscendC generates the launch stub included by the host wrapper. Build
-    # the complete helper target before compiling flagfft's host-side files.
-    add_dependencies(flagfft flagfft_npu_aiv_packed_real_boundary)
     target_compile_definitions(flagfft PRIVATE FLAGFFT_BACKEND_NPU=1)
 endif()
 
@@ -284,10 +194,14 @@ install(TARGETS flagfft triton_jit
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-# The bundled libtriton_jit imports its Python helpers (standalone_compile)
-# from <prefix>/share/triton_jit/scripts relative to its own library path.
+# The bundled libtriton_jit imports its Python helpers (gen_ssig,
+# standalone_compile) by module name; packaging/common/flagfft-triton-jit.pth
+# puts this directory on sys.path. Keep them under a FlagFFT-private prefix:
+# the bundled copy may diverge from the standalone libtriton-jit package,
+# and sharing <prefix>/share/triton_jit/scripts with it made the two
+# packages conflict on the same files.
 install(DIRECTORY deps/libtriton_jit/scripts/
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/triton_jit/scripts"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/flagfft/triton_jit/scripts"
         FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
 
 # Test adaptor — reference FFT oracle for correctness checks and benchmarking.

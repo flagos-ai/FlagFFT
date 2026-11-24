@@ -271,6 +271,121 @@ TEST(Plan1D, HcuSingleC2rFourStepSplitOverride) {
   EXPECT_EQ(plan->n2, 512);
 }
 
+TEST(Plan1D, MusaBatchedC2cFourStepSplitOverrideInvalidatesContextCache) {
+  const char* original = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  const std::optional<std::string> saved = original ? std::optional<std::string>(original) : std::nullopt;
+  struct Restore {
+    std::optional<std::string> value;
+    ~Restore() {
+      if (value) setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", value->c_str(), 1);
+      else unsetenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+    }
+  } restore{saved};
+
+  flagfft::FFTRequest request;
+  request.device_type = "musa";
+  request.device_arch = "31";
+  request.raw_dim = request.origin_rank = 1;
+  request.n = request.fft_length = request.requested_n = 131072;
+  request.batch = 64;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_strides = {131072, 1};
+
+  flagfft::PlanBuilder builder;
+  unsetenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 512);
+  EXPECT_EQ(plan->n2, 256);
+
+  setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:256", 1);
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 512);
+
+  setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:512", 1);
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 512);
+  EXPECT_EQ(plan->n2, 256);
+
+  auto real_request = request;
+  real_request.real_transform = true;
+  real_request.real_transform_kind = real_request.origin_real_transform_kind = "z2d";
+  real_request.input_dtype = "complex128";
+  real_request.output_dtype = "float64";
+  unsetenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(131072, real_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 512);
+  EXPECT_EQ(plan->n2, 256);
+
+  auto n8192_request = request;
+  n8192_request.n = n8192_request.fft_length = n8192_request.requested_n = 8192;
+  n8192_request.batch = 8;
+  n8192_request.input_strides = {8192, 1};
+  unsetenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(8192, n8192_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 128);
+  EXPECT_EQ(plan->n2, 64);
+
+  auto n8192_real_request = real_request;
+  n8192_real_request.n = n8192_real_request.fft_length = n8192_real_request.requested_n = 8192;
+  n8192_real_request.batch = 8;
+  n8192_real_request.input_strides = {8192, 1};
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(8192, n8192_real_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 128);
+  EXPECT_EQ(plan->n2, 64);
+
+  auto n1024_request = request;
+  n1024_request.n = n1024_request.fft_length = n1024_request.requested_n = 1024;
+  n1024_request.batch = 256;
+  n1024_request.input_strides = {1024, 1};
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(1024, n1024_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 128);
+  EXPECT_EQ(plan->n2, 8);
+
+  auto n1024_real_request = real_request;
+  n1024_real_request.n = n1024_real_request.fft_length = n1024_real_request.requested_n = 1024;
+  n1024_real_request.batch = 256;
+  n1024_real_request.input_strides = {1024, 1};
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(1024, n1024_real_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 128);
+  EXPECT_EQ(plan->n2, 8);
+
+  auto n350000_request = request;
+  n350000_request.n = n350000_request.fft_length = n350000_request.requested_n = 350000;
+  n350000_request.batch = 8;
+  n350000_request.input_strides = {350000, 1};
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(350000, n350000_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 700);
+  EXPECT_EQ(plan->n2, 500);
+
+  auto n600000_request = request;
+  n600000_request.n = n600000_request.fft_length = n600000_request.requested_n = 600000;
+  n600000_request.batch = 8;
+  n600000_request.input_strides = {600000, 1};
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(600000, n600000_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 750);
+  EXPECT_EQ(plan->n2, 800);
+
+  n600000_request.input_dtype = n600000_request.output_dtype = "complex64";
+  plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(600000, n600000_request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 750);
+  EXPECT_EQ(plan->n2, 800);
+
+  setenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT", "131072:127", 1);
+  EXPECT_THROW(builder.build(131072, request), std::runtime_error);
+}
+
 TEST(Plan1D, CreateDestroyAllTypes) {
   flagfftType types[] = {FLAGFFT_C2C, FLAGFFT_Z2Z, FLAGFFT_R2C, FLAGFFT_D2Z, FLAGFFT_C2R, FLAGFFT_Z2D};
   for (auto type : types) {

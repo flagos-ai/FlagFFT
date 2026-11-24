@@ -56,6 +56,7 @@ target_link_libraries(test_maca_prime_tune PRIVATE gtest_main)
 add_test(NAME test_maca_prime_tune COMMAND test_maca_prime_tune)
 
 set(TEST_TARGETS
+    test_per_batch
     test_plan
     test_kernel_key
     test_packed_real_batch
@@ -86,6 +87,14 @@ set(TEST_TARGETS
     test_exec_d2z_z2d_bs_s   test_exec_d2z_z2d_bs_b
 )
 
+if(BACKEND STREQUAL "CUDA")
+    list(APPEND TEST_TARGETS test_cuda_multid_reference)
+endif()
+
+if(BACKEND STREQUAL "HCU")
+    list(APPEND TEST_TARGETS test_hcu_prepared_launch)
+endif()
+
 if(BACKEND STREQUAL "MACA")
     list(APPEND TEST_TARGETS test_maca_runtime)
 endif()
@@ -93,6 +102,9 @@ endif()
 foreach(test_name ${TEST_TARGETS})
     add_executable(${test_name} ${test_name}.cpp main.cpp)
     target_link_libraries(${test_name} PRIVATE flagfft flagfft_test_adaptor gtest)
+    if(test_name STREQUAL "test_hcu_prepared_launch")
+        target_link_libraries(${test_name} PRIVATE TritonJIT::triton_jit)
+    endif()
     target_include_directories(${test_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/src

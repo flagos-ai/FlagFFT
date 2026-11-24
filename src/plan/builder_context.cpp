@@ -20,22 +20,45 @@
 #include <string>
 
 namespace flagfft {
+namespace {
+bool has_prime_factor_above(int64_t value, int cap) {
+  if (value <= 1 || cap <= 0) return false;
+  for (int64_t divisor = 2; divisor <= value / divisor; ++divisor) {
+    if (value % divisor != 0) continue;
+    if (divisor > cap) return true;
+    do { value /= divisor; } while (value % divisor == 0);
+  }
+  return value > cap;
+}
+}  // namespace
 
 bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const {
   return input_dtype == other.input_dtype && output_dtype == other.output_dtype &&
          real_transform_kind == other.real_transform_kind &&
          origin_real_transform_kind == other.origin_real_transform_kind &&
          device_type == other.device_type && device_index == other.device_index &&
-         device_arch == other.device_arch && origin_rank == other.origin_rank &&
+         device_arch == other.device_arch &&
+         npu_performance == other.npu_performance &&
+         hcu_performance == other.hcu_performance &&
+         musa_1d_fourstep_split == other.musa_1d_fourstep_split && origin_rank == other.origin_rank &&
          requested_n == other.requested_n &&
          batch == other.batch &&
          maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
          ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
+         ix_fourstep_preset == other.ix_fourstep_preset &&
+         hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
+         hcu_fp64_convolution_radix_cap == other.hcu_fp64_convolution_radix_cap &&
+         hcu_balance_convolution == other.hcu_balance_convolution &&
+         hcu_physical_wave_cost == other.hcu_physical_wave_cost &&
+         hcu_stage_traffic_cost == other.hcu_stage_traffic_cost &&
+         hcu_prime_cost_comparison == other.hcu_prime_cost_comparison &&
+         hcu_preserve_fourstep_split == other.hcu_preserve_fourstep_split &&
          max_dynamic_smem_bytes == other.max_dynamic_smem_bytes;
 }
 
 PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &request) const {
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   RequestContext context;
   context.input_dtype = request.input_dtype;
   context.output_dtype = request.output_dtype;
@@ -44,12 +67,68 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.device_type = request.device_type;
   context.device_index = request.device_index;
   context.device_arch = request.device_arch;
+  if (npu_performance_qualified(request.device_type, request.device_arch, request.input_dtype))
+    context.npu_performance = npu_performance_identity();
+  if (hcu_performance_qualified(request.device_type, request.device_arch, request.input_dtype))
+    context.hcu_performance = hcu_performance_identity();
+  if (request.device_type == "hcu" && request.device_arch == "gfx936") {
+    const char *setting = performance_env("FLAGFFT_HCU_FOURSTEP_RADIX_CAP");
+    const std::string value = setting ? setting : "auto";
+    if (value != "auto" && value != "8" && value != "16" && value != "fp64") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_RADIX_CAP must be auto, 8, 16 or fp64");
+    }
+    const bool wide = request.input_dtype == "complex128" || request.input_dtype == "float64";
+    context.hcu_fourstep_radix_cap = value == "fp64" ? (wide ? 16 : 0)
+        : value == "auto" ? 0 : std::stoi(value);
+    const char *preserve = performance_env("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT");
+    const std::string preserve_value = preserve ? preserve : "0";
+    if (preserve_value != "0" && preserve_value != "1" && preserve_value != "irreducible") {
+      throw std::runtime_error("FLAGFFT_HCU_FOURSTEP_PRESERVE_SPLIT must be 0, 1 or irreducible");
+    }
+    context.hcu_preserve_fourstep_split = preserve_value == "1" ||
+        (preserve_value == "irreducible" &&
+         has_prime_factor_above(request.requested_n, context.hcu_fourstep_radix_cap));
+    const char *convolution = performance_env("FLAGFFT_HCU_FP64_CONV_RADIX_CAP");
+    const std::string convolution_value = convolution ? convolution : "auto";
+    if (convolution_value != "auto" && convolution_value != "8" && convolution_value != "16") {
+      throw std::runtime_error("FLAGFFT_HCU_FP64_CONV_RADIX_CAP must be auto, 8 or 16");
+    }
+    context.hcu_fp64_convolution_radix_cap =
+        convolution_value == "auto" ? 0 : std::stoi(convolution_value);
+    const char *balance = performance_env("FLAGFFT_HCU_CONV_BALANCE");
+    const std::string balance_value = balance ? balance : "0";
+    if (balance_value != "0" && balance_value != "1" && balance_value != "fp64") {
+      throw std::runtime_error("FLAGFFT_HCU_CONV_BALANCE must be 0, 1 or fp64");
+    }
+    context.hcu_balance_convolution = balance_value == "1" || (balance_value == "fp64" && wide);
+    const char *wave_cost = performance_env("FLAGFFT_HCU_PHYSICAL_WAVE_COST");
+    const std::string wave_cost_value = wave_cost ? wave_cost : "0";
+    if (wave_cost_value != "0" && wave_cost_value != "1" && wave_cost_value != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_PHYSICAL_WAVE_COST must be 0, 1 or fp64");
+    context.hcu_physical_wave_cost = wave_cost_value == "1" || (wave_cost_value == "fp64" && wide);
+    const char *stage_traffic = performance_env("FLAGFFT_HCU_STAGE_TRAFFIC_COST");
+    const std::string stage_traffic_value = stage_traffic ? stage_traffic : "0";
+    if (stage_traffic_value != "0" && stage_traffic_value != "1" &&
+        stage_traffic_value != "fp32" && stage_traffic_value != "fp64")
+      throw std::runtime_error("FLAGFFT_HCU_STAGE_TRAFFIC_COST must be 0, 1, fp32 or fp64");
+    context.hcu_stage_traffic_cost = stage_traffic_value == "1" ||
+        (stage_traffic_value == "fp64" && wide) || (stage_traffic_value == "fp32" && !wide);
+    const char *prime_cost = performance_env("FLAGFFT_HCU_PRIME_COST_COMPARISON");
+    if (prime_cost && std::string(prime_cost) != "0" && std::string(prime_cost) != "1")
+      throw std::runtime_error("FLAGFFT_HCU_PRIME_COST_COMPARISON must be 0 or 1");
+    context.hcu_prime_cost_comparison = prime_cost && std::string(prime_cost) == "1";
+  }
+  if (request.device_type == "musa" && request.device_arch == "31") {
+    const char *split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+    if (split != nullptr) context.musa_1d_fourstep_split = split;
+  }
   context.origin_rank = request.origin_rank;
   context.requested_n = request.requested_n;
   context.batch = request.batch;
   context.maca_3d_c2c32_single_cube = request.maca_3d_c2c32_single_cube;
   context.ix_short_single = request.requested_n == 1024 && ix_ct_single_policy_enabled(request);
   context.ix_ct_batch = ix_ct_batch_policy_enabled(request);
+  context.ix_fourstep_preset = request.ix_fourstep_preset;
   if (request.device_type == adaptor::backend_name()) {
     context.max_dynamic_smem_bytes = adaptor::max_dynamic_smem_bytes(request.device_index);
   }
@@ -65,6 +144,7 @@ void PlanBuilder::set_request_context(const FFTRequest &request) {
   node_cache_.clear();
   cost_cache_.clear();
   tune_candidate_cache_.clear();
+  best_leaf_factors_cache_.clear();
 }
 
 const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
@@ -75,9 +155,161 @@ const PlanBuilder::RequestContext &PlanBuilder::request_context() const {
 }
 
 PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   set_request_context(request);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
+  }
+  // Explicit split screening at a public 1D root or its packed real child.
+  // A convolution child is built with build_auto_node and cannot consume it.
+  const char *ix_split = std::getenv("FLAGFFT_IX_FOURSTEP_SPLIT");
+  if (request.device_type == "ix" && request.device_arch == "71" &&
+      request.origin_rank <= 1 && request.raw_dim == 1 && request.requested_n == n &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      ix_split && *ix_split) {
+    const std::string spec(ix_split);
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      const auto row = select_leaf_factors(n1), col = select_leaf_factors(n2);
+      if (!should_use_leaf(n1, row) || !should_use_leaf(n2, col)) {
+        throw std::runtime_error("FLAGFFT_IX_FOURSTEP_SPLIT requires two supported leaf lengths");
+      }
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                               make_leaf_plan(n1, row), make_leaf_plan(n2, col));
+    }
+  }
+  // Allow a root 1D batched transform on MUSA to screen alternative four-step
+  // decompositions without changing child plans.
+  const char *musa_fourstep_split = std::getenv("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT");
+  const bool musa_1d_c2c_root = !request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype;
+  const bool musa_1d_real_root = request.real_transform &&
+      (request.real_transform_kind == "r2c" || request.real_transform_kind == "d2z" ||
+       request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d");
+  const bool musa_default_131072_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 131072 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_1024_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 1024 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_8192_split = request.device_type == "musa" &&
+      request.device_arch == "31" && request.raw_dim == 1 && request.origin_rank == 1 &&
+      request.batch > 1 && request.requested_n == n && n == 8192 &&
+      (musa_1d_c2c_root || musa_1d_real_root);
+  const bool musa_default_300000_c2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 300000 &&
+      musa_1d_c2c_root;
+  const bool musa_packed_fp32_c2r_child_root =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.packed_real_child &&
+      request.requested_n == n && request.input_dtype == "complex64" &&
+      (request.origin_real_transform_kind == "c2r" || request.real_transform_kind == "c2r");
+  const bool musa_default_packed_300000_fp64_c2r_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch >= 64 && request.packed_real_child &&
+      request.requested_n == n && n == 300000 && request.input_dtype == "complex128" &&
+      (request.origin_real_transform_kind == "c2r" || request.real_transform_kind == "c2r");
+  const bool musa_default_packed_65536_fp32_r2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && (request.batch == 64 || request.batch == 256) &&
+      request.packed_real_child && request.requested_n == n && n == 65536 &&
+      request.input_dtype == "complex64" &&
+      (request.origin_real_transform_kind == "r2c" || request.real_transform_kind == "r2c");
+  const bool musa_default_packed_c2r_32768_split = musa_packed_fp32_c2r_child_root && n == 32768;
+  const bool musa_default_packed_c2r_65536_split = musa_packed_fp32_c2r_child_root && n == 65536;
+  const bool musa_default_350000_fp64_c2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 350000 &&
+      musa_1d_c2c_root && request.input_dtype == "complex128";
+  const bool musa_default_600000_c2c_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n && n == 600000 &&
+      musa_1d_c2c_root;
+  const bool musa_root_fourstep_split =
+      request.device_type == "musa" && request.device_arch == "31" && request.raw_dim == 1 &&
+      request.origin_rank == 1 && request.batch > 1 && request.requested_n == n &&
+      (musa_1d_c2c_root || musa_1d_real_root) &&
+      ((musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') || musa_default_131072_split ||
+       musa_default_1024_split || musa_default_8192_split || musa_default_300000_c2c_split ||
+       musa_default_350000_fp64_c2c_split || musa_default_600000_c2c_split ||
+       musa_default_packed_65536_fp32_r2c_split);
+  if (musa_root_fourstep_split || musa_packed_fp32_c2r_child_root ||
+      musa_default_packed_300000_fp64_c2r_split || musa_default_packed_65536_fp32_r2c_split) {
+    // MTT S5000 screens favor 128x8 over the CT leaf at N=1024, 128x64 over
+    // 64x128 at N=8192, 512x256 over 128x1024 at N=131072, and 256x128 / 256x256
+    // for the packed FP32 C2R children at N=32768 / 65536. Batched C2C N=300000
+    // favors 1000x300; the packed FP64 C2R child at N=300000 favors 750x400. The packed
+    // FP32 R2C child at N=65536 favors 256x256. FP64 C2C roots favor 700x500
+    // at N=350000; batched C2C N=600000 favors 1000x600.
+    std::string spec;
+    if (musa_fourstep_split != nullptr && *musa_fourstep_split != '\0') {
+      spec = musa_fourstep_split;
+    } else if (musa_default_131072_split) {
+      spec = "131072:512";
+    } else if (musa_default_1024_split) {
+      spec = "1024:128";
+    } else if (musa_default_8192_split) {
+      spec = "8192:128";
+    } else if (musa_default_packed_c2r_32768_split) {
+      spec = "32768:256";
+    } else if (musa_default_packed_c2r_65536_split) {
+      spec = "65536:256";
+    } else if (musa_default_packed_65536_fp32_r2c_split) {
+      spec = "65536:256";
+    } else if (musa_default_300000_c2c_split) {
+      spec = "300000:1000";
+    } else if (musa_default_packed_300000_fp64_c2r_split) {
+      spec = "300000:750";
+    } else if (musa_default_350000_fp64_c2c_split) {
+      spec = "350000:700";
+    } else if (musa_default_600000_c2c_split) {
+      spec = "600000:1000";
+    } else {
+      spec = "600000:750";
+    }
+    const auto separator = spec.find(':');
+    if (separator == std::string::npos) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    std::size_t parsed = 0;
+    const int64_t target_length = std::stoll(spec.substr(0, separator), &parsed);
+    if (parsed != separator) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    const std::string n1_text = spec.substr(separator + 1);
+    const int64_t n1 = std::stoll(n1_text, &parsed);
+    if (parsed != n1_text.size()) {
+      throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT must be <length>:<n1>");
+    }
+    if (target_length == n) {
+      if (n1 <= 1 || n1 >= n || n % n1 != 0) {
+        throw std::runtime_error("FLAGFFT_MUSA_1D_FOURSTEP_SPLIT n1 must divide the requested length");
+      }
+      const int64_t n2 = n / n1;
+      return std::make_shared<FourStepPlanNode>(n, n1, n2,
+                                                build_auto_node(n1, false), build_auto_node(n2, false));
+    }
   }
   // Opt in to an explicit HCU single C2R split while screening alternative
   // 1D four-step decompositions. Keep the override at the public root so it
@@ -88,7 +320,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
       (request.real_transform_kind == "c2r" || request.real_transform_kind == "z2d" ||
        request.origin_real_transform_kind == "c2r" ||
        request.origin_real_transform_kind == "z2d");
-  const char *hcu_c2r_split = std::getenv("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
+  const char *hcu_c2r_split = performance_env("FLAGFFT_HCU_C2R_FOURSTEP_SPLIT");
   if (hcu_single_c2r_root && hcu_c2r_split != nullptr && *hcu_c2r_split != '\0') {
     const std::string spec(hcu_c2r_split);
     const auto separator = spec.find(':');
@@ -125,7 +357,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   // An opt-in split lets Ascend qualify the existing generic FourStep path
   // with Stockham/Bluestein children before changing its automatic policy.
   // Scope the override to the requested 1D root, never a convolution child.
-  const char *npu_split = std::getenv("FLAGFFT_NPU_FOURSTEP_SPLIT");
+  const char *npu_split = performance_env("FLAGFFT_NPU_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 1 && npu_split != nullptr && *npu_split != '\0') {
     const std::string spec(npu_split);
     const auto separator = spec.find(':');
@@ -147,7 +379,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
         const auto row_factors = select_leaf_factors(n1);
         const auto col_factors = select_leaf_factors(n2);
@@ -165,7 +397,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   // Let 2D axis plans reuse the existing FourStep plan and fused-leaf
   // execution for long axes. Keep this opt-in so the current 2D policy stays
   // unchanged while splits are screened on Ascend.
-  const char *npu_2d_split = std::getenv("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
+  const char *npu_2d_split = performance_env("FLAGFFT_NPU_2D_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 2 && request.raw_dim == 1 &&
       request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_2d_split != nullptr && *npu_2d_split != '\0') {
@@ -189,7 +421,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_2D_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       if (leaf_mode != nullptr && std::string(leaf_mode) == "1") {
         const auto row_factors = select_leaf_factors(n1);
         const auto col_factors = select_leaf_factors(n2);
@@ -209,7 +441,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                                 build_auto_node(n2, false));
     }
   }
-  const char *npu_3d_aiv64 = std::getenv("FLAGFFT_NPU_3D_AIV64");
+  const char *npu_3d_aiv64 = performance_env("FLAGFFT_NPU_3D_AIV64");
   const bool use_npu_3d_aiv64 = request.device_type == "npu" && request.origin_rank == 3 &&
                                 request.raw_dim == 1 && request.input_dtype == "complex64" &&
                                 request.output_dtype == "complex64" && npu_3d_aiv64 != nullptr &&
@@ -218,7 +450,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     const auto factors = select_leaf_factors(n);
     if (should_use_leaf(n, factors)) return make_leaf_plan(n, factors);
   }
-  const char *npu_3d_split = std::getenv("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
+  const char *npu_3d_split = performance_env("FLAGFFT_NPU_3D_FOURSTEP_SPLIT");
   if (request.device_type == "npu" && request.origin_rank == 3 && request.raw_dim == 1 &&
       request.requested_n == n && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       npu_3d_split != nullptr && *npu_3d_split != '\0') {
@@ -242,7 +474,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         throw std::runtime_error("FLAGFFT_NPU_3D_FOURSTEP_SPLIT must divide the requested length");
       }
       const int64_t n2 = n / n1;
-      const char *leaf_mode = std::getenv("FLAGFFT_NPU_FOURSTEP_LEAF");
+      const char *leaf_mode = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
       auto build_3d_child = [&](int64_t length) -> PlanNodePtr {
         if (use_npu_3d_aiv64 && length == 64) {
           const auto factors = select_leaf_factors(length);
@@ -306,10 +538,33 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     return std::make_shared<FourStepPlanNode>(n, n1, n2,
                                               build_auto_node(n1, false), build_auto_node(n2, false));
   }
+  const auto &context = request_context();
+  if (context.hcu_preserve_fourstep_split && context.hcu_fourstep_radix_cap &&
+      context.origin_rank == 1 && n == context.requested_n && n >= 65536 &&
+      factorize_supported_radices(n).remainder == 1) {
+    // Choose the memory decomposition with the original cost model, then
+    // bound register butterflies independently. A separate builder keeps
+    // capped and uncapped node/cost caches isolated without mutating env.
+    PlanBuilder split_builder;
+    split_builder.request_context_ = context;
+    split_builder.request_context_->hcu_fourstep_radix_cap = 0;
+    auto original = split_builder.build_auto_node(n, true);
+    auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(original);
+    if (pair && std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan) &&
+        std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan)) {
+      const auto row_factors = select_leaf_factors(pair->n1);
+      const auto col_factors = select_leaf_factors(pair->n2);
+      if (should_use_leaf(pair->n1, row_factors) && should_use_leaf(pair->n2, col_factors)) {
+        return std::make_shared<FourStepPlanNode>(n, pair->n1, pair->n2,
+            make_leaf_plan(pair->n1, row_factors), make_leaf_plan(pair->n2, col_factors));
+      }
+    }
+  }
   return build_auto_node(n, true);
 }
 
 double PlanBuilder::cost_for(int64_t n, const FFTRequest &request) {
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   set_request_context(request);
   return cost_for(n);
 }

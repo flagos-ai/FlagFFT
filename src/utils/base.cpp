@@ -206,6 +206,14 @@ std::string kernel_kind_name(KernelKind kind) {
       return "reshape_pack";
     case KernelKind::TwiddleReshapePack:
       return "twiddle_reshape_pack";
+    case KernelKind::RealPairR2CPack:
+      return "r2c_pair_pack";
+    case KernelKind::RealPairR2CUnpack:
+      return "r2c_pair_unpack";
+    case KernelKind::RealPairC2RPack:
+      return "c2r_pair_pack";
+    case KernelKind::RealPairC2RUnpack:
+      return "c2r_pair_unpack";
     case KernelKind::RealToComplex:
       return "real_to_complex";
     case KernelKind::R2CHalfPack:
@@ -240,6 +248,12 @@ std::string kernel_kind_name(KernelKind kind) {
       return "fused_32_column";
     case KernelKind::Fused2D:
       return "fused_2d";
+    case KernelKind::NpuGroupedFFT64:
+      return "npu_grouped_fft64";
+    case KernelKind::Hcu3DCTFirst:
+      return "hcu_3d_ct_first";
+    case KernelKind::Hcu3DCTLast:
+      return "hcu_3d_ct_last";
   }
   return "unknown";
 }

@@ -165,6 +165,7 @@ std::vector<PlanCandidate> PlanBuilder::build_tune_candidates(int64_t n, int64_t
 std::vector<PlanCandidate> PlanBuilder::build_decomposition_tune_candidates(int64_t n,
                                                                             const FFTRequest& request,
                                                                             int64_t limit) {
+  const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }

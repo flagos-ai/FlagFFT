@@ -161,12 +161,23 @@ class PlanBuilder {
     std::string device_type;
     int64_t device_index = -1;
     std::string device_arch;
+    std::string npu_performance;
+    std::string hcu_performance;
+    std::string musa_1d_fourstep_split;
     int64_t origin_rank = 0;
     int64_t requested_n = 0;
     int64_t batch = 1;
     bool maca_3d_c2c32_single_cube = false;
     bool ix_short_single = false;
     bool ix_ct_batch = false;
+    int ix_fourstep_preset = 0;
+    int hcu_fourstep_radix_cap = 0;
+    int hcu_fp64_convolution_radix_cap = 0;
+    bool hcu_balance_convolution = false;
+    bool hcu_physical_wave_cost = false;
+    bool hcu_stage_traffic_cost = false;
+    bool hcu_prime_cost_comparison = false;
+    bool hcu_preserve_fourstep_split = false;
     int64_t max_dynamic_smem_bytes = kDynamicSmemFallbackBytes;
 
     bool operator==(const RequestContext& other) const;
@@ -198,6 +209,7 @@ class PlanBuilder {
   std::vector<int64_t> enumerate_divisors(int64_t n);
   int64_t next_supported_convolution_length(int64_t minimum);
   PlanNodePtr make_bluestein_plan(int64_t n);
+  PlanNodePtr build_convolution_fft(int64_t length);
   PlanNodePtr make_rader_plan(int64_t n);
   std::vector<PlanCandidate> build_auto_candidates(int64_t n);
   std::vector<PlanCandidate> build_leaf_tune_candidates(int64_t n);

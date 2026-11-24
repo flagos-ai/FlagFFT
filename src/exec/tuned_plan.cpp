@@ -89,7 +89,7 @@ bool env_flag_enabled(const char *value) {
 }
 
 std::optional<std::filesystem::path> tuned_db_path() {
-  if (env_flag_enabled(std::getenv("FLAGFFT_TUNE_DISABLE"))) {
+  if (env_flag_enabled(performance_env("FLAGFFT_TUNE_DISABLE"))) {
     return std::nullopt;
   }
   const char *override_path = std::getenv("FLAGFFT_TUNE_DB");

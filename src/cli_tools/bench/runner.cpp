@@ -197,7 +197,11 @@ namespace {
 
   test_adaptor::RefPlanHandle make_ref_plan(const CaseSpec& spec, const BufferLayout& layout) {
     test_adaptor::RefPlanHandle plan;
-    plan.configure_case(spec.direction, spec.batch);
+    // CUDA's dense out-of-place reference uses native multidimensional
+    // batching. Keep padded in-place layouts on the per-transform fallback.
+    const bool cuda_inplace_multid = test_adaptor::backend_name() == "cuda" &&
+        spec.rank > 1 && spec.placement == Placement::InPlace;
+    plan.configure_case(spec.direction, cuda_inplace_multid ? 1 : spec.batch);
     if (spec.rank == 1) {
       test_adaptor::ref_plan_1d(plan, layout.innermost, flagfft_type(spec.api), spec.batch);
     } else if (spec.rank == 2) {
@@ -287,7 +291,10 @@ namespace {
   }
 
   void exec_ref(test_adaptor::RefPlanHandle& plan, const CaseSpec& spec, void* input, void* output) {
-    if (spec.rank == 1 || spec.batch == 1 || test_adaptor::backend_name() == "npu-sip") {
+    const bool cuda_native_batch = test_adaptor::backend_name() == "cuda" &&
+                                  spec.placement == Placement::OutOfPlace;
+    if (spec.rank == 1 || spec.batch == 1 || cuda_native_batch ||
+        test_adaptor::backend_name() == "npu-sip") {
       exec_ref_one(plan, spec, input, output);
       return;
     }

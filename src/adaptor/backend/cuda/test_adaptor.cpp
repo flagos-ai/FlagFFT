@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -53,7 +54,8 @@ RefPlanHandle::~RefPlanHandle() {
   if (impl_) cufftDestroy(to_cufft(impl_));
 }
 
-RefPlanHandle::RefPlanHandle(RefPlanHandle&& other) noexcept : impl_(other.impl_) {
+RefPlanHandle::RefPlanHandle(RefPlanHandle&& other) noexcept
+    : impl_(other.impl_), direction_(other.direction_), batch_(other.batch_) {
   other.impl_ = 0;
 }
 
@@ -61,6 +63,8 @@ RefPlanHandle& RefPlanHandle::operator=(RefPlanHandle&& other) noexcept {
   if (this != &other) {
     if (impl_) cufftDestroy(to_cufft(impl_));
     impl_ = other.impl_;
+    direction_ = other.direction_;
+    batch_ = other.batch_;
     other.impl_ = 0;
   }
   return *this;
@@ -104,6 +108,33 @@ static void check_cufft(cufftResult r, const std::string& context) {
   }
 }
 
+// Dense out-of-place multidimensional batches must use one cuFFT batch
+// plan, matching the single batched FlagFFT execution measured by the CLI.
+static void ref_plan_multid_batch(RefPlanHandle& plan, std::vector<int> shape, flagfftType type) {
+  auto input_embed = shape;
+  auto output_embed = shape;
+  if (type == FLAGFFT_C2R || type == FLAGFFT_Z2D) input_embed.back() = shape.back() / 2 + 1;
+  if (type == FLAGFFT_R2C || type == FLAGFFT_D2Z) output_embed.back() = shape.back() / 2 + 1;
+  auto distance = [](const std::vector<int>& embed) {
+    int64_t value = 1;
+    for (int length : embed) {
+      if (length <= 0 || value > std::numeric_limits<int>::max() / length) {
+        throw std::runtime_error("cuFFT batch distance exceeds the PlanMany integer range");
+      }
+      value *= length;
+    }
+    return static_cast<int>(value);
+  };
+  cufftHandle handle = 0;
+  const auto result = cufftPlanMany(&handle, static_cast<int>(shape.size()), shape.data(),
+                                   input_embed.data(), 1, distance(input_embed),
+                                   output_embed.data(), 1, distance(output_embed),
+                                   to_cufft_type(type), plan.batch());
+  if (result != CUFFT_SUCCESS && handle != 0) cufftDestroy(handle);
+  check_cufft(result, "cufftPlanMany(multidimensional batch)");
+  plan.replace(from_cufft(handle));
+}
+
 // =========================================================================
 // Plan creation
 // =========================================================================
@@ -116,6 +147,10 @@ void ref_plan_1d(RefPlanHandle& plan, int nx, flagfftType type, int batch) {
 }
 
 void ref_plan_2d(RefPlanHandle& plan, int nx, int ny, flagfftType type) {
+  if (plan.batch() > 1) {
+    ref_plan_multid_batch(plan, {nx, ny}, type);
+    return;
+  }
   cufftHandle h;
   auto r = cufftPlan2d(&h, nx, ny, to_cufft_type(type));
   check_cufft(r, "cufftPlan2d");
@@ -123,6 +158,10 @@ void ref_plan_2d(RefPlanHandle& plan, int nx, int ny, flagfftType type) {
 }
 
 void ref_plan_3d(RefPlanHandle& plan, int nx, int ny, int nz, flagfftType type) {
+  if (plan.batch() > 1) {
+    ref_plan_multid_batch(plan, {nx, ny, nz}, type);
+    return;
+  }
   cufftHandle h;
   auto r = cufftPlan3d(&h, nx, ny, nz, to_cufft_type(type));
   check_cufft(r, "cufftPlan3d");

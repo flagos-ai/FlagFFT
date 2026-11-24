@@ -70,8 +70,11 @@ if args.get("input") != "-" or args.get("output-dir") != "-":
     sys.exit(2)
 implementation = args["implementation"]
 api, direction = args["api"], args["direction"]
-shape = tuple(int(n) for n in args["shape"].split(","))
+shape = tuple(int(n) for n in args["shape"].replace("x", ",").split(","))
 batch = int(args["batch"])
+if os.environ.get("FAKE_CAPTURE_BATCH_REPORT", "1") == "1":
+    execution_batch = int(os.environ.get("FAKE_CAPTURE_EXECUTION_BATCH", str(batch)))
+    print(f"[capture-batch] requested={{batch}} execution={{execution_batch}}", file=sys.stderr)
 mode = os.environ.get("FAKE_CAPTURE_PLATFORM_MODE", "ok")
 if implementation == "platform" and mode == "error":
     print("platform capture failed", file=sys.stderr)
@@ -126,6 +129,66 @@ def fake_capture(tmp_path):
     )
     script.chmod(0o755)
     return script
+
+
+def test_optest_records_cases_on_the_scheduled_device(tmp_path):
+    build = tmp_path / "build"
+    capture_dir = build / "ctest"
+    capture_dir.mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text("BACKEND:STRING=PPU\n")
+    fake_capture(capture_dir).rename(capture_dir / "numpy_fft_capture")
+    cli = build / "flagfft-cli"
+    cli.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os\n"
+        "assert os.environ['CUDA_VISIBLE_DEVICES'] == '3'\n"
+        "assert os.environ['PPU_VISIBLE_DEVICES'] == '3'\n"
+        "print(json.dumps({'cases': [{'timing': {"
+        "'flagfft_median_ms': 0.01, 'ref_median_ms': 0.02, 'speedup': 2.0"
+        "}}]}))\n"
+    )
+    cli.chmod(0o755)
+    env = {
+        **os.environ,
+        "FLAGFFT_BUILD_DIR": str(build),
+        "FLAGFFT_OPTEST_FULL": "0",
+        "FLAGFFT_NUMPY_CAPTURE_FULL_BATCH": "0",
+        "FAKE_CAPTURE_PLATFORM_MODE": "corrupt",
+        "CUDA_VISIBLE_DEVICES": "3",
+        "PPU_VISIBLE_DEVICES": "0",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
+    op = "1d_ct_single_c2c"
+    for path, option, argument, phase in (
+        ("tests/", "--ref", "cpu", "accuracy"),
+        ("benchmark/", "--level", "core", "performance"),
+    ):
+        output = tmp_path / f"{phase}.json"
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             path, "-m", op, "--quick", "--record", "json", "--output", str(output),
+             option, argument],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        data = json.loads(output.read_text())
+        if phase == "accuracy":
+            assert len(data) == 4
+            assert all(case["result"] == "passed" for case in data.values())
+            assert all(case["platform_accuracy"]["status"] == "Failed" for case in data.values())
+        else:
+            assert data[op]["result"] == "passed"
+            assert len(data[op]["details"]) == 2
+            for dtype in data[op]["details"]:
+                assert dtype["native_baseline_skip_reason"]
+                assert len(dtype["result"]) == 2
+                for timing in dtype["result"]:
+                    assert timing["latency"] == 0.01
+                    assert timing["speedup"] is None
 
 
 def summary_op_entry(summary, op_id):
@@ -339,6 +402,28 @@ def test_npu_reference_skip_keeps_flagfft_accuracy(operators):
     assert op_result["performance"]["status"] == "Skipped"
 
 
+def test_reference_performance_skip_has_one_identity_across_scales(operators):
+    op = next(op for op in operators if op["id"] == "2d_c2c")
+    cases = []
+    for scale in (0.5, 1.0, 2.0):
+        case = dict(op_id=op["id"], op_api="c2c", api="c2c", dtype="torch.float32",
+                    rank=2, algorithm="2d", batch_mode="single", shape=[32, 997], batch=1,
+                    placement="out-of-place", direction="forward", scale=scale,
+                    skip_reason="fixed SiP reference factor limit")
+        case["case_id"] = RUN_TESTS.case_name(case)
+        cases.append(case)
+    direct = RUN_TESTS.policy_skip_message(cases[0], "performance")
+    expected = RUN_TESTS.case_name(cases[0], performance=True)
+    assert direct["case_id"] == expected and "scale" not in direct
+    messages = [RUN_TESTS.policy_skip_message(case, "performance")
+                for case in RUN_TESTS.performance_cases(cases)]
+    assert len(messages) == 1
+    result = RUN_TESTS.aggregate_results(messages, [op], cases, False, True)
+    performance = result[op["id"]]["performance"]
+    assert performance["status"] == "Skipped"
+    assert performance["total"] == 1 and list(performance["cases"]) == [expected]
+
+
 def test_dtype_and_placement_are_visible_in_incremental_csv(operators, matrix):
     op = operators[0]
     case = next(
@@ -427,6 +512,9 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
 ):
     # A CPU-only capture fixture exercises the real CLI/worker/signal path.
     capture = fake_capture(tmp_path)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=CUDA\n")
     size = min(matrix[operators[0]["sizes"]])
     cases = RUN_TESTS.expand_test_cases(
         [operators[0]], matrix, shapes={(size,)}, scales="1"
@@ -447,6 +535,8 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             "1",
             "--capture-bin",
             str(capture),
+            "--build-dir",
+            str(build_dir),
             "--output-dir",
             str(output),
         ],
@@ -482,7 +572,7 @@ def test_interrupt_saves_completed_cases_and_stops_native_process(
             (output / operators[0]["id"] / "accuracy_result.json").read_text()
         )
         assert accuracy["status"] == "Incomplete"
-        assert accuracy["passed"] == 1 and accuracy["missing"] == 3
+        assert accuracy["passed"] == 1 and accuracy["missing"] == len(cases) - 1
         with pytest.raises(ProcessLookupError):
             os.kill(native_pid, 0)
         assert (output / "manifest.json").is_file()
@@ -548,6 +638,8 @@ def test_scale_expansion_keeps_performance_unique(operators, matrix):
         ("3d", [16]),
         ("batch", []),
         ("batch", [16, 16]),
+        ("2d_batch", [3]),
+        ("3d_batch", [8]),
     ],
 )
 def test_invalid_batch_matrix_is_rejected(tmp_path, matrix, mode, values):
@@ -556,6 +648,95 @@ def test_invalid_batch_matrix_is_rejected(tmp_path, matrix, mode, values):
     path.write_text(yaml.safe_dump(matrix))
     with pytest.raises(ValueError):
         RUN_TESTS.load_test_matrix(path)
+
+
+@pytest.mark.parametrize(
+    "filename,count",
+    [
+        ("test_matrix_generalization.yaml", 736),
+        ("test_matrix_generalization_holdout.yaml", 624),
+    ],
+)
+def test_generalization_matrices_cover_all_ops_with_unseen_shapes(
+    operators, matrix, filename, count
+):
+    candidate = RUN_TESTS.load_test_matrix(ROOT / "conf" / filename)
+    cases = RUN_TESTS.expand_all_test_cases(operators, candidate)
+    assert len(cases) == count
+    assert len(RUN_TESTS.performance_cases(cases)) == count
+    assert len({case["case_id"] for case in cases}) == count
+    assert {case["op_id"] for case in cases} == {op["id"] for op in operators}
+    acceptance_shapes = {
+        tuple(case["shape"]) for case in RUN_TESTS.expand_all_test_cases(operators, matrix)
+    }
+    assert not acceptance_shapes & {tuple(case["shape"]) for case in cases}
+    assert all(not case["require_fourstep_plan"] for case in cases)
+    fourstep = next(case for case in cases if case["algorithm"] == "fourstep")
+    assert RUN_TESTS.fourstep_path_error(fourstep, PLAN) is None
+
+
+def test_discovery_and_holdout_have_distinct_transform_shapes(operators):
+    shapes = []
+    for filename in (
+        "test_matrix_generalization.yaml", "test_matrix_generalization_holdout.yaml"
+    ):
+        candidate = RUN_TESTS.load_test_matrix(ROOT / "conf" / filename)
+        cases = RUN_TESTS.expand_all_test_cases(operators, candidate)
+        shapes.append({tuple(case["shape"]) for case in cases})
+    assert not shapes[0] & shapes[1]
+
+
+@pytest.mark.parametrize(
+    "mode,values",
+    [("batch", [1, 3]), ("2d_batch", [1]), ("3d_batch", [True]), ("2d_batch", [3, 3])],
+)
+def test_generalization_keeps_batch_legality_checks(tmp_path, matrix, mode, values):
+    matrix["profile"] = "generalization"
+    matrix["batches"][mode] = values
+    path = tmp_path / "matrix.yaml"
+    path.write_text(yaml.safe_dump(matrix))
+    with pytest.raises(ValueError):
+        RUN_TESTS.load_test_matrix(path)
+
+
+def test_matrix_profile_and_batch_keys_are_validated(tmp_path, matrix):
+    path = tmp_path / "matrix.yaml"
+    matrix["profile"] = "generlization"
+    path.write_text(yaml.safe_dump(matrix))
+    with pytest.raises(ValueError, match="profile"):
+        RUN_TESTS.load_test_matrix(path)
+    matrix["profile"] = "generalization"
+    del matrix["batches"]["3d_batch"]
+    path.write_text(yaml.safe_dump(matrix))
+    with pytest.raises(ValueError, match="batches must define"):
+        RUN_TESTS.load_test_matrix(path)
+
+
+def test_generalization_dry_run_selects_matrix_and_omits_npu_fp64(tmp_path, capsys):
+    build_dir = tmp_path / "npu-build"
+    build_dir.mkdir()
+    (build_dir / "CMakeCache.txt").write_text("BACKEND:STRING=NPU\n")
+    path = ROOT / "conf" / "test_matrix_generalization.yaml"
+    output_dir = tmp_path / "results"
+    assert RUN_TESTS.main(
+        [
+            "--dry-run", "--matrix-file", str(path),
+            "--build-dir", str(build_dir), "--output-dir", str(output_dir),
+        ]
+    ) == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output[output.index("{") :])
+    assert payload["matrix_file"] == str(path)
+    assert payload["matrix_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert payload["test_matrix"]["split"] == "discovery"
+    assert len(payload["operators"]) == 30
+    assert len(payload["cases"]) == 368
+    assert len(payload["performance_cases"]) == 368
+    assert {case["dtype"] for case in payload["cases"]} == {"torch.float32"}
+    assert {
+        case["batch"] for case in payload["cases"] if case["rank"] == 1
+    } == {1, 3, 16, 65}
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize("scales", ["nan", "inf", "0", "-1", "1,1", ""])
@@ -587,6 +768,25 @@ def test_capture_command_uses_api_instead_of_id_prefix(tmp_path, operators, matr
     perf_cmd = RUN_TESTS.build_perf_cmd(case, tmp_path, 2, 5)
     assert "--print-path" in perf_cmd
     assert "--scale" not in perf_cmd
+
+
+def test_full_batch_capture_is_explicit_without_changing_bounded_default(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_test_cases(operators, matrix, "3d")[0]
+    for builder in (
+        lambda **kw: RUN_TESTS.build_accuracy_cmd(case,tmp_path/'capture',tmp_path,'flagfft',**kw),
+        lambda **kw: RUN_TESTS.build_stream_accuracy_cmd(case,tmp_path/'capture','flagfft',**kw),
+    ):
+        assert '--preserve-batch=1' not in builder()
+        assert '--preserve-batch=1' in builder(preserve_batch=True)
+
+
+@pytest.mark.parametrize('plan,error', [
+    ('=== FlagFFT Plan ===\nrank=3 n=[128,2048,64] batch=4 type=41\n',None),
+    ('=== FlagFFT Plan ===\nrank=3 n=[128,2048,64] batch=1 type=41\n','capture executed batch=1, requested batch=4'),
+    (None,'capture plan is missing the executed batch size'),
+])
+def test_preserved_batch_checks_the_actual_plan(plan,error):
+    assert RUN_TESTS.capture_batch_error({'batch':4},plan)==error
 
 
 @pytest.mark.parametrize("api", ["c2r", "z2d"])
@@ -1272,3 +1472,46 @@ def test_failed_numeric_metrics_are_written_as_strict_json(tmp_path):
     )
     data = json.loads(path.read_text(), parse_constant=lambda value: pytest.fail(value))
     assert data == {"finite": False, "rel_l2": None, "rel_linf": None}
+
+
+def test_capture_rejects_extra_stdout_bytes(tmp_path, operators, matrix):
+    case = RUN_TESTS.expand_test_cases([operators[0]], matrix, scales="1")[0]
+    capture = fake_capture(tmp_path)
+    capture.write_text(capture.read_text() + '\nsys.stdout.buffer.write(b"unexpected compiler log")\nsys.stdout.buffer.flush()\n')
+    record = RUN_TESTS.run_accuracy_case(
+        case, capture, tmp_path / "output", 0, 20, tmp_path / "scratch"
+    )
+    assert record["accuracy"]["status"] == "Error"
+    assert "beyond the expected binary output" in record["accuracy"]["error"]
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_fourstep_capture_preserves_compile_failure_and_timeout(tmp_path, operators, matrix, timeout):
+    case = next(c for c in RUN_TESTS.expand_all_test_cases(operators, matrix)
+                if c["algorithm"] == "fourstep" and c["dtype"] == "torch.float32")
+    executable = tmp_path / "failed_capture"
+    executable.write_text(f"#!{sys.executable}\nimport sys,time\n"
+                          "sys.stderr.write('compiler diagnostic before plan creation\\n')\n"
+                          "sys.stderr.flush()\n" +
+                          ("time.sleep(30)\n" if timeout else "sys.exit(1)\n"))
+    executable.chmod(0o755)
+    result = RUN_TESTS.run_accuracy_capture(case, executable, tmp_path / "capture",
+                                           "flagfft", 0, 1)
+    assert result["status"] == ("Timeout" if timeout else "Error")
+    assert "compiler diagnostic before plan creation" in result["error"]
+    assert "without a FourStep node" not in result["error"]
+@pytest.mark.parametrize("execution_batch,report,expected", [(4,"1","Passed"),(1,"1","Failed"),(4,"0","Failed")])
+def test_full_batch_accuracy_requires_matching_execution_plan(monkeypatch,tmp_path,operators,matrix,
+                                                              execution_batch,report,expected):
+    monkeypatch.setenv("FLAGFFT_NUMPY_CAPTURE_FULL_BATCH","1")
+    monkeypatch.setenv("FAKE_CAPTURE_EXECUTION_BATCH",str(execution_batch))
+    monkeypatch.setenv("FAKE_CAPTURE_BATCH_REPORT",report)
+    case = dict(RUN_TESTS.expand_all_test_cases(operators,matrix)[0])
+    case["batch"] = 4
+    case["case_id"] = RUN_TESTS.case_name(case)
+    record=RUN_TESTS.run_accuracy_case(case,fake_capture(tmp_path),tmp_path/"out",0,30,tmp_path/"scratch")
+    assert record["accuracy"]["status"]==expected
+    if expected=="Passed":
+        assert record["accuracy"]["capture_batch"]=={"requested":4,"execution":4}
+    else:
+        assert "requested full batch" in record["accuracy"]["error"]
