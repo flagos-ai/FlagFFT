@@ -7894,7 +7894,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const bool use_ix_2d_transpose_store =
       request.device_type == "ix" && request.device_arch == "71" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      n0 >= 512 && n0 <= 4096 && n1 >= 512 && n1 <= 4096 &&
+      ((ix_nd_pack > 0 && n0 == 128 && n1 == 128) ||
+       (n0 >= 512 && n0 <= 4096 && n1 >= 512 && n1 <= 4096)) &&
       flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0);
   const bool use_cuda_2d_transpose_store = request.device_type == "cuda" &&
       request.device_arch == "sm_80" && flag_or_default("FLAGFFT_CUDA_2D_FUSED_STORE", false);

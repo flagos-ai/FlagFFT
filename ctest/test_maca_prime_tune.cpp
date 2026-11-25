@@ -894,6 +894,12 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   request.raw_dim=request.origin_rank=2;
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),16);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,2048,2048),16);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),8);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,128,128),8);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,3,128,128),0);
+  request.real_transform_kind = "r2c";
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),0);
+  request.real_transform_kind.clear();
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,3,2048,2048),0);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,1024,2048),0);
   request.input_dtype="complex128";
@@ -910,6 +916,7 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   unsetenv("FLAGFFT_IX_WARP_FFT");
   setenv("FLAGFFT_IX_2D_TRANSPOSE_STORE","0",1);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),0);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),0);
   unsetenv("FLAGFFT_IX_2D_TRANSPOSE_STORE");
   request.raw_dim=request.origin_rank=3;
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,256,256,256),16);

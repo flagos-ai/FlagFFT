@@ -205,8 +205,10 @@ bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
 
 int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                                 int64_t n0, int64_t n1, int64_t n2) {
-  const bool matrix=request.origin_rank==2 && request.raw_dim==2 &&
-                    n0==2048 && n1==2048 && n2==0;
+  const bool small_matrix = n0 == 128 && n1 == 128 && request.real_transform_kind.empty();
+  const bool large_matrix = n0 == 2048 && n1 == 2048;
+  const bool matrix = request.origin_rank == 2 && request.raw_dim == 2 && n2 == 0 &&
+                      (small_matrix || large_matrix);
   const bool cube=request.origin_rank==3 && request.raw_dim==3 &&
                   n0==256 && n1==256 && n2==256;
   const bool elongated=request.origin_rank==3 && request.raw_dim==3 &&
@@ -226,7 +228,10 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
     throw std::runtime_error(std::string(name)+" must be 0 or 1");
   };
   if (!enabled("FLAGFFT_IX_ND_WARP",true) || !enabled("FLAGFFT_IX_WARP_FFT",true)) return 0;
-  if (matrix) return enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE",true) ? 16 : 0;
+  if (matrix) {
+    if (!enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE", true)) return 0;
+    return small_matrix ? 8 : 16;
+  }
   if (!enabled("FLAGFFT_IX_WARP256",true) || !enabled("FLAGFFT_3D_FUSED_STORE",true) ||
       enabled("FLAGFFT_IX_3D_HYBRID",false)) return 0;
   if (!request.real_transform_kind.empty() &&
