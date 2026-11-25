@@ -2761,20 +2761,25 @@ namespace {
     const bool packed_cta = n==16384 && batch==64 &&
                            flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==7);
     if (request.device_type != "ix" || request.device_arch != "71" ||
-        request.raw_dim != 1 || request.origin_rank > 1 || batch <= 0 ||
+        batch <= 0 ||
         request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
         request.real_transform_kind != "c2r" || request.fft_length != n ||
         n < 32 || (n > 4096 && !packed_cta) || (n & (n - 1)) != 0 ||
         request.input_strides.empty() || request.input_strides.back() != 1) {
       return false;
     }
+    const bool cube_boundary = request.origin_rank == 3 && request.raw_dim == 3 &&
+        n == 256 && request.ix_warp_fft_pack_default > 0 &&
+        (batch == 65536 || batch == 262144);
+    if ((request.raw_dim != 1 || request.origin_rank > 1) && !cube_boundary) return false;
     const char *setting = std::getenv("FLAGFFT_IX_FUSED_C2R");
     if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_IX_FUSED_C2R must be 0 or 1");
     }
     // Screen the existing half-length inverse leaf without changing the
     // qualified default until IX correctness and paired timings are available.
-    return setting ? std::string(setting) == "1" : request.ix_fourstep_preset==7;
+    return setting ? std::string(setting) == "1" :
+                     (cube_boundary || request.ix_fourstep_preset == 7);
   }
 
   struct PackedRealChild {
@@ -7366,9 +7371,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
         n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
         DeviceAllocation{}, n1);
   } else {
+    const int64_t real_rows = batch * n0 * n1;
+    const bool packed_inverse = inverse && ix_fused_c2r_leaf_enabled(n2_request, real_rows);
+    if (packed_inverse) n2_request.ix_warp_fft_pack_default = 8;
     n2_real_fft = inverse
-        ? compile_raw_c2r_node(node->n2_plan, n2_request, batch * n0 * n1, false)
-        : compile_raw_r2c_node(node->n2_plan, n2_request, batch * n0 * n1, false);
+        ? compile_raw_c2r_node(node->n2_plan, n2_request, real_rows, packed_inverse)
+        : compile_raw_r2c_node(node->n2_plan, n2_request, real_rows, false);
   }
   auto n1_cube_request = n1_request;
   if (ix_real_screen && fused_middle && batch > 1) n1_cube_request.batch = n0 * half;
