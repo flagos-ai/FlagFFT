@@ -2697,13 +2697,6 @@ namespace {
     return length / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
   }
 
-  bool maca_2d_fused_column_store_enabled(const FFTRequest &request) {
-    const int64_t length = request.requested_n;
-    return request.device_type == "maca" && request.device_arch == "102" &&
-        length >= 512 && length <= 2048 && (length & (length - 1)) == 0 &&
-        flag_or_default("FLAGFFT_MACA_2D_FUSED_COL_STORE", false);
-  }
-
   bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
                                            bool inverse,
                                            int64_t batch,
@@ -8139,10 +8132,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", true);
     const bool hcu_col_permuted_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
         request.origin_rank == 2 && flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
-    const bool maca_col_permuted_store = maca_2d_fused_column_store_enabled(col_request);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-    const bool use_col_permuted_store =
-        col_leaf && (musa_col_permuted_store || hcu_col_permuted_store || maca_col_permuted_store);
+    const bool use_col_permuted_store = (musa_col_permuted_store || hcu_col_permuted_store) && col_leaf != nullptr;
     std::shared_ptr<CompiledRawNode> col_fft = use_col_permuted_store
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
@@ -8402,10 +8393,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         !musa_single_fp32_c2r && flag_or_default("FLAGFFT_MUSA_2D_REAL_COL_STORE", true);
     const bool hcu_col_permuted_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
         request.origin_rank == 2 && flag_or_default("FLAGFFT_HCU_2D_REAL_COL_STORE", false);
-    const bool maca_col_permuted_store = maca_2d_fused_column_store_enabled(col_request);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
-    const bool use_col_permuted_store =
-        col_leaf && (musa_col_permuted_store || hcu_col_permuted_store || maca_col_permuted_store);
+    const bool use_col_permuted_store = (musa_col_permuted_store || hcu_col_permuted_store) && col_leaf != nullptr;
     std::shared_ptr<CompiledRawNode> col_fft = use_col_permuted_store
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
