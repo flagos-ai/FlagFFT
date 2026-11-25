@@ -2728,7 +2728,7 @@ namespace {
       return row && col && row->length <= 1024 && col->length <= 1024;
     }
     if (!bluestein || request.device_type != "ix" || request.device_arch != "71" ||
-        request.raw_dim != 1 || request.origin_rank > 1 || batch != 64 ||
+        request.raw_dim != 1 || request.origin_rank > 1 ||
         request.packed_real_child || request.fft_length != request.requested_n ||
         request.requested_n != bluestein->length ||
         (bluestein->length != 1009 && bluestein->length != 8191 && bluestein->length != 16381) ||
@@ -2736,6 +2736,12 @@ namespace {
         (request.real_transform_kind != "r2c" && request.real_transform_kind != "c2r") ||
         request.input_strides.empty() || request.input_strides.back() != 1) {
       return false;
+    }
+    if (batch != 64) {
+      const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+      if (batch != 1 || request.batch != 1 || bluestein->length != 1009 ||
+          bluestein->conv_length != 2048 || request.input_layout != "contiguous" ||
+          request.requires_contiguous_copy || (policy && std::string(policy) != "balanced")) return false;
     }
     const char *setting = std::getenv("FLAGFFT_IX_PRIME_REAL_FUSION");
     if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
