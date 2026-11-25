@@ -894,6 +894,10 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   request.raw_dim=request.origin_rank=2;
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),16);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,2048,2048),16);
+  request.real_transform_kind = "c2r";
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),4);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,2048,2048),4);
+  request.real_transform_kind.clear();
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),8);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,128,128),8);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,3,128,128),0);

@@ -230,7 +230,8 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
   if (!enabled("FLAGFFT_IX_ND_WARP",true) || !enabled("FLAGFFT_IX_WARP_FFT",true)) return 0;
   if (matrix) {
     if (!enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE", true)) return 0;
-    return small_matrix ? 8 : 16;
+    if (small_matrix) return 8;
+    return request.real_transform_kind == "c2r" ? 4 : 16;
   }
   if (!enabled("FLAGFFT_IX_WARP256",true) || !enabled("FLAGFFT_3D_FUSED_STORE",true) ||
       enabled("FLAGFFT_IX_3D_HYBRID",false)) return 0;
