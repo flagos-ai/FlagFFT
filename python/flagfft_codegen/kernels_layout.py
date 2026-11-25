@@ -1266,6 +1266,41 @@ def _build_packed_transpose_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
+def _build_paired_fp64_transpose_kernel_source(
+    n0: int, n1: int, tile_size: int
+) -> tuple[str, str, list[str]]:
+    """Swap matrix axes while keeping both doubles of each value adjacent."""
+    kernel_name = f"_paired_transpose_kernel_n{n0}_{n1}_f64_t{tile_size}"
+    wide_index = ".to(tl.int64)" if 2 * n0 * n1 >= 2**31 else ""
+    source = dedent(
+        f"""
+        @triton.jit
+        def {kernel_name}(in_ptr, out_ptr, nbatch):
+            row = tl.program_id(1) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id(0) * {tile_size} + tl.arange(0, {tile_size})
+            batch = tl.program_id(2)
+            component = tl.arange(0, 2)[None, None, :]
+            batch_base = batch.to(tl.int64) * {2 * n0 * n1}
+            src = batch_base + (row{wide_index}[:, None, None] * {n1} + col[None, :, None]) * 2
+            row_mask = row < {n0}
+            col_mask = col < {n1}
+            valid_batch = batch < nbatch
+            values = tl.load(
+                in_ptr + src + component,
+                mask=row_mask[:, None, None] & col_mask[None, :, None] & valid_batch,
+                other=0.0,
+            )
+            dst = batch_base + (col{wide_index}[:, None, None] * {n0} + row[None, :, None]) * 2
+            tl.store(
+                out_ptr + dst + component,
+                tl.permute(values, (1, 0, 2)),
+                mask=col_mask[:, None, None] & row_mask[None, :, None] & valid_batch,
+            )
+        """
+    )
+    return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+
 def _build_tiled_transpose3d_kernel_source(
     s0: int, s1: int, s2: int, order: str, dtype: str, block: int = 1024
 ) -> tuple[str, list[str], list[str]]:

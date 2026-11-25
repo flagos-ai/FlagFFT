@@ -603,6 +603,18 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   request.raw_dim = 2;
   request.requires_contiguous_copy = true;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
+  request.requires_contiguous_copy = false;
+  request.device_arch = "102";
+  request.batch = 4;
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 1024, 2048));
+  request.input_dtype = request.output_dtype = "complex128";
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 1024));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 3072));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.device_arch = "other";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048));
 }
 
 TEST(Plan2D, RcPreservesOnlySmallMixedBatchedRows) {

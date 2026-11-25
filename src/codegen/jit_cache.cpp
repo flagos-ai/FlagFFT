@@ -510,6 +510,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *transpose = std::getenv("FLAGFFT_CUDA_2D_TRANSPOSE");
     cache_key += ";cuda-2d-transpose=" + std::string(transpose ? transpose : "auto");
   }
+  if (key.kind == KernelKind::TiledTranspose && adaptor::backend_name() == "maca") {
+    const char *transpose = std::getenv("FLAGFFT_MACA_2D_TRANSPOSE");
+    cache_key += ";maca-2d-transpose=" + std::string(transpose ? transpose : "auto");
+  }
   if (adaptor::backend_name() == "cuda" &&
       (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafStridedPermutedStore ||
        key.kind == KernelKind::LeafR2CPermutedStore ||

@@ -40,21 +40,28 @@ inline bool npu_portable_leaf_enabled(const FFTRequest &request) {
        performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
 }
 
-// The 2D real-row path is intentionally a narrow MACA policy.  Keep
-// the predicate inline so planner-only CPU tests can exercise the contract
-// without constructing a device-backed TritonCompiler.
+// Keep the existing single-precision default while screening compact rows
+// for dense, large C550 matrices in both precisions.
 inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
                                       int64_t batch,
                                       int64_t n0,
                                       int64_t n1,
                                       bool default_enabled = false) {
+  if (request.device_type != "maca" || request.raw_dim != 2 ||
+      batch <= 0 || request.batch != batch ||
+      request.input_dtype != request.output_dtype ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      n0 <= 256 || n1 <= 1 || n1 % 2 != 0) {
+    return false;
+  }
   const char *setting = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
-  const bool enabled = setting == nullptr ? default_enabled : std::string(setting) == "1";
-  return enabled && request.device_type == "maca" &&
-         request.raw_dim == 2 && request.batch == 1 && batch == 1 &&
-         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-         request.input_layout == "contiguous" && !request.requires_contiguous_copy && n0 > 256 &&
-         n1 > 1 && (n1 % 2) == 0;
+  const std::string mode = setting ? setting : (default_enabled ? "1" : "0");
+  if (mode == "dense" && request.device_arch == "102" && n1 >= 256 &&
+      (n0 & (n0 - 1)) == 0 && (n1 & (n1 - 1)) == 0) {
+    return request.input_dtype == "complex64" || request.input_dtype == "complex128";
+  }
+  return (mode == "1" || (mode == "dense" && default_enabled)) &&
+         batch == 1 && request.input_dtype == "complex64";
 }
 
 // In the RC schedule retain the existing batched policy for small mixed leaves.

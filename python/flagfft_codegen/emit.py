@@ -46,6 +46,7 @@ from .kernels_common import (
 from .kernels_layout import (
     _build_complex_pair_transpose_kernel_source,
     _build_packed_transpose_kernel_source,
+    _build_paired_fp64_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
     _build_tiled_transpose3d_slice_group_kernel_source,
@@ -879,6 +880,8 @@ def _emit_tiled_transpose_jit_kernel(
 ) -> dict[str, Any]:
     cuda_mode = os.environ.get("FLAGFFT_CUDA_2D_TRANSPOSE", "auto") if _declared_backend() == "cuda" else "auto"
     hcu_mode = os.environ.get("FLAGFFT_HCU_2D_TRANSPOSE", "auto") if _hcu_backend_active() else "auto"
+    maca_target = _maca_backend_active()
+    maca_mode = _maca_knob("2D_TRANSPOSE") if maca_target or _ix_backend_active() else ""
     if hcu_mode not in {"auto", "register", "scalar", "coalesced"}:
         raise ValueError("FLAGFFT_HCU_2D_TRANSPOSE must be auto, register, scalar or coalesced")
     if cuda_mode not in {"auto", "register", "scalar", "packed"}:
@@ -894,11 +897,13 @@ def _emit_tiled_transpose_jit_kernel(
         )
     elif (
         cuda_mode == "packed" or (hcu_mode == "coalesced" and dtype == "complex64")
-        or ((_maca_backend_active() or _ix_backend_active())
-            and dtype == "complex64"
-            and _maca_knob("2D_TRANSPOSE") == "packed")
+        or (maca_mode == "packed" and dtype == "complex64")
     ):
         kernel_name, kernel_source, arg_names = _build_packed_transpose_kernel_source(
+            n0, n1, tile_size
+        )
+    elif maca_target and maca_mode == "packed" and dtype == "complex128":
+        kernel_name, kernel_source, arg_names = _build_paired_fp64_transpose_kernel_source(
             n0, n1, tile_size
         )
     else:

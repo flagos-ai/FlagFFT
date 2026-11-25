@@ -1135,12 +1135,13 @@ def test_tiled_transpose_uses_register_transpose(kernels) -> None:
     assert "safe_col[:, None] * 64 + safe_row[None, :]" in source
 
 
-@pytest.mark.parametrize("backend,dtype,packed", [
-    ("maca", "complex64", True),
-    ("maca", "complex128", False),
-    ("cuda", "complex64", False),
+@pytest.mark.parametrize("backend,dtype,packed,paired", [
+    ("maca", "complex64", True, False),
+    ("maca", "complex128", False, True),
+    ("cuda", "complex64", False, False),
+    ("cuda", "complex128", False, False),
 ])
-def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, packed):
+def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, packed, paired):
     from flagfft_codegen import emit
 
     monkeypatch.setattr(emit, "_maca_backend_active", lambda: backend == "maca")
@@ -1150,6 +1151,10 @@ def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, pack
     )
     source = Path(metadata["module_path"]).read_text()
     assert ("tl.pointer_type(tl.uint64)" in source) == packed
+    assert ("tl.permute(values, (1, 0, 2))" in source) == paired
+    if paired:
+        assert "col < 1025" in source
+        assert "batch < nbatch" in source
     assert metadata["tile_size"] == 32
     assert metadata["num_warps"] == 4
 
