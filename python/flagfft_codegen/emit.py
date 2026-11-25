@@ -882,6 +882,17 @@ def _emit_tiled_transpose_jit_kernel(
     hcu_mode = os.environ.get("FLAGFFT_HCU_2D_TRANSPOSE", "auto") if _hcu_backend_active() else "auto"
     maca_target = _maca_backend_active()
     maca_mode = _maca_knob("2D_TRANSPOSE") if maca_target or _ix_backend_active() else ""
+    maca_tuned = maca_target and maca_mode == "tuned"
+    num_warps = 4
+    if maca_tuned and min(n0, n1) >= 1024:
+        from .backend_profile import current_profile
+
+        if current_profile().device_arch == "102":
+            if dtype == "complex128":
+                tile_size = 16
+            elif n0 % 2 and n1 % tile_size == 0:
+                # A wider CTA improves stores to the odd half-spectrum pitch.
+                num_warps = 8
     if hcu_mode not in {"auto", "register", "scalar", "coalesced"}:
         raise ValueError("FLAGFFT_HCU_2D_TRANSPOSE must be auto, register, scalar or coalesced")
     if cuda_mode not in {"auto", "register", "scalar", "packed"}:
@@ -897,12 +908,12 @@ def _emit_tiled_transpose_jit_kernel(
         )
     elif (
         cuda_mode == "packed" or (hcu_mode == "coalesced" and dtype == "complex64")
-        or (maca_mode == "packed" and dtype == "complex64")
+        or ((maca_mode == "packed" or maca_tuned) and dtype == "complex64")
     ):
         kernel_name, kernel_source, arg_names = _build_packed_transpose_kernel_source(
             n0, n1, tile_size
         )
-    elif maca_target and maca_mode == "packed" and dtype == "complex128":
+    elif maca_target and (maca_mode == "packed" or maca_tuned) and dtype == "complex128":
         kernel_name, kernel_source, arg_names = _build_paired_fp64_transpose_kernel_source(
             n0, n1, tile_size
         )
@@ -921,7 +932,7 @@ def _emit_tiled_transpose_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": 4,
+        "num_warps": num_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,

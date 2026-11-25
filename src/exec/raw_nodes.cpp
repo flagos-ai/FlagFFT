@@ -2489,6 +2489,10 @@ void CompiledRawTranspose2D::launch(adaptor::StreamHandle stream,
     return;
   }
 #endif
+  if (triton_kernel->transpose_tile_size > 0) {
+    grid_x = ceil_div(cols, triton_kernel->transpose_tile_size);
+    grid_y = ceil_div(rows, triton_kernel->transpose_tile_size);
+  }
   triton_kernel->launch(stream, kernel_args, grid_x, grid_y, grid_z);
 }
 

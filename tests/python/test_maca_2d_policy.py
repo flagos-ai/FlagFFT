@@ -47,6 +47,36 @@ def test_2d_policy_restores_parent_and_respects_override(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
+    "dtype,shape,tile,warps",
+    [
+        ("complex64", (1025, 2048), 32, 8),
+        ("complex64", (2048, 1025), 32, 4),
+        ("complex128", (1025, 2048), 16, 4),
+        ("complex128", (2048, 1025), 16, 4),
+        ("complex128", (256, 512), 32, 4),
+    ],
+)
+def test_c550_tuned_transpose_metadata(monkeypatch, tmp_path, dtype, shape, tile, warps):
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "tuned")
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        rows, cols = shape
+        meta = emit._emit_tiled_transpose_jit_kernel(
+            n0=rows, n1=cols, dtype=dtype, out_dir=tmp_path,
+        )
+        assert meta["tile_size"] == tile
+        assert meta["num_warps"] == warps
+        assert meta["kernel_name"].endswith(f"_t{tile}")
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize(
     "length,factors,lanes,expected",
     [
         (48, (4, 4, 3), 4, 4),
