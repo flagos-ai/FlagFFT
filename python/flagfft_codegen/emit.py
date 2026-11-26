@@ -1135,7 +1135,7 @@ def _emit_tiled_transpose3d_jit_kernel(
     if fp64_mode == "flat":
         layout = (n0, n1, n2, order)
         long_complex = layout in {(128, 64, 2048, "210"), (2048, 64, 128, "201")}
-        long_real = os.environ.get("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE") == "1" and layout in {
+        long_real = os.environ.get("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", "1") == "1" and layout in {
             (128, 2048, 33, "021"), (128, 33, 2048, "021"), (128, 33, 2048, "210"),
             (2048, 33, 128, "210"), (2048, 33, 128, "201"), (128, 2048, 33, "120"),
         }

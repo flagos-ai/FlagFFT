@@ -6788,7 +6788,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
   const bool maca_real_middle_dif = maca_real_compact && request.device_arch == "102" &&
       request.input_dtype == "complex128" && n0 == 128 && n1 == 2048 && n2 == 64 &&
-      (batch == 1 || batch == 4) && maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", false);
+      (batch == 1 || batch == 4) && maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", true);
   const auto middle_dif_layout = maca_real_middle_dif
       ? MacaDifLayout::Contiguous : MacaDifLayout::Auto;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&

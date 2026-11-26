@@ -2213,7 +2213,7 @@ def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, 
         monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
     else:
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", mode)
-    monkeypatch.delenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", raising=False)
+    monkeypatch.setenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", "0")
     flat = flat and mode != "tile16vec"
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
     token = set_profile(_maca_profile())
@@ -2243,7 +2243,7 @@ def test_maca_flat_fp64_compact_3d_transpose_grid(monkeypatch, tmp_path, shape, 
     from flagfft_codegen.backend_profile import reset_profile, set_profile
     from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
 
-    monkeypatch.setenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", "1")
+    monkeypatch.delenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", raising=False)
     monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
     token = set_profile(_maca_profile())
