@@ -60,7 +60,7 @@ inline bool maca_2d_dense_policy_enabled(const FFTRequest &request,
 inline bool maca_2d_46189_fp32_fused_r2c_enabled(const FFTRequest &request) {
   const char *setting = std::getenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW");
   return request.batch == 4 && request.input_dtype == "complex64" &&
-         request.direction == "forward" && setting && std::string(setting) == "1";
+         request.direction == "forward" && (!setting || std::string(setting) == "1");
 }
 
 inline bool maca_2d_real_rows_enabled(const FFTRequest &request,

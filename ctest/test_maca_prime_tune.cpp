@@ -645,9 +645,14 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
   request.direction = "forward";
+  setenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW", "0", 1);
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
-  setenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW", "1", 1);
+  unsetenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW");
+  unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.batch = 1;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+  request.batch = 4;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 50));
   request.requires_contiguous_copy = true;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
