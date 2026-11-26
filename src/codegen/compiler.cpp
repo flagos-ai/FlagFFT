@@ -5146,7 +5146,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request,
-                                                                  bool maca_3d_fp64_dif) {
+                                                                  MacaDifLayout maca_dif_layout) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   int64_t num_warps = leaf.num_warps;
@@ -5162,9 +5162,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
-  const bool maca_dif = request.input_dtype == "complex128" && leaf.length == 2048 &&
-      (maca_3d_fp64_dif || maca_2d_fp64_dif_policy_);
-  if (maca_dif) key.perm_form = "maca_fp64_dif";
+  const bool maca_dif = maca_dif_layout != MacaDifLayout::Auto ||
+      (maca_2d_fp64_dif_policy_ && request.input_dtype == "complex128" && leaf.length == 2048);
+  if (maca_dif) {
+    key.perm_form = maca_dif_layout == MacaDifLayout::FirstAxis64
+        ? "maca_fp64_dif_first64" : "maca_fp64_dif";
+  }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   std::vector<DeviceAllocation> tables;
   if (maca_dif) {
@@ -6349,12 +6352,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       n1 >= 1024 &&
       n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
-    auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
-    const bool maca_middle_dif = maca_first_store_fp64_enabled && request.device_arch == "102" &&
-        n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4) &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF", false);
+    const bool maca_dif_shape = maca_first_store_fp64_enabled && request.device_arch == "102" &&
+        n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4);
+    const bool maca_first_dif = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_FIRST", false);
+    auto n2_fft = maca_first_dif
+        ? compile_raw_leaf(*n2_leaf, n2_request, MacaDifLayout::FirstAxis64)
+        : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
+    const bool maca_middle_dif = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF", true);
     auto n1_fft = maca_middle_dif
-        ? compile_raw_leaf(*n1_leaf, n1_request, true)
+        ? compile_raw_leaf(*n1_leaf, n1_request, MacaDifLayout::Contiguous)
         : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
@@ -6781,6 +6789,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool maca_real_middle_dif = maca_real_compact && request.device_arch == "102" &&
       request.input_dtype == "complex128" && n0 == 128 && n1 == 2048 && n2 == 64 &&
       (batch == 1 || batch == 4) && maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", false);
+  const auto middle_dif_layout = maca_real_middle_dif
+      ? MacaDifLayout::Contiguous : MacaDifLayout::Auto;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_r2c_first_store = maca_real_compact &&
@@ -7149,12 +7159,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
       n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
     } else if (maca_r2c_first_store) {
-      n1_fft = compile_raw_leaf(*n1_leaf, n1_request, maca_real_middle_dif);
+      n1_fft = compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout);
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
       perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
     } else {
-      n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request, maca_real_middle_dif)
+      n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout)
                        : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       if (inverse) {

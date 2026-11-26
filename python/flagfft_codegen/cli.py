@@ -209,6 +209,7 @@ def main() -> None:
             "inner_middle_c2r_cube",
             "outer_last",
             "maca_fp64_dif",
+            "maca_fp64_dif_first64",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",

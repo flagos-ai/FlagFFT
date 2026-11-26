@@ -85,3 +85,81 @@ def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
         """
     )
     return name, source
+
+
+def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
+    name = f"maca_fp64_dif_first64_{direction}"
+    sign = 1 if direction == "inverse" else -1
+    source = dedent(
+        f"""
+        @triton.jit
+        def _first_axis_split(values, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
+            groups = tl.reshape(values, (GROUPS, 4, QUARTER, 32))
+            digits = tl.reshape(tl.permute(groups, (0, 2, 3, 1)), (GROUPS, QUARTER, 32, 2, 2))
+            ac, bd = tl.split(digits)
+            a, c = tl.split(ac)
+            b, d = tl.split(bd)
+            return a, b, c, d
+
+        @triton.jit
+        def _first_axis_join(a, b, c, d, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
+            digits = tl.reshape(tl.join(tl.join(a, c), tl.join(b, d)), (GROUPS, QUARTER, 32, 4))
+            return tl.reshape(tl.permute(digits, (0, 3, 1, 2)), (64, 32))
+
+        @triton.jit
+        def _first_axis_rotate(real, imag, roots_r, roots_i, phase):
+            co = tl.load(roots_r + phase)[None, :, None]
+            si = tl.load(roots_i + phase)[None, :, None]
+            return real * co - imag * si, real * si + imag * co
+
+        @triton.jit
+        def _first_axis_radix_four(real, imag, roots_r, roots_i, STAGE: tl.constexpr):
+            GROUPS: tl.constexpr = 1 << (2 * STAGE)
+            QUARTER: tl.constexpr = 64 // (4 * GROUPS)
+            ar, br, cr, dr = _first_axis_split(real, GROUPS, QUARTER)
+            ai, bi, ci, di = _first_axis_split(imag, GROUPS, QUARTER)
+            even_r, even_i = ar + cr, ai + ci
+            odd_r, odd_i = br + dr, bi + di
+            diff_even_r, diff_even_i = ar - cr, ai - ci
+            diff_odd_r, diff_odd_i = br - dr, bi - di
+            r1 = diff_even_r - ({sign}) * diff_odd_i
+            i1 = diff_even_i + ({sign}) * diff_odd_r
+            r2, i2 = even_r - odd_r, even_i - odd_i
+            r3 = diff_even_r + ({sign}) * diff_odd_i
+            i3 = diff_even_i - ({sign}) * diff_odd_r
+            if QUARTER > 1:
+                phase = tl.arange(0, QUARTER) * GROUPS
+                r1, i1 = _first_axis_rotate(r1, i1, roots_r, roots_i, phase)
+                r2, i2 = _first_axis_rotate(r2, i2, roots_r, roots_i, phase * 2)
+                r3, i3 = _first_axis_rotate(r3, i3, roots_r, roots_i, phase * 3)
+            return (
+                _first_axis_join(even_r + odd_r, r1, r2, r3, GROUPS, QUARTER),
+                _first_axis_join(even_i + odd_i, i1, i2, i3, GROUPS, QUARTER),
+            )
+
+        @triton.jit
+        def _first_axis_natural(values):
+            digits = tl.reshape(values, (4, 4, 4, 32))
+            return tl.reshape(tl.permute(digits, (2, 1, 0, 3)), (64, 32))
+
+        @triton.jit
+        def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
+            block = tl.program_id(0)
+            if block * 32 >= nbatch:
+                return
+            # One tile spans 32 complete rows of a dense 2048 by 64 plane.
+            plane = block // 64
+            middle = (block % 64) * 32 + tl.arange(0, 32)
+            short = tl.arange(0, 64)
+            pair = tl.arange(0, 2)[None, None, :]
+            base = plane.to(tl.int64) * 262144
+            src = (middle[None, :] * 64 + short[:, None]) * 2
+            real, imag = tl.split(tl.load((in_ptr + base) + src[:, :, None] + pair))
+            for stage in tl.static_range(3):
+                real, imag = _first_axis_radix_four(real, imag, roots_r_ptr, roots_i_ptr, stage)
+            values = tl.join(_first_axis_natural(real), _first_axis_natural(imag))
+            dst = (short[:, None] * 2048 + middle[None, :]) * 2
+            tl.store((out_ptr + base) + dst[:, :, None] + pair, values)
+        """
+    )
+    return name, source

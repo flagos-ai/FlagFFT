@@ -133,7 +133,16 @@ def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
 
 
 @pytest.mark.parametrize("direction", ("forward", "inverse"))
-def test_c550_fp64_dif_leaf_launch_abi(tmp_path, direction):
+@pytest.mark.parametrize(
+    "length,factors,perm_form,kernel_stem,warps,batch_pack",
+    [
+        (2048, (16, 16, 8), "maca_fp64_dif", "maca_fp64_dif2048", 2, 1),
+        (64, (4, 4, 4), "maca_fp64_dif_first64", "maca_fp64_dif_first64", 8, 32),
+    ],
+)
+def test_c550_fp64_dif_leaf_launch_abi(
+    tmp_path, direction, length, factors, perm_form, kernel_stem, warps, batch_pack,
+):
     from flagfft_codegen.emit import emit_jit_kernel
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 
@@ -142,13 +151,13 @@ def test_c550_fp64_dif_leaf_launch_abi(tmp_path, direction):
     }))
     try:
         metadata = emit_jit_kernel(
-            kernel="leaf", length=2048, factors=(16, 16, 8), lanes=128, num_warps=4,
-            generic_radices=(), smem_size=2048, direction=direction, dtype="complex128",
-            prime_n=0, four_step_n1=0, four_step_n2=0, perm_form="maca_fp64_dif", out_dir=tmp_path,
+            kernel="leaf", length=length, factors=factors, lanes=64, num_warps=4,
+            generic_radices=(), smem_size=length, direction=direction, dtype="complex128",
+            prime_n=0, four_step_n1=0, four_step_n2=0, perm_form=perm_form, out_dir=tmp_path,
         )
-        assert metadata["kernel_name"] == f"maca_fp64_dif2048_{direction}"
-        assert metadata["num_warps"] == 2
-        assert metadata["batch_per_block"] == 1
+        assert metadata["kernel_name"] == f"{kernel_stem}_{direction}"
+        assert metadata["num_warps"] == warps
+        assert metadata["batch_per_block"] == batch_pack
         assert metadata["arg_names"] == ["in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "nbatch"]
     finally:
         reset_profile(token)

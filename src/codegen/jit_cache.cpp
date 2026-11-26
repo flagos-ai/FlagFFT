@@ -857,7 +857,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
-      (key.kind == KernelKind::Leaf && key.perm_form == "maca_fp64_dif") ||
+      (key.kind == KernelKind::Leaf && key.perm_form.rfind("maca_fp64_dif", 0) == 0) ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
