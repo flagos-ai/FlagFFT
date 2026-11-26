@@ -139,6 +139,8 @@ def _arg_signature(name: str, dtype: str) -> str:
         return "i64"
     if name == "idx_ptr":
         return "*i32:16"
+    if name == "idx16_ptr":
+        return "*i16:16"
     return _pointer_signature(dtype)
 
 

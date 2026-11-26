@@ -1306,6 +1306,7 @@ def _emit_stage_block(
     packed_smem_alias: bool = False,
     maca_packed_c2r_row: bool = False,
     maca_rader_phase: str = "",
+    maca_rader_index_ptr: str = "idx_ptr",
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2030,7 +2031,7 @@ def _emit_stage_block(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
                 if maca_rader_phase == "gather":
-                    lines.append(f"{indent}src_idx{j} = tl.load(idx_ptr + src_idx{j}, lane_mask, 0)")
+                    lines.append(f"{indent}src_idx{j} = tl.load({maca_rader_index_ptr} + src_idx{j}, lane_mask, 0)")
                     lines.extend(_emit_complex_boundary_load(
                         indent, f"in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2",
                         "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io,
@@ -2856,7 +2857,7 @@ def _emit_stage_block(
                         ])
                 else:
                     lines.extend([
-                        f"{indent}dst_idx{j} = tl.load(idx_ptr + dst_idx{j}, lane_mask, 0)",
+                        f"{indent}dst_idx{j} = tl.load({maca_rader_index_ptr} + dst_idx{j}, lane_mask, 0)",
                         f"{indent}rader_r{j} = x0r + r{j} / {prime_n - 1}",
                         f"{indent}rader_i{j} = x0i - i{j} / {prime_n - 1}",
                     ])
@@ -3606,11 +3607,15 @@ def _build_leaf_kernel_source_for_io(
     kernel_perm_form = perm_form
     rader_prefix = "maca_rader_four_step_"
     maca_rader_phase = perm_form.removeprefix(rader_prefix) if perm_form.startswith(rader_prefix) else ""
+    narrow_rader_indices = maca_rader_phase.endswith("_i16")
+    maca_rader_phase = maca_rader_phase.removesuffix("_i16")
+    maca_rader_index_ptr = "idx16_ptr" if narrow_rader_indices else "idx_ptr"
     if maca_rader_phase:
         if not (
             _maca_backend_active() and current_profile().device_arch == "102"
             and plan.dtype == "complex64" and plan.direction == "forward"
             and prime_n in {8191, 16381} and four_step_n1 * four_step_n2 == prime_n - 1
+            and (not narrow_rader_indices or (prime_n == 8191 and maca_rader_phase in {"gather", "scatter"}))
             and io_mode in {"four_step_row", "four_step_col"}
             and (maca_rader_phase == "plain"
                  or (io_mode == "four_step_row" and maca_rader_phase == "gather")
@@ -3912,11 +3917,11 @@ def _build_leaf_kernel_source_for_io(
         ),
     )
     if maca_rader_phase == "gather":
-        params.insert(0, "idx_ptr")
+        params.insert(0, maca_rader_index_ptr)
     elif maca_rader_phase == "product":
         params[:0] = ["b_fft_ptr", "user_ptr", "dc_ptr", "zero_ptr"]
     elif maca_rader_phase == "scatter":
-        params[:0] = ["idx_ptr", "zero_ptr"]
+        params[:0] = [maca_rader_index_ptr, "zero_ptr"]
     if maca_packed_c2r_row:
         params.insert(params.index("out_ptr") + 1, "packed_twiddle_ptr")
 
@@ -4286,6 +4291,7 @@ def _build_leaf_kernel_source_for_io(
                 permuted_smem_store=permuted_smem_store,
                 maca_packed_c2r_row=maca_packed_c2r_row,
                 maca_rader_phase=maca_rader_phase,
+                maca_rader_index_ptr=maca_rader_index_ptr,
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,

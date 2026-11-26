@@ -2177,7 +2177,7 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
 DeviceAllocation build_raw_packed_real_twiddle(const FFTRequest &request, int64_t n);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);
-DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx);
+DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx, bool narrow = false);
 DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              int64_t n,
                                              const std::vector<int64_t> &idx);

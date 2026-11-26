@@ -51,6 +51,26 @@ def emit(path, kernel="four_step_col", dtype="complex128", length=1024, n1=1024,
     )
 
 
+@pytest.mark.parametrize("axis,phase,n1,n2", [("row", "gather", 70, 117), ("col", "scatter", 117, 70)])
+def test_maca_rader_compact_indices_preserve_launch_order(tmp_path, axis, phase, n1, n2):
+    config = dict(kernel=f"four_step_{axis}", length=70, factors=(7, 10), lanes=1,
+                  num_warps=2, generic_radices=(), smem_size=128, direction="forward",
+                  dtype="complex64", prime_n=8191, four_step_n1=n1, four_step_n2=n2)
+    prefix = f"maca_rader_four_step_{phase}"
+    wide = emit_jit_kernel(**config, perm_form=prefix, out_dir=tmp_path / "wide")
+    narrow = emit_jit_kernel(**config, perm_form=prefix + "_i16", out_dir=tmp_path / "narrow")
+
+    assert wide["arg_names"][0] == "idx_ptr"
+    assert narrow["arg_names"] == ["idx16_ptr", *wide["arg_names"][1:]]
+    assert wide["signature"].split(",")[0] == "*i32:16"
+    assert narrow["signature"].split(",")[0] == "*i16:16"
+    wide_source = Path(wide["module_path"]).read_text()
+    narrow_source = Path(narrow["module_path"]).read_text()
+    assert narrow_source.replace("idx16_ptr", "idx_ptr").replace(
+        narrow["kernel_name"], wide["kernel_name"]
+    ) == wide_source
+
+
 @pytest.mark.parametrize("length,dtype", [(185640, "complex128"), (340200, "complex64"), (524288, "complex64")])
 @pytest.mark.parametrize("inverse", [False, True])
 def test_paired_batch_real_boundary_keeps_distance_and_grid(tmp_path, monkeypatch, length, dtype, inverse):

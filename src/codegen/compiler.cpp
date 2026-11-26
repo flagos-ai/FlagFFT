@@ -4761,6 +4761,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const int64_t n1 = row.length;
       const int64_t n2 = col.length;
       const int64_t m = prime - 1;
+      const bool narrow_indices = prime == 8191 && !request.real_transform &&
+          flag_or_default("FLAGFFT_MACA_8191_RADER_INDEX16", false);
       const auto compile_pass = [&](const LeafPlanNode& leaf, int64_t rows, int64_t columns,
                                     bool is_row, const char* phase) {
         const auto make_key = is_row ? KernelKey::four_step_row : KernelKey::four_step_col;
@@ -4773,12 +4775,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         return compile_kernel(key);
       };
       CompiledRawMacaRaderFourStepNode::Kernels kernels;
-      kernels.gather = compile_pass(row, n1, n2, true, "gather");
+      kernels.gather = compile_pass(row, n1, n2, true, narrow_indices ? "gather_i16" : "gather");
       kernels.product = compile_pass(col, n1, n2, false, "product");
       kernels.spectrum_row = compile_pass(row, n1, n2, true, "plain");
       kernels.spectrum_col = compile_pass(col, n1, n2, false, "plain");
       kernels.inverse_row = compile_pass(col, n2, n1, true, "plain");
-      kernels.scatter = compile_pass(row, n2, n1, false, "scatter");
+      kernels.scatter = compile_pass(row, n2, n1, false, narrow_indices ? "scatter_i16" : "scatter");
 
       std::vector<int64_t> gather_indices(static_cast<std::size_t>(m));
       std::vector<int64_t> scatter_indices(static_cast<std::size_t>(m));
@@ -4794,7 +4796,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       }
       return std::make_shared<CompiledRawMacaRaderFourStepNode>(n1, n2, batch, std::move(kernels),
           build_raw_leaf_tables(row, child_request), build_raw_leaf_tables(col, child_request),
-          build_raw_rader_idx_table(gather_indices), build_raw_rader_idx_table(scatter_indices),
+          build_raw_rader_idx_table(gather_indices, narrow_indices),
+          build_raw_rader_idx_table(scatter_indices, narrow_indices),
           build_raw_rader_conv_kernel(request, prime, scatter_indices));
     }
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
