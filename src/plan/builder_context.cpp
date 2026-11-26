@@ -177,6 +177,11 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
         (!policy || std::string(policy) == "balanced") && (!axes || std::string(axes) == "1")) {
       n1 = n == 663000 ? 1560 : 1024;
     }
+    if (n == 331500 && request.batch == 1 && request.packed_real_child &&
+        request.ix_fourstep_preset == 5) {
+      // The packed child of the single 663000-point real FFT uses both mixed-radix leaves.
+      n1 = 780;
+    }
     // The override also covers a packed real child. Bluestein convolution
     // children use build_auto_node and retain their independently chosen split.
     bool explicit_split = false;
