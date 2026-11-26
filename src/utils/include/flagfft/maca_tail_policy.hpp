@@ -87,11 +87,29 @@ inline bool maca_prime_dif_requested(const FFTRequest& request) {
   return batch_policy == nullptr || std::string(batch_policy) != "0";
 }
 
+inline bool maca_batch_prime_bluestein_enabled(const FFTRequest& request) {
+  const auto n = request.requested_n;
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
+      (n != 8191 && n != 16381) || request.fft_length != n || request.real_transform ||
+      request.convolution_child || request.packed_real_child ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.input_strides != std::vector<int64_t>{n, 1}) return false;
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const char* setting = std::getenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
+  return setting && std::string(setting) == "1" &&
+      (!batch_policy || std::string(batch_policy) != "0");
+}
+
 // An explicit old root experiment, including 'default', wins over the policy.
 inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   const char* old = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   if (old && *old) return {};
   if (maca_prime_dif_requested(request)) return "bs2048";
+  if (maca_batch_prime_bluestein_enabled(request)) {
+    return request.requested_n == 8191 ? "bs16384" : "bs32768";
+  }
   if (request.batch == 64 && maca_663000_c2c_enabled(request)) {
     return maca_663000_batch_split_column_enabled(request) ? "ct375x1768" : "ct780x850";
   }

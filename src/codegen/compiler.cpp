@@ -4461,11 +4461,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // Separate from the two-kernel leaf experiment: large convolutions retain
     // one FFT per boundary kernel and execute four kernels in total. Bound
     // each child to the existing 1024-point four-step leaf family.
+    const bool maca_batched_four_step = batch == chunk_batch &&
+        maca_batch_prime_bluestein_enabled(request);
     const bool use_maca_four_step =
-        request.device_type == "maca" && batch == 1 && four_step != nullptr &&
+        request.device_type == "maca" && (batch == 1 || maca_batched_four_step) && four_step != nullptr &&
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
-        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
+        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION",
+                             maca_1d_single_policy_ || maca_batched_four_step);
     const bool use_cuda_four_step = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&

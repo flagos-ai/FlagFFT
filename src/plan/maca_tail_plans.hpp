@@ -22,6 +22,8 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
   const auto automatic = maca_tail_automatic_plan(request);
   if (n == request.requested_n && !automatic.empty()) {
     if (automatic == "bs2048") return {{automatic, 2048}};
+    if (automatic == "bs16384") return {{automatic, 16384}};
+    if (automatic == "bs32768") return {{automatic, 32768}};
     if (automatic == "ct1024x1024") return {{automatic, 1024, 1024}};
     if (automatic == "ct405x810") return {{automatic, 405, 810}};
     if (automatic == "ct780x850") return {{automatic, 780, 850}};
@@ -103,6 +105,13 @@ PlanNodePtr build_maca_tail_plan(int64_t n, const MacaTailPlan& plan, BuildAuto 
     const int64_t root = find_primitive_root(n);
     return std::make_shared<RaderPlanNode>(n, root, build_rader_index_table(n, root),
                                           build_auto(n - 1, false));
+  }
+  if (plan.name == "bs16384" || plan.name == "bs32768") {
+    const int64_t n1 = 128;
+    const int64_t n2 = plan.first / n1;
+    auto conv = std::make_shared<FourStepPlanNode>(
+        plan.first, n1, n2, build_auto(n1, false), build_auto(n2, false));
+    return std::make_shared<BluesteinPlanNode>(n, plan.first, std::move(conv));
   }
   return std::make_shared<BluesteinPlanNode>(n, plan.first, build_auto(plan.first, false));
 }

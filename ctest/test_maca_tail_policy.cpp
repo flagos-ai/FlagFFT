@@ -18,7 +18,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
                              "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF",
                              "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
-                             "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN"}) {
+                             "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
+                             "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -208,6 +209,31 @@ TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {
   r.requires_contiguous_copy = false;
   setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
   EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+}
+
+TEST_F(TailPolicy, C550BatchedPrimeBluesteinUsesTwoLeafAxes) {
+  flagfft::PlanBuilder builder;
+  for (const int64_t n : {8191, 16381}) {
+    auto r = request(n, "complex64");
+    r.device_arch = "102";
+    r.batch = 64;
+    r.input_layout = "contiguous";
+    r.input_strides = {n, 1};
+    EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+    setenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN", "1", 1);
+    auto root = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(n, r));
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->conv_length, n == 8191 ? 16384 : 32768);
+    auto conv = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root->fft_plan);
+    ASSERT_NE(conv, nullptr);
+    EXPECT_EQ(conv->n1, 128);
+    EXPECT_EQ(conv->n1 * conv->n2, root->conv_length);
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(conv->row_plan), nullptr);
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(conv->col_plan), nullptr);
+    r.input_dtype = r.output_dtype = "complex128";
+    EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+    unsetenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
+  }
 }
 
 TEST_F(TailPolicy, NativeDescriptorKeepsOriginalApiAndRank) {
