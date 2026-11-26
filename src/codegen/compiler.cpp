@@ -4426,7 +4426,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
     if (leaf && bluestein->conv_length == 2048 && bluestein->length == request.requested_n &&
-        batch == request.batch && maca_prime_dif_requested(request)) {
+        batch == request.batch && (maca_3d_real_prime_dif_ || maca_prime_dif_requested(request))) {
       const bool fp64 = request.input_dtype == "complex128";
       auto key = KernelKey::leaf_bluestein(
           triton_target_for_request(child_request), child_request.direction, request.input_dtype,
@@ -6855,6 +6855,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool maca_prime_compact = maca_real_compact && node->n0 == 16 &&
       node->n1 == 997 && node->n2 == 64 && batch <= 4 &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", true);
+  const bool maca_real_prime_dif = maca_prime_compact && request.device_arch == "102" &&
+      (batch == 1 || batch == 4) &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", false);
   // HCU can keep an elongated Bluestein middle axis in the compact real
   // layout; the real_hybrid shape gate below decides whether that route applies.
   if (!n2_leaf || !n0_leaf ||
@@ -7251,8 +7256,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
       perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
     } else {
-      n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout)
-                       : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      if (n1_leaf) {
+        n1_fft = compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout);
+      } else {
+        // The compact boundary has already formed complex rows for the middle axis.
+        const ScopedBool prime_dif_scope(maca_3d_real_prime_dif_, maca_real_prime_dif);
+        n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      }
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       if (inverse) {
         perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "120");
