@@ -5163,8 +5163,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   const bool maca_dif = request.input_dtype == "complex128" && leaf.length == 2048 &&
-      (maca_3d_fp64_dif || (maca_2d_dense_policy_ &&
-                          flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", false)));
+      (maca_3d_fp64_dif || maca_2d_fp64_dif_policy_);
   if (maca_dif) key.perm_form = "maca_fp64_dif";
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   std::vector<DeviceAllocation> tables;
@@ -7733,6 +7732,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
       maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
+  const Maca2dPolicyScope dif_scope(maca_2d_fp64_dif_policy_, maca_2d_dense_policy_ &&
+      flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", batch == 1 || batch == 4));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::Complex))
@@ -8064,6 +8065,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
       maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
+  const Maca2dPolicyScope dif_scope(maca_2d_fp64_dif_policy_, maca_2d_dense_policy_ &&
+      flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", batch == 1 || batch == 4));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealForward))
@@ -8335,6 +8338,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
   const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
       maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
+  const Maca2dPolicyScope dif_scope(maca_2d_fp64_dif_policy_, maca_2d_dense_policy_ &&
+      flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", batch == 1 || batch == 4));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealInverse))
