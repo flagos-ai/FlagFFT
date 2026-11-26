@@ -4,6 +4,7 @@
 #include <mc_runtime.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace {
 
@@ -115,6 +116,116 @@ int launch(const void* input, void* output, const void* roots, unsigned batch, v
                         0, reinterpret_cast<mcStream_t>(stream));
 }
 
+constexpr unsigned first_axis = 64;
+constexpr unsigned first_rows_per_plane = 2048;
+constexpr unsigned first_tile_rows = 32;
+constexpr unsigned first_warps = 4;
+constexpr unsigned subgroup = 16;
+
+__device__ float2 add(float2 a, float2 b) {
+  return make_float2(a.x + b.x, a.y + b.y);
+}
+
+__device__ float2 subtract(float2 a, float2 b) {
+  return make_float2(a.x - b.x, a.y - b.y);
+}
+
+__device__ float2 multiply(float2 value, float2 twiddle) {
+  const auto rotated = rotate(Complex<float>{value.x, value.y}, Complex<float>{twiddle.x, twiddle.y});
+  return make_float2(rotated.re, rotated.im);
+}
+
+template<bool Inverse>
+__device__ float2 quarter_turn(float2 value) {
+  return Inverse ? make_float2(-value.y, value.x) : make_float2(value.y, -value.x);
+}
+
+template<bool Inverse>
+__device__ void radix4(float2 (&x)[4]) {
+  const auto even = add(x[0], x[2]);
+  const auto odd = add(x[1], x[3]);
+  const auto delta = subtract(x[0], x[2]);
+  const auto turned = quarter_turn<Inverse>(subtract(x[1], x[3]));
+  x[0] = add(even, odd);
+  x[1] = add(delta, turned);
+  x[2] = subtract(even, odd);
+  x[3] = subtract(delta, turned);
+}
+
+template<unsigned Mask>
+__device__ float2 exchange(float2 value) {
+  return make_float2(__shfl_xor_sync(lanes, value.x, Mask, wave),
+                     __shfl_xor_sync(lanes, value.y, Mask, wave));
+}
+
+template<unsigned Stride, bool Inverse>
+__device__ float2 radix4_lane(float2 own, unsigned lane) {
+  const auto peer1 = exchange<Stride>(own);
+  const auto peer2 = exchange<2 * Stride>(own);
+  const auto peer3 = exchange<3 * Stride>(own);
+  const unsigned digit = (lane / Stride) & 3;
+  const bool high = (digit & 2) != 0;
+  if ((digit & 1) == 0) {
+    const auto even = add(own, peer2);
+    const auto odd = add(peer1, peer3);
+    return high ? subtract(even, odd) : add(even, odd);
+  }
+  const auto even_delta = subtract(peer1, peer3);
+  const auto turned = quarter_turn<Inverse>(subtract(own, peer2));
+  return high ? subtract(turned, even_delta) : add(even_delta, turned);
+}
+
+template<bool Aligned>
+__device__ float2 load_complex(const float* input, std::size_t offset) {
+  if constexpr (Aligned) {
+    return reinterpret_cast<const float2*>(input)[offset];
+  } else {
+    return make_float2(input[2 * offset], input[2 * offset + 1]);
+  }
+}
+
+template<bool Inverse, bool Aligned>
+__global__ void fft64_fp32_first(const float* input, float2* output, const float2* roots) {
+  constexpr unsigned threads = first_warps * wave;
+  constexpr unsigned groups = threads / subgroup;
+  constexpr unsigned tiles_per_plane = first_rows_per_plane / first_tile_rows;
+  __shared__ float2 tile[first_tile_rows][first_axis + 1];
+  const unsigned thread = threadIdx.x;
+  const unsigned group = thread / subgroup;
+  const unsigned lane = thread % subgroup;
+  const unsigned plane = blockIdx.x / tiles_per_plane;
+  const unsigned row_start = (blockIdx.x % tiles_per_plane) * first_tile_rows;
+  const auto base = static_cast<std::size_t>(plane) * first_rows_per_plane * first_axis;
+  const unsigned out_base = ((lane >> 2) << 2) + ((lane & 3) << 4);
+  const unsigned phase = (lane & 3) * (lane >> 2) * 4;
+  // Four 16-lane subgroups per wave each transform a separate 64-value row.
+  #pragma unroll
+  for (unsigned repeat = 0; repeat < first_tile_rows / groups; ++repeat) {
+    const unsigned row = group + repeat * groups;
+    const auto source = base + (row_start + row) * first_axis + lane;
+    float2 x[4] = {load_complex<Aligned>(input, source),
+                   load_complex<Aligned>(input, source + subgroup),
+                   load_complex<Aligned>(input, source + 2 * subgroup),
+                   load_complex<Aligned>(input, source + 3 * subgroup)};
+    radix4<Inverse>(x);
+    #pragma unroll
+    for (unsigned branch = 0; branch < 4; ++branch) {
+      auto value = x[branch];
+      if (branch != 0) value = multiply(value, roots[branch * lane]);
+      value = radix4_lane<4, Inverse>(value, lane);
+      value = radix4_lane<1, Inverse>(multiply(value, roots[phase]), lane);
+      tile[row][out_base + branch] = value;
+    }
+  }
+  __syncthreads();
+
+  for (unsigned element = thread; element < first_axis * first_tile_rows; element += threads) {
+    const unsigned frequency = element / first_tile_rows;
+    const unsigned row = element % first_tile_rows;
+    output[base + frequency * first_rows_per_plane + row_start + row] = tile[row][frequency];
+  }
+}
+
 }  // namespace
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis(
@@ -122,4 +233,16 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_ax
     bool innermost_fp64, void* stream) {
   if (innermost_fp64) return launch<double, 64, 32, 8, 0>(input, output, roots, batch, stream);
   return launch<float, 128, 16, 4, 1>(input, output, roots, batch, stream);
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_first(
+    const void* input, void* output, const void* roots, unsigned batch, bool inverse, void* stream) {
+  const bool aligned = reinterpret_cast<std::uintptr_t>(input) % alignof(float2) == 0;
+  const auto kernel = inverse
+      ? (aligned ? fft64_fp32_first<true, true> : fft64_fp32_first<true, false>)
+      : (aligned ? fft64_fp32_first<false, true> : fft64_fp32_first<false, false>);
+  void* args[] = {&input, &output, &roots};
+  return mcLaunchKernel(reinterpret_cast<const void*>(kernel),
+                        dim3(batch * 128 * first_rows_per_plane / first_tile_rows),
+                        dim3(first_warps * wave), args, 0, reinterpret_cast<mcStream_t>(stream));
 }

@@ -251,16 +251,17 @@ struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
 };
 
 struct CompiledRawMacaLongAxisNode final : CompiledRawNode {
-  enum class Stage { FirstFp64, LastFp32 };
+  enum class Stage { FirstFp64, FirstFp32, LastFp32 };
 
-  CompiledRawMacaLongAxisNode(DeviceAllocation roots, Stage stage)
-      : roots(std::move(roots)), stage(stage) {}
+  CompiledRawMacaLongAxisNode(DeviceAllocation roots, Stage stage, bool inverse = false)
+      : roots(std::move(roots)), stage(stage), inverse(inverse) {}
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
   bool is_single_kernel() const override { return true; }
   DeviceAllocation roots;
   Stage stage;
+  bool inverse;
 };
 #endif
 
