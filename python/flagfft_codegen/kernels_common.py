@@ -417,7 +417,7 @@ def _maca_knob(name: str, default: str = "") -> str:
         if name == "EXCHANGE":
             return "direct_all"
         if name == "2D_TRANSPOSE":
-            return "tuned"
+            return "vector"
     if maca_3d_default_enabled():
         if name == "EXCHANGE":
             return "direct_all"

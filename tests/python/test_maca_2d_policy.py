@@ -118,7 +118,7 @@ def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
         policy = set_maca_2d_dense_default(True)
         try:
             assert _maca_knob("EXCHANGE") == "direct_all"
-            assert _maca_knob("2D_TRANSPOSE") == "tuned"
+            assert _maca_knob("2D_TRANSPOSE") == "vector"
             with monkeypatch.context() as override:
                 override.setenv("FLAGFFT_MACA_EXCHANGE", "transpose")
                 override.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "legacy")
