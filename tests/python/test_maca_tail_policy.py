@@ -229,6 +229,18 @@ def test_unmeasured_kernels_cannot_inherit_resources(kernel):
         assert resource_default("FP64_REGISTER_PACK") is None
 
 
+def test_16_fp64_complex_pack_matches_the_measured_geometry(tmp_path):
+    set_maca_tail_mode("z2z16-pack16")
+    metadata = emit_jit_kernel(
+        kernel="leaf", length=16, factors=(16,), lanes=1, num_warps=2, generic_radices=(),
+        smem_size=0, direction="inverse", dtype="complex128", prime_n=0,
+        four_step_n1=0, four_step_n2=0, out_dir=tmp_path,
+    )
+    assert (metadata["num_warps"], metadata["batch_per_block"]) == (2, 16)
+    assert eligible_kernel_mode("leaf", 16, "complex64") == "off"
+    assert eligible_kernel_mode("leaf_c2r", 16, "complex128") == "off"
+
+
 @pytest.mark.parametrize("dtype,n1,n2,length", [("complex64", 1024, 1024, 1024),
     ("complex128", 512, 1024, 1024), ("complex128", 1024, 2048, 1024),
     ("complex128", 1024, 1024, 512)])

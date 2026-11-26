@@ -296,7 +296,7 @@ def main() -> None:
                                  "batch-c2r663000-split", "c2c340200-split", "z2z340200-split",
                                  "batch-real340200-split", "batch-real16384-split",
                                  "batch-real524288-row4", "batch-real524288-split",
-                                 "z2z16384-split", "z2z524288-pack4"),
+                                 "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"),
                         default="off")
     parser.add_argument(
         "--maca-2d-single",

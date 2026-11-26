@@ -29,6 +29,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
                              "FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4",
                              "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_16_FP64_BATCH_PACK16",
+                             "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
@@ -477,6 +479,35 @@ TEST_F(TailPolicy, C550BatchedPackedReal524288AlternativesAreScoped) {
   r.input_dtype = r.output_dtype = "complex128";
   r.real_transform_kind = "d2z";
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
+}
+
+TEST_F(TailPolicy, C550ShortBatchedComplexOptionsStayLocal) {
+  using flagfft::KernelKind;
+  auto r = request(16, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16, 1};
+  r.batch = 64;
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  setenv("FLAGFFT_MACA_16_FP64_BATCH_PACK16", "1", 1);
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "z2z16-pack16");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::Leaf, "complex128", 16, 0, 0), mode);
+  r.batch = 1;
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
+
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex64";
+  r.input_strides = {210, 1};
+  r.fft_length = r.requested_n = 210;
+  EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
+  setenv("FLAGFFT_MACA_210_BATCH_RADIX6", "1", 1);
+  flagfft::PlanBuilder builder;
+  const auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(210, r));
+  ASSERT_NE(leaf, nullptr);
+  EXPECT_EQ(leaf->factors, (std::vector<int64_t>{7, 6, 5}));
+  r.real_transform = true;
+  EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
 }
 
 TEST_F(TailPolicy, C550Fp64_524288Pack4IsScopedToDenseSingleComplex) {

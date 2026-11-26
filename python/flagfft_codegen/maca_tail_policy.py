@@ -35,7 +35,7 @@ def set_maca_tail_mode(mode):
                     "r2c663000", "batch-c2r663000", "batch-c2r663000-split", "c2c340200-split",
                     "z2z340200-split", "batch-real340200-split", "batch-real16384-split",
                     "batch-real524288-row4", "batch-real524288-split",
-                    "z2z16384-split", "z2z524288-pack4"}:
+                    "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -59,6 +59,9 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
     if (_root_mode.get() == "batch-c2c-tree" and kernel == "direct_dft"
             and length == 23 and dtype == "complex128"):
         return "batch-c2c-tree"
+    if (_root_mode.get() == "z2z16-pack16" and kernel == "leaf"
+            and length == 16 and dtype == "complex128"):
+        return "z2z16-pack16"
     if kernel in {"four_step_row", "four_step_col"} and length in {n1, n2}:
         if dtype == "complex64":
             if _root_mode.get() == "c2c663000" and (n1, n2) == (375, 1768):
@@ -123,6 +126,8 @@ def resource_default(name):
         return {"FP64_REGISTER_PACK": "1", "INNER_PACK": "4", "MAX_WARPS": "4"}.get(name)
     if _kernel_mode.get() == "batch-c2c-tree":
         return {"REAL_DFT_REDUCTION": "tree"}.get(name)
+    if _kernel_mode.get() == "z2z16-pack16":
+        return {"BATCH_PACK": "16"}.get(name)
     if _kernel_mode.get() in {"c2c663000", "r2c663000"}:
         return {"RADER_CODELET": "1", "VEC_IO": "packed"}.get(name)
     if _kernel_mode.get() == "batch-c2r663000-split":
