@@ -758,7 +758,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   std::ostringstream jit_command;
   const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
-      key.perm_form == "ix_split_frequency";
+      (key.perm_form == "ix_split_frequency" || key.perm_form == "ix_split_c2r_frequency");
   if (npu_performance_defaults_active) {
     for (const auto &setting : kNpuPerformanceDefaults) {
       jit_command << setting.name << "=" << shell_quote(performance_env(setting.name)) << " ";

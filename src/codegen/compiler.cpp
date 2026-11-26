@@ -5119,9 +5119,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     if (factors != leaf->factors)
       leaf = std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
           leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
-    return std::make_shared<CompiledRawC2RLeafNode>(n,
-                                                    compile_leaf_c2r_kernel(*leaf, request),
-                                                    build_raw_leaf_tables(*leaf, request));
+    auto original = std::make_shared<CompiledRawC2RLeafNode>(
+        n, compile_leaf_c2r_kernel(*leaf, request), build_raw_leaf_tables(*leaf, request));
+    if (n == 2048 && batch == 1 && request.real_transform_kind == "c2r" &&
+        ix_real_single_pack_ && flag_or_default("FLAGFFT_IX_C2R_SPLIT_SINGLE", true)) {
+      return compile_ix_split_leaf(n, request, "ix_split_c2r_frequency", std::move(original));
+    }
+    return original;
   }
   DeviceAllocation full_input = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   auto fft=compile_raw_node(node, request, batch);
@@ -5161,27 +5165,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
       request.requested_n != leaf.length || request.convolution_child ||
       !request.real_transform_kind.empty() || !ix_real_single_pack_policy_enabled(request) ||
       !flag_or_default("FLAGFFT_IX_CT_SPLIT", true)) return original;
+  return compile_ix_split_leaf(leaf.length, request, "ix_split_frequency", std::move(original));
+}
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_split_leaf(
+    int64_t length, const FFTRequest &request, const std::string &form,
+    std::shared_ptr<CompiledRawNode> fallback) {
   // One block computes the even frequencies and another the odd frequencies.
   // Each block needs both input halves, so overlapping layouts use the original leaf.
-  const int64_t half = leaf.length / 2;
+  const int64_t half = length / 2;
   FFTRequest child = request;
   child.fft_length = half;
   child.requested_n = half;
   child.n = half;
   child.input_shape = {1, half};
   child.input_strides = {half, 1};
+  child.real_transform = false;
+  child.real_transform_kind.clear();
   PlanBuilder builder;
   const auto half_leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(half, child));
-  if (!half_leaf) return original;
-  auto split_key = KernelKey::leaf(target, request.direction, request.input_dtype,
+  if (!half_leaf) return fallback;
+  auto split_key = KernelKey::leaf(triton_target_for_request(request), request.direction, request.input_dtype,
       half, half_leaf->factors, half_leaf->lanes, half_leaf->num_warps,
       half_leaf->generic_radices, half_leaf->smem_size);
-  split_key.perm_form = "ix_split_frequency";
+  split_key.perm_form = form;
   auto tables = build_raw_leaf_tables(*half_leaf, child);
   tables.push_back(build_raw_four_step_twiddle(request, half, 2));
   return std::make_shared<CompiledRawLeafNode>(
-      leaf.length, compile_kernel(split_key), std::move(tables), std::move(original));
+      length, compile_kernel(split_key), std::move(tables), std::move(fallback));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
