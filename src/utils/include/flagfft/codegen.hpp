@@ -213,7 +213,7 @@ struct CompiledRawNode {
   virtual bool is_single_kernel() const { return false; }
 };
 
-#if defined(FLAGFFT_MACA_NATIVE_FFT16)
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
 struct CompiledRawMacaFp64FFT16Node final : CompiledRawNode {
   explicit CompiledRawMacaFp64FFT16Node(int direction) : direction(direction) {}
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
@@ -221,6 +221,17 @@ struct CompiledRawMacaFp64FFT16Node final : CompiledRawNode {
   std::string describe() const override;
   bool is_single_kernel() const override { return true; }
   int direction;
+};
+
+struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
+  CompiledRawMacaFp32R2C2048Node(DeviceAllocation roots, bool use_residues)
+      : roots(std::move(roots)), use_residues(use_residues) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+  bool use_residues;
 };
 #endif
 

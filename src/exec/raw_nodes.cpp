@@ -31,9 +31,11 @@
 
 namespace flagfft {
 
-#if defined(FLAGFFT_MACA_NATIVE_FFT16)
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
 extern "C" int flagfft_maca_launch_fp64_fft16(const double* input, double* output,
                                              unsigned batch, int direction, void* stream);
+extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* output, const void* roots,
+                                               bool use_residues, void* stream);
 
 flagfftResult CompiledRawMacaFp64FFT16Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
@@ -45,6 +47,19 @@ flagfftResult CompiledRawMacaFp64FFT16Node::execute(adaptor::DevicePtr input, ad
 
 std::string CompiledRawMacaFp64FFT16Node::describe() const {
   return "CompiledRawMacaFp64FFT16(kernel=maca_fp64_fft16_shuffle, block_threads=64)";
+}
+
+flagfftResult CompiledRawMacaFp32R2C2048Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                                   const RawExecutionContext &context) const {
+  const int status = flagfft_maca_launch_fp32_r2c2048(
+      reinterpret_cast<const float*>(input), reinterpret_cast<float*>(output),
+      roots.data(), use_residues, context.stream);
+  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+}
+
+std::string CompiledRawMacaFp32R2C2048Node::describe() const {
+  return use_residues ? "CompiledRawMacaFp32R2C2048(kernel=maca_fp32_r2c2048_sdk_residues)"
+                      : "CompiledRawMacaFp32R2C2048(kernel=maca_fp32_r2c2048_sdk_shared)";
 }
 #endif
 

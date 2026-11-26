@@ -3630,7 +3630,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
-#if defined(FLAGFFT_MACA_NATIVE_FFT16)
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
     if (leaf->length == 16 && batch == request.batch && maca_fp64_fft16_native_enabled(request)) {
       return std::make_shared<CompiledRawMacaFp64FFT16Node>(
           request.direction == "inverse" ? FLAGFFT_INVERSE : FLAGFFT_FORWARD);
@@ -4872,6 +4872,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
 #endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  const char* sdk = std::getenv("FLAGFFT_MACA_2048_FP32_SINGLE_NATIVE");
+  const std::string_view sdk_mode = sdk ? sdk : "";
+  if ((sdk_mode == "residues" || sdk_mode == "shared") && allow_packed && batch == 1 &&
+      maca_1d_2048_scope(request, batch, "complex64") &&
+      request.real_transform_kind == "r2c" && request.direction == "forward" &&
+      maca_tail_policy_enabled(request)) {
+    std::vector<float> roots(2 * n);
+    for (int64_t k = 0; k < n; ++k) {
+      const double angle = -2.0 * kPi * k / n;
+      roots[2 * k] = static_cast<float>(std::cos(angle));
+      roots[2 * k + 1] = static_cast<float>(std::sin(angle));
+    }
+    return std::make_shared<CompiledRawMacaFp32R2C2048Node>(
+        DeviceAllocation::from_floats(roots), sdk_mode == "residues");
+  }
+#endif
   // Reuse the bounded complex-axis schedule for mixed real four-step
   // transforms. The real boundaries remain separate coalesced Triton passes.
   const bool npu_bounded_fourstep = request.device_type == "npu" &&
