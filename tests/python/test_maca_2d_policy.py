@@ -252,9 +252,9 @@ def test_c550_1d_fp64_packed_dif_distances(tmp_path, direction):
 
 
 @pytest.mark.parametrize("direction", ("forward", "inverse"))
-@pytest.mark.parametrize("warps", (2, 4))
+@pytest.mark.parametrize("warps,pfa", ((2, False), (4, False), (4, True)))
 @pytest.mark.parametrize("stage,grid", (("prepare", 399), ("finish", 153)))
-def test_c550_split_column_launch_abi(tmp_path, direction, warps, stage, grid):
+def test_c550_split_column_launch_abi(tmp_path, direction, warps, pfa, stage, grid):
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
     from flagfft_codegen.emit import emit_jit_kernel
 
@@ -263,18 +263,22 @@ def test_c550_split_column_launch_abi(tmp_path, direction, warps, stage, grid):
     }))
     try:
         form = f"maca_split_column1768_{stage}"
+        method = "_pfa" if pfa else ""
         metadata = emit_jit_kernel(
             kernel="four_step_col", length=1768, factors=(13, 17, 8), lanes=8, num_warps=warps,
             generic_radices=(), smem_size=1768, direction=direction, dtype="complex64",
-            prime_n=0, four_step_n1=375, four_step_n2=1768, perm_form=form, out_dir=tmp_path,
+            prime_n=0, four_step_n1=375, four_step_n2=1768, perm_form=form + method, out_dir=tmp_path,
         )
         suffix = "_w4" if warps == 4 else ""
-        assert metadata["kernel_name"] == f"{form}{suffix}_{direction}"
+        assert metadata["kernel_name"] == f"{form}{suffix}{method}_{direction}"
         assert metadata["num_warps"] == warps
         assert metadata["grid_x_override"] == grid
-        args = ["in_ptr", "out_ptr", "phase_r_ptr", "phase_i_ptr", "nbatch"]
+        args = ["in_ptr", "out_ptr"]
         if stage == "prepare":
             args.insert(1, "twiddle_ptr")
+        if not pfa:
+            args += ["phase_r_ptr", "phase_i_ptr"]
+        args.append("nbatch")
         assert metadata["arg_names"] == args
     finally:
         reset_profile(profile)

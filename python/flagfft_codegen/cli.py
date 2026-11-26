@@ -226,6 +226,8 @@ def main() -> None:
             "maca_prime_dif_c2r",
             "maca_split_column1768_prepare",
             "maca_split_column1768_finish",
+            "maca_split_column1768_prepare_pfa",
+            "maca_split_column1768_finish_pfa",
             "maca_paired_real_boundary_w2",
             "maca_paired_real_boundary_w4",
         ),

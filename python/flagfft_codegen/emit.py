@@ -757,17 +757,23 @@ def emit_jit_kernel(
         "maca_3d_prime_outer16": (16, 4, 64),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
-    maca_split_column = perm_form in {"maca_split_column1768_prepare", "maca_split_column1768_finish"}
+    maca_split_column = perm_form in {
+        "maca_split_column1768_prepare", "maca_split_column1768_finish",
+        "maca_split_column1768_prepare_pfa", "maca_split_column1768_finish_pfa",
+    }
     if maca_split_column:
+        pfa_column = perm_form.endswith("_pfa")
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and kernel == "four_step_col" and dtype == "complex64"
-                and num_warps in (2, 4)
+                and num_warps in ((4,) if pfa_column else (2, 4))
                 and (length, four_step_n1, four_step_n2) == (1768, 375, 1768)):
             raise ValueError("the split column requires FP32 FourStep 375 × 1768 on C550")
         from .kernels_maca_column import build_maca_split_column1768
 
-        prepare_column = perm_form.endswith("_prepare")
-        kernel_name, kernel_source, column_grid = build_maca_split_column1768(direction, prepare_column, num_warps)
+        prepare_column = perm_form.startswith("maca_split_column1768_prepare")
+        kernel_name, kernel_source, column_grid = build_maca_split_column1768(
+            direction, prepare_column, num_warps, pfa=pfa_column,
+        )
         n1, n2 = four_step_n1, four_step_n2
     elif maca_prime_dif:
         mode = perm_form.removeprefix("maca_prime_dif_")

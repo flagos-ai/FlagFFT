@@ -4310,14 +4310,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
             request.input_dtype, n1, n2, col_leaf->length, col_leaf->factors, col_leaf->lanes,
             batch == 64 ? 4 : 2, col_leaf->generic_radices, col_leaf->smem_size);
         const bool inverse = request.direction == "inverse";
-        key.perm_form = "maca_split_column1768_prepare";
+        const char* batch_column = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
+        const bool column_pfa = batch == 64 && batch_column && std::string(batch_column) == "pfa";
+        key.perm_form = column_pfa ? "maca_split_column1768_prepare_pfa" : "maca_split_column1768_prepare";
         auto column_preparation = CompiledRawFourStepFusedNode::ColumnPreparation{
-            compile_kernel(key), make_maca_dif_roots(n2, false, inverse),
+            compile_kernel(key), column_pfa ? std::vector<DeviceAllocation>{} : make_maca_dif_roots(n2, false, inverse),
             adaptor::Memory(workspace_bytes)};
-        key.perm_form = "maca_split_column1768_finish";
+        key.perm_form = column_pfa ? "maca_split_column1768_finish_pfa" : "maca_split_column1768_finish";
+        auto column_tables = column_pfa ? std::vector<DeviceAllocation>{} : make_maca_dif_roots(n2 / 13, false, inverse);
         return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,
             std::move(row_kernel), build_raw_leaf_tables(*row_leaf, request),
-            compile_kernel(key), make_maca_dif_roots(n2 / 13, false, inverse),
+            compile_kernel(key), std::move(column_tables),
             std::move(twiddle), std::move(stage1), std::move(column_preparation));
       }
       return std::make_shared<CompiledRawFourStepFusedNode>(

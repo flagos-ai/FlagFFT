@@ -8,20 +8,23 @@ from textwrap import dedent
 from .ix_prime_codelets import emit_prime_codelet
 
 
-def build_maca_split_column1768(direction: str, prepare: bool, warps: int) -> tuple[str, str, int]:
+def build_maca_split_column1768(
+    direction: str, prepare: bool, warps: int, *, pfa: bool = False,
+) -> tuple[str, str, int]:
     phase = "prepare" if prepare else "finish"
     suffix = "_w4" if warps == 4 else ""
-    name = f"maca_split_column1768_{phase}{suffix}_{direction}"
+    name = f"maca_split_column1768_{phase}{suffix}{'_pfa' if pfa else ''}_{direction}"
     tile = 128 if prepare else 32
     columns, radix13, radix17, radix8 = 375, 13, 17, 8
     inner = radix17 * radix8
     total = columns * radix13 * inner
     work = columns * (inner if prepare else radix13)
     helpers = ""
-    if prepare:
-        args = "in_ptr, twiddle_ptr, out_ptr, phase_r_ptr, phase_i_ptr, nbatch"
-    else:
-        args = "in_ptr, out_ptr, phase_r_ptr, phase_i_ptr, nbatch"
+    args = "in_ptr, twiddle_ptr, out_ptr" if prepare else "in_ptr, out_ptr"
+    if not pfa:
+        args += ", phase_r_ptr, phase_i_ptr"
+    args += ", nbatch"
+    if not prepare:
         sign = 1 if direction == "inverse" else -1
         helpers = dedent(f"""
             @triton.jit
@@ -69,18 +72,28 @@ def build_maca_split_column1768(direction: str, prepare: bool, warps: int) -> tu
             "    pair = tl.arange(0, 2)[None, :]",
         ]
         for j in range(radix13):
+            if pfa:
+                row = f"(b * {radix13} + {inner * j}) % {radix13 * inner}"
+                index = f"({row}) * {columns} + col"
+            else:
+                index = f"lane + {inner * columns * j}"
             lines += [
-                f"    src = (lane + {inner * columns * j})[:, None] * 2 + pair",
+                f"    src = ({index})[:, None] * 2 + pair",
                 "    r, i = tl.split(tl.load(in_ptr + base + src, valid[:, None], 0.0))",
                 "    co, si = tl.split(tl.load(twiddle_ptr + src, valid[:, None], 0.0))",
                 f"    r{j}, i{j} = _cmul(r, i, co, si)",
             ]
         lines += emit_prime_codelet("    ", radix13, direction)
         for k in range(radix13):
+            if pfa:
+                lines.append(f"    r, i = r{k}, i{k}")
+            else:
+                lines += [
+                    f"    co = tl.load(phase_r_ptr + b * {k}, valid, 0.0)",
+                    f"    si = tl.load(phase_i_ptr + b * {k}, valid, 0.0)",
+                    f"    r, i = _cmul(r{k}, i{k}, co, si)",
+                ]
             lines += [
-                f"    co = tl.load(phase_r_ptr + b * {k}, valid, 0.0)",
-                f"    si = tl.load(phase_i_ptr + b * {k}, valid, 0.0)",
-                f"    r, i = _cmul(r{k}, i{k}, co, si)",
                 f"    dst = (b * {radix13 * columns} + col + {k * columns}) * 2",
                 "    tl.store(out_ptr + base + dst[:, None] + pair, tl.join(r, i), valid[:, None])",
             ]
@@ -88,23 +101,47 @@ def build_maca_split_column1768(direction: str, prepare: bool, warps: int) -> tu
         # Keep the 17-point and eight-point butterflies in the same CTA.
         lines += [
             f"    b = tl.arange(0, {radix8})",
-            f"    offset = b[:, None] * {work} + lane[None, :]",
             "    pair = tl.arange(0, 2)[None, None, :]",
         ]
-        for j in range(radix17):
+        if pfa:
+            # Restore natural frequencies via the CRT for 13, 17 and 8.
+            axis = radix13 * inner
+            weights = tuple((axis // r) * pow(axis // r, -1, r) for r in (radix13, radix17, radix8))
             lines += [
-                f"    src = (offset + {j * radix8 * work}) * 2",
+                f"    column = lane % {columns}",
+                f"    k13 = lane // {columns}",
+                f"    output_base = k13[None, :] * {weights[0]} + b[:, None] * {weights[2]}",
+            ]
+        else:
+            lines.append(f"    offset = b[:, None] * {work} + lane[None, :]")
+        for j in range(radix17):
+            if pfa:
+                row = f"(b * {radix17} + {radix8 * j}) % {inner}"
+                index = f"({row})[:, None] * {work} + lane[None, :]"
+            else:
+                index = f"offset + {j * radix8 * work}"
+            lines += [
+                f"    src = ({index}) * 2",
                 f"    r{j}, i{j} = tl.split(tl.load(in_ptr + base + src[:, :, None] + pair, "
                 "valid[None, :, None], 0.0))",
             ]
         lines += emit_prime_codelet("    ", radix17, direction)
         for k in range(radix17):
-            lines += [
-                f"    co = tl.load(phase_r_ptr + b * {k})[:, None]",
-                f"    si = tl.load(phase_i_ptr + b * {k})[:, None]",
-                f"    r, i = _cmul(r{k}, i{k}, co, si)",
-                "    r, i = _last8(r, i)",
-                f"    dst = (b[:, None] * {radix17 * work} + lane[None, :] + {k * work}) * 2",
+            if pfa:
+                lines += [
+                    f"    r, i = _last8(r{k}, i{k})",
+                    f"    freq = (output_base + {k * weights[1]}) % {axis}",
+                    f"    dst = (freq * {columns} + column[None, :]) * 2",
+                ]
+            else:
+                lines += [
+                    f"    co = tl.load(phase_r_ptr + b * {k})[:, None]",
+                    f"    si = tl.load(phase_i_ptr + b * {k})[:, None]",
+                    f"    r, i = _cmul(r{k}, i{k}, co, si)",
+                    "    r, i = _last8(r, i)",
+                    f"    dst = (b[:, None] * {radix17 * work} + lane[None, :] + {k * work}) * 2",
+                ]
+            lines.append(
                 "    tl.store(out_ptr + base + dst[:, :, None] + pair, tl.join(r, i), valid[None, :, None])",
-            ]
+            )
     return name, helpers + "\n".join(lines) + "\n", (work + tile - 1) // tile

@@ -38,7 +38,9 @@ inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
 
 inline bool maca_663000_batch_split_column_enabled(const FFTRequest& request) {
   const char* setting = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
-  return setting && std::string(setting) == "1" && request.batch == 64 &&
+  if (!setting || request.batch != 64) return false;
+  const std::string mode(setting);
+  return (mode == "1" || mode == "pfa") &&
       maca_663000_c2c_enabled(request) && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy;
 }

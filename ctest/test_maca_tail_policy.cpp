@@ -201,6 +201,8 @@ TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {
   ASSERT_NE(fourstep, nullptr);
   EXPECT_EQ(fourstep->n1, 375);
   EXPECT_EQ(fourstep->n2, 1768);
+  setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "pfa", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
   r.requires_contiguous_copy = true;
   EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
   r.requires_contiguous_copy = false;
