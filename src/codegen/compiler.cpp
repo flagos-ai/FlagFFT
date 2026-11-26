@@ -5239,8 +5239,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     }
     if (maca_1d_batch_policy_ && request.real_transform_kind == "c2r" && n == 16384 &&
         batch == request.batch && request.input_layout == "contiguous" &&
-        !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{packed + 1, 1} &&
-        maca_flag_or_default("FLAGFFT_MACA_16384_FUSED_PACKED_C2R", false)) {
+        !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{packed + 1, 1}) {
       const auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan);
       if (pair) {
         const auto row = std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan);
@@ -5251,7 +5250,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         const bool alternate_split = row && col && pair->n1 == 128 && pair->n2 == 64 &&
             maca_16384_packed_real_split_enabled(child) &&
             row->factors == std::vector<int64_t>{8, 4, 4} && col->factors == std::vector<int64_t>{4, 4, 4};
-        if (original_split || alternate_split) {
+        if ((original_split || alternate_split) &&
+            maca_flag_or_default("FLAGFFT_MACA_16384_FUSED_PACKED_C2R", alternate_split)) {
           if (alternate_split) configure_single_transform_policies(child);
           auto key = KernelKey::four_step_row(triton_target_for_request(child), child.direction,
               child.input_dtype, pair->n1, pair->n2, row->length, row->factors, row->lanes,
