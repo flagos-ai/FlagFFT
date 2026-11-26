@@ -4429,6 +4429,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           ? std::make_shared<LeafPlanNode>(16384, std::vector<int64_t>{16, 16, 16, 4}, 1, 1024, 16,
                                           std::vector<int64_t>{}, 16384)
           : leaf;
+      const bool ix_packed_recurrence = use_ix_3d_boundary_leaf && request.ix_prime_3d_default &&
+          request.real_transform_kind == "r2c" && batch == 4 * 16 * (64 / 2 + 1);
+      const char *boundary_form = use_ix_batch_boundary_leaf ? "ix_bluestein_cta" :
+                                  ix_packed_recurrence ? "ix_bluestein_recurrence" : "outer";
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinLeafNode>(
@@ -4436,9 +4440,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           bluestein->conv_length,
           std::move(fft),
           compile_leaf_bluestein_prepare_kernel(
-              *boundary_leaf, child_request, bluestein->length, use_ix_batch_boundary_leaf),
+              *boundary_leaf, child_request, bluestein->length, boundary_form),
           compile_leaf_bluestein_finish_kernel(
-              *boundary_leaf, child_request, bluestein->length, use_ix_batch_boundary_leaf),
+              *boundary_leaf, child_request, bluestein->length, boundary_form),
           // The final radix-4 stage has four groups of 1024 codelets.
           build_raw_leaf_tables(*boundary_leaf, child_request, false, use_ix_batch_boundary_leaf),
           std::move(chirp),
@@ -5832,7 +5836,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_finish_kernel(cons
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                                  const FFTRequest &request,
                                                                                  int64_t n,
-                                                                                 bool ix_cta) {
+                                                                                 const std::string &perm_form) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_prepare(target,
@@ -5845,14 +5849,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel
                                                     leaf.num_warps,
                                                     leaf.generic_radices,
                                                     leaf.smem_size);
-  if (ix_cta) key.perm_form = "ix_bluestein_cta";
+  key.perm_form = perm_form;
   return compile_kernel(key);
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(const LeafPlanNode &leaf,
                                                                                 const FFTRequest &request,
                                                                                 int64_t n,
-                                                                                bool ix_cta) {
+                                                                                const std::string &perm_form) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_finish(target,
@@ -5865,7 +5869,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(
                                                    leaf.num_warps,
                                                    leaf.generic_radices,
                                                    leaf.smem_size);
-  if (ix_cta) key.perm_form = "ix_bluestein_cta";
+  key.perm_form = perm_form;
   return compile_kernel(key);
 }
 

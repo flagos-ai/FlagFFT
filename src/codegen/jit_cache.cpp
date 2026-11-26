@@ -37,6 +37,11 @@ namespace {
       {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
   };
 
+  constexpr std::pair<const char *, const char *> kIxBluesteinRecurrenceDefaults[] = {
+      {"FLAGFFT_IX_RECURRENCE", "1"},
+      {"FLAGFFT_IX_VEC_IO", "packed"},
+  };
+
   constexpr std::pair<const char *, const char *> kIxPackedRealTleDefaults[] = {
       {"FLAGFFT_IX_PACKED_R2C_TLE", "1"},
       {"FLAGFFT_IX_PACKED_R2C_INPUT", "1"},
@@ -272,10 +277,17 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   const bool ix_bluestein_cta = key.perm_form == "ix_bluestein_cta";
+  const bool ix_bluestein_recurrence = key.perm_form == "ix_bluestein_recurrence";
   const bool ix_packed_real_tle = key.perm_form == "ix_r2c_tle" || key.perm_form == "ix_c2r_tle";
   const char *ix_packed_smem_shift = key.perm_form == "ix_c2r_tle" && key.length == 1024 ? "4" : "5";
   if (ix_bluestein_cta) {
     for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+  }
+  if (ix_bluestein_recurrence) {
+    for (const auto &[name, default_value] : kIxBluesteinRecurrenceDefaults) {
       const char *value = performance_env(name);
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
@@ -808,6 +820,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::ostringstream jit_command;
   if (ix_bluestein_cta) {
     for (const auto &[name, value] : kIxBluesteinCtaDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+  }
+  if (ix_bluestein_recurrence) {
+    for (const auto &[name, value] : kIxBluesteinRecurrenceDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
   }

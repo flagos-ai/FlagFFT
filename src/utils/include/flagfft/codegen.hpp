@@ -2006,11 +2006,11 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request,
                                                                    int64_t n,
-                                                                   bool ix_cta);
+                                                                   const std::string &perm_form);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_finish_kernel(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request,
                                                                   int64_t n,
-                                                                  bool ix_cta);
+                                                                  const std::string &perm_form);
   std::shared_ptr<JitKernel> compile_rader_prepare_kernel(const FFTRequest &request, int64_t n, int64_t m);
   std::shared_ptr<JitKernel> compile_rader_pointwise_kernel(const FFTRequest &request, int64_t n, int64_t m);
   std::shared_ptr<JitKernel> compile_rader_finalize_kernel(const FFTRequest &request, int64_t n, int64_t m);
