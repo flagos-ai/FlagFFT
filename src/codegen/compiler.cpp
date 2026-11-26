@@ -7518,6 +7518,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       n0_request.ix_prime_3d_default=ix_prime_3d;
   n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
       n0_request.ix_warp_fft_pack_default=ix_nd_pack;
+  const bool ix_cube_inverse = inverse && screen_hybrid && ix_nd_pack > 0 &&
+      n0 == 256 && n1 == 256 && n2 == 256 && n2_leaf && n1_leaf && n0_leaf &&
+      flag_or_default("FLAGFFT_IX_WARP256", true);
+  if (ix_cube_inverse) {
+    n2_request.ix_warp_fft_pack_default = 8;
+    auto n2_fft = compile_raw_c2r_node(node->n2_plan, n2_request, n2_request.batch, true);
+    auto n1_fft = compile_raw_permuted_store_leaf(*n1_leaf, n1_request, half, "outer_strided", true);
+    auto n0_fft =
+        compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half, "outer_strided", true);
+    const auto bytes = static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
+    return std::make_shared<CompiledRaw3DRealLeafNode>(
+        n0, n1, n2, true, CompiledRaw3DRealLeafNode::Layout::Strided,
+        std::move(n2_fft), std::move(n1_fft), std::move(n0_fft),
+        nullptr, nullptr, nullptr, adaptor::Memory(bytes), adaptor::Memory(bytes));
+  }
   std::shared_ptr<CompiledRawNode> n2_real_fft;
   const bool ix_prime_r2c = ix_prime_3d && request.real_transform_kind == "r2c" &&
       !inverse && n0 == 16 && n1 == 997 && n2 == 64 && fused_first && fused_n0 &&
