@@ -39,6 +39,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_16_FP64_BATCH_PACK16",
                              "FLAGFFT_MACA_16_FP64_NATIVE",
                              "FLAGFFT_MACA_23_FP64_NATIVE",
+                             "FLAGFFT_MACA_16_D2Z_NATIVE",
                              "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
@@ -738,6 +739,32 @@ TEST_F(TailPolicy, C550Fp64Fft23NativeStaysWithinSingleComplexRequests) {
   r.real_transform = false;
   setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
   EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp64D2Z16NativeAcceptsDenseAndPaddedRows) {
+  auto r = request(16, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16, 1};
+  r.real_transform = true;
+  r.real_transform_kind = "d2z";
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_D2Z_NATIVE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.batch = 64;
+  r.input_strides = {18, 1};
+  EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.input_strides = {32, 2};
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.input_strides = {16, 1};
+  r.origin_rank = 2;
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.origin_rank = 1;
+  r.real_transform_kind = "z2d";
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.real_transform_kind = "d2z";
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
 }
 
 TEST_F(TailPolicy, C550Fp64_524288Pack4IsScopedToDenseSingleComplex) {

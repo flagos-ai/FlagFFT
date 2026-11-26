@@ -3,6 +3,8 @@
 
 #include <mc_runtime.h>
 
+#include <cstdint>
+
 namespace {
 
 constexpr unsigned length = 16;
@@ -39,23 +41,42 @@ __device__ double2 butterfly(double2 value, unsigned lane) {
                : make_double2(even.x + odd.x, even.y + odd.y);
 }
 
+__device__ unsigned reverse_four_bits(unsigned lane) {
+  return ((lane & 1) << 3) | ((lane & 2) << 1) | ((lane & 4) >> 1) | ((lane & 8) >> 3);
+}
+
+template<int Sign>
+__device__ double2 fft16_butterflies(double2 value, unsigned lane) {
+  value = butterfly<Sign, 1>(value, lane);
+  value = butterfly<Sign, 2>(value, lane);
+  value = butterfly<Sign, 4>(value, lane);
+  return butterfly<Sign, 8>(value, lane);
+}
+
 template<int Sign>
 __global__ void fft16(const double* input, double* output) {
   const unsigned lane = threadIdx.x;
   if (lane >= length) return;
-  const unsigned reversed = ((lane & 1) << 3) | ((lane & 2) << 1) |
-                            ((lane & 4) >> 1) | ((lane & 8) >> 3);
   const unsigned row_offset = 2 * blockIdx.x * length;
   // Complex FP64 buffers may have only eight-byte alignment.
-  const auto* src = input + row_offset + 2 * reversed;
-  double2 value = make_double2(src[0], src[1]);
-  value = butterfly<Sign, 1>(value, lane);
-  value = butterfly<Sign, 2>(value, lane);
-  value = butterfly<Sign, 4>(value, lane);
-  value = butterfly<Sign, 8>(value, lane);
+  const auto* src = input + row_offset + 2 * reverse_four_bits(lane);
+  const auto value = fft16_butterflies<Sign>(make_double2(src[0], src[1]), lane);
   auto* dst = output + row_offset + 2 * lane;
   dst[0] = value.x;
   dst[1] = value.y;
+}
+
+__global__ void d2z16(const double* input, double* output, std::int64_t input_distance,
+                      std::int64_t output_distance) {
+  const unsigned lane = threadIdx.x;
+  if (lane >= length) return;
+  const auto* src = input + blockIdx.x * input_distance;
+  const auto value = fft16_butterflies<-1>(make_double2(src[reverse_four_bits(lane)], 0.0), lane);
+  if (lane <= length / 2) {
+    auto* dst = output + 2 * (blockIdx.x * output_distance + lane);
+    dst[0] = value.x;
+    dst[1] = value.y;
+  }
 }
 
 }  // namespace
@@ -65,5 +86,13 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_fp64_ff
   const auto kernel = direction < 0 ? fft16<-1> : fft16<1>;
   void* args[] = {&input, &output};
   return mcLaunchKernel(reinterpret_cast<const void*>(kernel), dim3(batch), dim3(block_threads),
+                        args, 0, reinterpret_cast<mcStream_t>(stream));
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_fp64_d2z16(
+    const double* input, double* output, unsigned batch, std::int64_t input_distance,
+    std::int64_t output_distance, void* stream) {
+  void* args[] = {&input, &output, &input_distance, &output_distance};
+  return mcLaunchKernel(reinterpret_cast<const void*>(d2z16), dim3(batch), dim3(block_threads),
                         args, 0, reinterpret_cast<mcStream_t>(stream));
 }

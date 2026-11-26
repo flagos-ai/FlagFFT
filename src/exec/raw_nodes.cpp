@@ -34,6 +34,8 @@ namespace flagfft {
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
 extern "C" int flagfft_maca_launch_fp64_fft16(const double* input, double* output,
                                              unsigned batch, int direction, void* stream);
+extern "C" int flagfft_maca_launch_fp64_d2z16(const double* input, double* output, unsigned batch,
+                                             int64_t input_distance, int64_t output_distance, void* stream);
 extern "C" int flagfft_maca_launch_fp64_fft23(const double* input, double* output, const void* roots, void* stream);
 extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* output, const void* roots,
                                                unsigned batch, int64_t input_distance, int64_t output_distance,
@@ -53,6 +55,21 @@ std::string CompiledRawMacaFp64FFT16Node::describe() const {
   return "CompiledRawMacaFp64FFT16(kernel=maca_fp64_fft16_shuffle, block_threads=64)";
 }
 
+flagfftResult CompiledRawMacaFp64D2Z16Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                                  const RawExecutionContext &context) const {
+  // A basic Plan1d descriptor also uses padded real rows for in-place execution.
+  const int64_t input_distance = std::max<int64_t>(context.input_distance, input == output ? 18 : 16);
+  const int64_t output_distance = context.output_distance > 0 ? context.output_distance : 9;
+  const int status = flagfft_maca_launch_fp64_d2z16(
+      reinterpret_cast<const double*>(input), reinterpret_cast<double*>(output),
+      static_cast<unsigned>(context.batch), input_distance, output_distance, context.stream);
+  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+}
+
+std::string CompiledRawMacaFp64D2Z16Node::describe() const {
+  return "CompiledRawMacaFp64D2Z16(kernel=maca_fp64_d2z16_shuffle, block_threads=64)";
+}
+
 flagfftResult CompiledRawMacaFp64FFT23Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                  const RawExecutionContext &context) const {
   const int status = flagfft_maca_launch_fp64_fft23(
@@ -66,10 +83,11 @@ std::string CompiledRawMacaFp64FFT23Node::describe() const {
 
 flagfftResult CompiledRawMacaFp32R2C2048Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
+  const int64_t input_distance = std::max<int64_t>(context.input_distance, input == output ? 2050 : 2048);
   const int status = flagfft_maca_launch_fp32_r2c2048(
       reinterpret_cast<const float*>(input), reinterpret_cast<float*>(output),
       roots.data(), static_cast<unsigned>(context.batch),
-      context.input_distance > 0 ? context.input_distance : 2048,
+      input_distance,
       context.output_distance > 0 ? context.output_distance : 1025,
       use_residues, context.stream);
   return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;

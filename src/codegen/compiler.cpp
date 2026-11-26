@@ -4901,6 +4901,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  if (batch == request.batch && maca_fp64_d2z16_native_enabled(request)) {
+    return std::make_shared<CompiledRawMacaFp64D2Z16Node>();
+  }
   const char* sdk = std::getenv("FLAGFFT_MACA_2048_FP32_SINGLE_NATIVE");
   const std::string_view sdk_mode = sdk ? sdk : "residues";
   const bool sdk_single = batch == 1 && (sdk_mode == "residues" || sdk_mode == "shared");
