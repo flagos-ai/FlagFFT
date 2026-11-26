@@ -436,6 +436,17 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     }
     const auto &request = plan->executable.forward_request;
     const auto kind = plan->executable.root->kind;
+    if (kind == PlanNodeKind::FourStep && request.input_dtype == "complex64" &&
+        maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_GRAPH", false) &&
+        std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
+      const auto wrap = [](std::shared_ptr<CompiledRawNode>& node) {
+        if (node && !node->is_single_kernel()) {
+          node = std::make_shared<CompiledRawGraphNode>(node);
+        }
+      };
+      wrap(plan->executable.forward);
+      wrap(plan->executable.inverse);
+    }
     const bool multi_launch_1d = !is_2d && !is_3d &&
         (kind == PlanNodeKind::FourStep || kind == PlanNodeKind::Bluestein || kind == PlanNodeKind::Rader);
     const bool real_2d = is_2d && (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_C2R);
