@@ -860,10 +860,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const bool maca_split_column = key.kind == KernelKind::FourStepCol &&
       (key.perm_form.rfind("maca_split_column1768_", 0) == 0 ||
        key.perm_form.rfind("maca_split_column1105_", 0) == 0);
+  const bool maca_packed_c2r_row =
+      key.kind == KernelKind::FourStepRow && key.perm_form == "maca_packed_c2r_row";
   const bool maca_paired_boundary =
       (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) &&
       key.perm_form.rfind("maca_paired_real_boundary_", 0) == 0;
-  if (maca_split_column || maca_paired_boundary || key.kind == KernelKind::LeafPermutedStore ||
+  if (maca_split_column || maca_packed_c2r_row || maca_paired_boundary ||
+      key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::Leaf && (key.perm_form.rfind("maca_fp64_", 0) == 0 ||
@@ -1184,6 +1187,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());
   auto kernel = std::make_shared<JitKernel>();
   kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
+  if (maca_packed_c2r_row && !kernel->kernel_name.starts_with("maca_packed_c2r_row_")) {
+    throw std::runtime_error("MACA packed C2R requires the fused FourStep row kernel");
+  }
   kernel->module_path = json_string_field(artifact_json, "module_path");
 #if defined(BACKEND_MACA)
   kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
