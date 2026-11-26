@@ -1075,10 +1075,11 @@ namespace {
   }
 
   int64_t ix_short_frequency_bands(const FFTRequest &request, int64_t n) {
-    if ((n != 1024 && n != 2048) || request.raw_dim != 1 || request.origin_rank > 1 ||
+    if ((n != 210 && n != 1024 && n != 2048) || request.raw_dim != 1 || request.origin_rank > 1 ||
         request.requested_n != n || request.fft_length != n || request.convolution_child ||
         request.requires_contiguous_copy || request.input_layout != "contiguous" ||
         !ix_real_single_pack_policy_enabled(request)) return 0;
+    if (n == 210) return flag_or_default("FLAGFFT_IX_CT_PFA210", true) ? 7 : 0;
     const char *setting = performance_env("FLAGFFT_IX_CT_WAVE_BANDS");
     if (!setting) return 16;
     if (std::string(setting) == "0") return 0;
@@ -5311,7 +5312,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_split_leaf(
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_wave_bands(
     int64_t length, int64_t bands, const FFTRequest &request,
     std::shared_ptr<CompiledRawNode> fallback) {
-  const auto axis = length / bands;
+  const auto axis = length == 210 ? length : length / bands;
   FFTRequest child = request;
   child.fft_length = child.requested_n = axis;
   child.n = axis;
