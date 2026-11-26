@@ -180,7 +180,8 @@ inline bool maca_fp64_fft23_native_enabled(const FFTRequest& request) {
   if (request.batch != 1 || !maca_dense_rank1_fp64_complex(request, 23)) return false;
   const char* setting = std::getenv("FLAGFFT_MACA_23_FP64_NATIVE");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return setting && std::string_view(setting) == "1" && (!plan || !*plan) && maca_tail_policy_enabled(request);
+  return (!setting || std::string_view(setting) == "1") && (!plan || !*plan) &&
+      maca_tail_policy_enabled(request);
 }
 
 inline bool maca_fp64_d2z16_native_enabled(const FFTRequest& request) {

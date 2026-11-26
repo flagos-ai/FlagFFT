@@ -728,8 +728,10 @@ TEST_F(TailPolicy, C550Fp64Fft23NativeStaysWithinSingleComplexRequests) {
   r.device_arch = "102";
   r.input_layout = "contiguous";
   r.input_strides = {23, 1};
+  EXPECT_TRUE(flagfft::maca_fp64_fft23_native_enabled(r));
+  setenv("FLAGFFT_MACA_23_FP64_NATIVE", "0", 1);
   EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
-  setenv("FLAGFFT_MACA_23_FP64_NATIVE", "1", 1);
+  unsetenv("FLAGFFT_MACA_23_FP64_NATIVE");
   EXPECT_TRUE(flagfft::maca_fp64_fft23_native_enabled(r));
   r.batch = 64;
   EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
