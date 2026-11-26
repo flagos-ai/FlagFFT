@@ -30,7 +30,8 @@ RUN . /etc/os-release \
 RUN python3 -m pip install --no-cache-dir "cmake>=3.25,<4.0" "setuptools>=68" wheel
 
 COPY packaging/debian/build-helpers/python-build-requirements.txt /tmp/flagfft-requirements.txt
-RUN python3 -m pip install --no-cache-dir \
+RUN python3 -m pip install --no-cache-dir --index-url "${TORCH_INDEX}" -r /tmp/flagfft-requirements.txt \
+    || python3 -m pip install --no-cache-dir \
         --index-url "${TORCH_INDEX}" \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         --extra-index-url https://pypi.org/simple \
@@ -59,11 +60,12 @@ RUN cp -r packaging/debian debian && \
     else suffix="${DEB_VERSION_SUFFIX}"; fi && \
     if [ -n "${suffix}" ]; then \
         base="$(dpkg-parsechangelog -l debian/changelog -SVersion)" && \
-        case "${base}" in *+ubuntu*) ;; *) \
+        clean_base="${base%+ubuntu*}" && \
+        if [ "${base}" != "${clean_base}${suffix}" ]; then \
             DEBFULLNAME="FlagOS Contributors" DEBEMAIL="contact@flagos.io" \
-            dch -b -v "${base}${suffix}" -D unstable --force-distribution \
-                "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." ;; \
-        esac; \
+            dch -b -v "${clean_base}${suffix}" -D unstable --force-distribution \
+                "Rebuild for $(. /etc/os-release && echo "${PRETTY_NAME}")." ; \
+        fi; \
     fi
 
 RUN dpkg-buildpackage -us -uc -b -d || \

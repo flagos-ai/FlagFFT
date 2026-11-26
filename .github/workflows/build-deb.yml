@@ -28,6 +28,14 @@ on:
 jobs:
   build-deb:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - base_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+            label: ubuntu2204-amd64
+          - base_image: nvidia/cuda:12.8.0-devel-ubuntu24.04
+            label: ubuntu2404-amd64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,11 +46,11 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build .deb
-        run: bash packaging/debian/build-helpers/build-flagfft.sh
+        run: bash packaging/debian/build-helpers/build-flagfft.sh --base-image "${{ matrix.base_image }}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: flagfft-amd64-packages
+          name: flagfft-${{ matrix.label }}-packages
           path: debian-packages/*.deb
           retention-days: 7
