@@ -251,6 +251,28 @@ def test_c550_1d_fp64_packed_dif_distances(tmp_path, direction):
         reset_profile(profile)
 
 
+def test_c550_prime_outer_wide_tile_launch_abi(tmp_path):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=16, factors=(16,), lanes=1, num_warps=2,
+            generic_radices=(), smem_size=0, direction="forward", dtype="complex64",
+            prime_n=0, four_step_n1=0, four_step_n2=0,
+            perm_form="maca_3d_prime_outer16_wide", out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == "maca_fp32_3d_prime_outer16_forward_32x4"
+        assert metadata["num_warps"] == 8
+        assert metadata["batch_per_block"] == 128
+        assert metadata["arg_names"] == ["in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "nbatch"]
+    finally:
+        reset_profile(profile)
+
+
 @pytest.mark.parametrize("dtype,tile", (("complex64", 16), ("complex64", 32), ("complex128", 32)))
 @pytest.mark.parametrize("stage", ("prepare", "finish"))
 def test_c550_packed_split_column_launch_abi(tmp_path, dtype, tile, stage):

@@ -756,6 +756,7 @@ def emit_jit_kernel(
         "maca_3d_prime_r2c64": (64, 4, 32),
         "maca_3d_prime_c2r64": (64, 4, 32),
         "maca_3d_prime_outer16": (16, 4, 64),
+        "maca_3d_prime_outer16_wide": (16, 8, 128),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
     maca_packed_column = perm_form in {
@@ -813,10 +814,12 @@ def emit_jit_kernel(
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and dtype in required_dtypes and length == required_length):
             raise ValueError(f"{perm_form} requires a {required_length}-point C550 transform of {required_dtypes}")
-        if perm_form == "maca_3d_prime_outer16":
+        if perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide"}:
             from .kernels_maca_dif import build_maca_3d_prime_real_outer
 
-            kernel_name, kernel_source = build_maca_3d_prime_real_outer(direction, fp64=dtype == "complex128")
+            kernel_name, kernel_source = build_maca_3d_prime_real_outer(
+                direction, fp64=dtype == "complex128", wide=perm_form.endswith("_wide"),
+            )
         elif perm_form.startswith("maca_fp64_ct128"):
             from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
 

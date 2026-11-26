@@ -396,26 +396,29 @@ def build_maca_3d_real_boundary(
     return name, source
 
 
-def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool) -> tuple[str, str]:
+def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool, wide: bool = False) -> tuple[str, str]:
     precision = "fp64" if fp64 else "fp32"
     inverse = direction == "inverse"
-    half_tile, middle_tile = (4, 16) if inverse else (16, 4)
+    if wide and (inverse or fp64):
+        raise ValueError("the wide outer tile requires forward FP32")
+    half_tile, middle_tile = (4, 16) if inverse else (32 if wide else 16, 4)
+    tile = half_tile * middle_tile
     middle_tiles = (997 + middle_tile - 1) // middle_tile
     tiles_per_batch = ((33 + half_tile - 1) // half_tile) * middle_tiles
-    suffix = "_4x16" if inverse else ""
+    suffix = "_4x16" if inverse else ("_32x4" if wide else "")
     name = f"maca_{precision}_3d_prime_outer16_{direction}{suffix}"
     source_layout, target_layout = ("middle_major", "half_major") if inverse else (
         "half_major", "middle_major"
     )
-    source = _dif_column_helpers(16, direction, tile=64) + dedent(f"""
+    source = _dif_column_helpers(16, direction, tile=tile) + dedent(f"""
         @triton.jit
         def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
             block = tl.program_id(0)
-            if block * 64 >= nbatch:
+            if block * {tile} >= nbatch:
                 return
             batch = block // {tiles_per_batch}
             local = block % {tiles_per_batch}
-            lane = tl.arange(0, 64)
+            lane = tl.arange(0, {tile})
             h = (local // {middle_tiles}) * {half_tile} + lane // {middle_tile}
             m = (local % {middle_tiles}) * {middle_tile} + lane % {middle_tile}
             valid = (h < 33) & (m < 997)
@@ -427,8 +430,8 @@ def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool) -> tuple[str, 
             r, i = tl.split(tl.load(in_ptr + {source_layout}[:, :, None] + pair, valid[None, :, None], 0.0))
             for step in tl.static_range(2):
                 r, i = _first_axis_radix_four(r, i, roots_r_ptr, roots_i_ptr, step)
-            r = tl.reshape(tl.permute(tl.reshape(r, (4, 4, 64)), (1, 0, 2)), (16, 64))
-            i = tl.reshape(tl.permute(tl.reshape(i, (4, 4, 64)), (1, 0, 2)), (16, 64))
+            r = tl.reshape(tl.permute(tl.reshape(r, (4, 4, {tile})), (1, 0, 2)), (16, {tile}))
+            i = tl.reshape(tl.permute(tl.reshape(i, (4, 4, {tile})), (1, 0, 2)), (16, {tile}))
             tl.store(out_ptr + {target_layout}[:, :, None] + pair, tl.join(r, i), valid[None, :, None])
     """)
     return name, source
