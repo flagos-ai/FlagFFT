@@ -4782,6 +4782,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const bool packed_cta = n==16384 && batch==64 &&
       (fused_setting ? std::string(fused_setting)=="1" : request.ix_fourstep_preset==8) &&
       flag_or_default("FLAGFFT_IX_FOURSTEP_CTA",request.ix_fourstep_preset==8);
+  // The full leaf has the shorter measured latency for this single FFT.
+  const bool use_full_single = n == 2048 && batch == 1 && ix_real_single_pack_ &&
+      request.input_strides.size() == 2 && request.input_strides.front() == n;
+  const bool fused_ix = fused_setting ? std::string(fused_setting) == "1" : !use_full_single;
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -4792,7 +4796,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       !request.input_strides.empty() && request.input_strides.back() == 1 &&
       (std::getenv("FLAGFFT_IX_PORTABLE_LEAF") == nullptr ||
        std::string(std::getenv("FLAGFFT_IX_PORTABLE_LEAF")) == "1") &&
-      (fused_setting == nullptr || std::string(fused_setting) == "1")) {
+      fused_ix) {
     FFTRequest child_request = request;
     child_request.n = n / 2;
     child_request.requested_n = n / 2;
