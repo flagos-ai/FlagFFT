@@ -4704,8 +4704,13 @@ std::string CompiledRaw3DRealLeafNode::describe() const {
       << ", inverse=" << inverse << ", layout=" << static_cast<int>(layout)
       << ", fused_store=" << fused_store << ", n2_permuted=" << n2_permuted
       << ", n1_strided_input=" << n1_strided_input
-      << ", middle_transpose=" << (perm_210 != nullptr)
-      << ", n2_real_fft=" << n2_real_fft->describe()
+      << ", middle_transpose=" << (perm_210 != nullptr);
+  if (perm_first || perm_second || perm_third) {
+    oss << ", transpose_first=" << (perm_first ? perm_first->execution_description() : "none")
+        << ", transpose_second=" << (perm_second ? perm_second->execution_description() : "none")
+        << ", transpose_third=" << (perm_third ? perm_third->execution_description() : "none");
+  }
+  oss << ", n2_real_fft=" << n2_real_fft->describe()
       << ", n1_fft=" << n1_fft->describe() << ", n0_fft=" << n0_fft->describe() << ")";
   return oss.str();
 }

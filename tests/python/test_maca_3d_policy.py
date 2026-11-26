@@ -229,6 +229,8 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
 
 
 def test_maca_warp_transpose_uses_scoped_tile_groups(tmp_path, monkeypatch):
+    from pathlib import Path
+
     from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
     from flagfft_codegen.target import set_codegen_target
 
@@ -260,6 +262,13 @@ def test_maca_warp_transpose_uses_scoped_tile_groups(tmp_path, monkeypatch):
             assert meta["grid_x_override"] * warps * 64 == shape[0] * shape[1] * shape[2]
             assert meta["arg_names"] == base["arg_names"]
             assert meta["module_path"] != base["module_path"]
+        inverse_first = emit((128, 2048, 33), "120")
+        assert inverse_first["kernel_name"].endswith("_warp8_g4")
+        assert inverse_first["grid_x_override"] == 40960
+        assert "src_r < 33" in Path(inverse_first["module_path"]).read_text()
+        inverse_second = emit((2048, 33, 128), "210")
+        assert inverse_second["kernel_name"].endswith("_warp8x16_g4")
+        assert inverse_second["grid_x_override"] == 16896
         assert "warp8" not in emit((64, 64, 64), "210")["kernel_name"]
         assert "warp8" not in emit((256, 256, 256), "120", "complex128")["kernel_name"]
     finally:

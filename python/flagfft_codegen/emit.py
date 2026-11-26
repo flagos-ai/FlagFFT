@@ -1217,6 +1217,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2, warp8 or v1"
         )
     maca_warp_groups = 0
+    maca_warp_tile = (8, 8)
     if maca_mode == "warp8":
         if dtype == "complex64" and current_profile().device_arch == "102":
             if (n0, n1, n2, order) in {(128, 64, 2048, "210"), (128, 33, 2048, "210")}:
@@ -1224,6 +1225,11 @@ def _emit_tiled_transpose3d_jit_kernel(
             elif ((n0, n1, n2) == (256, 256, 256) and order in {"021", "210", "201", "120"}
                   or (n0, n1, n2, order) == (2048, 64, 128, "201")):
                 maca_warp_groups = 4
+            elif (n0, n1, n2, order) == (128, 2048, 33, "120"):
+                maca_warp_groups = 4
+            elif (n0, n1, n2, order) == (2048, 33, 128, "210"):
+                maca_warp_groups = 4
+                maca_warp_tile = (8, 16)
         if not maca_warp_groups:
             maca_mode = maca_mode_default
     if maca_mode == "pair16sg2rg2" and (
@@ -1324,7 +1330,7 @@ def _emit_tiled_transpose3d_jit_kernel(
             fp64_mode = "tile16vec"
     if maca_warp_groups:
         kernel_name, kernel_source, arg_names, grid_x = _build_maca_warp_transpose3d_kernel_source(
-            n0, n1, n2, order, maca_warp_groups,
+            n0, n1, n2, order, maca_warp_groups, tile=maca_warp_tile,
         )
         maca_warps = str(maca_warp_groups)
     elif maca_mode == "pair64x16" and _portable_transpose3d_supported():

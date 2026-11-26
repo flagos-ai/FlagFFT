@@ -375,15 +375,23 @@ def _transpose3d_sliced_layout(s0: int, s1: int, s2: int, order: str) -> tuple[i
 
 def _build_maca_warp_transpose3d_kernel_source(
     s0: int, s1: int, s2: int, order: str, groups: int,
+    *, tile: tuple[int, int] = (8, 8),
 ) -> tuple[str, str, list[str], int]:
-    """Use a warp-sized 8 × 8 tile for each group of complex FP32 pairs."""
+    """Transpose each tile of complex FP32 pairs in registers."""
     slices, rows, cols, src_slice, src_col, dst_slice, dst_row = _transpose3d_sliced_layout(s0, s1, s2, order)
-    row_tiles, col_tiles = rows // 8, cols // 8
+    tile_rows, tile_cols = tile
+    tile_elements = tile_rows * tile_cols
+    row_tiles = (rows + tile_rows - 1) // tile_rows
+    col_tiles = (cols + tile_cols - 1) // tile_cols
     tiles_per_slice = row_tiles * col_tiles
     total_tiles = slices * tiles_per_slice
-    if rows % 8 or cols % 8 or total_tiles % groups:
-        raise ValueError("MACA warp transpose requires whole 8 × 8 tiles and groups")
-    name = f"_maca_transpose3d_{order}_n{s0}_{s1}_{s2}_warp8_g{groups}"
+    if total_tiles % groups:
+        raise ValueError("MACA warp transpose requires whole groups of tiles")
+    tile_name = "8" if tile == (8, 8) else f"{tile_rows}x{tile_cols}"
+    name = f"_maca_transpose3d_{order}_n{s0}_{s1}_{s2}_warp{tile_name}_g{groups}"
+    partial_tile = rows % tile_rows or cols % tile_cols
+    src_mask = f", (src_r < {rows}) & (src_c < {cols}), 0" if partial_tile else ""
+    dst_mask = f", (dst_r < {rows}) & (dst_c < {cols})" if partial_tile else ""
     source = dedent(f"""
         @triton.jit
         def {name}(in_ptr, out_ptr, nbatch):
@@ -392,18 +400,18 @@ def _build_maca_warp_transpose3d_kernel_source(
             slice_id = tile // {tiles_per_slice}
             row_tile = tile % {row_tiles}
             col_tile = (tile // {row_tiles}) % {col_tiles}
-            lane = tl.arange(0, 64)
-            src_r = row_tile[:, None] * 8 + (lane % 8)[None, :]
-            src_c = col_tile[:, None] * 8 + (lane // 8)[None, :]
+            lane = tl.arange(0, {tile_elements})
+            src_r = row_tile[:, None] * {tile_rows} + (lane % {tile_rows})[None, :]
+            src_c = col_tile[:, None] * {tile_cols} + (lane // {tile_rows})[None, :]
             base = batch * {s0 * s1 * s2}
             src = base + slice_id[:, None] * {src_slice} + src_c * {src_col} + src_r
-            values = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src)
-            tiles = tl.reshape(values, ({groups}, 8, 8))
-            permuted = tl.reshape(tl.permute(tiles, (0, 2, 1)), ({groups}, 64))
-            dst_r = row_tile[:, None] * 8 + (lane // 8)[None, :]
-            dst_c = col_tile[:, None] * 8 + (lane % 8)[None, :]
+            values = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src{src_mask})
+            tiles = tl.reshape(values, ({groups}, {tile_cols}, {tile_rows}))
+            permuted = tl.reshape(tl.permute(tiles, (0, 2, 1)), ({groups}, {tile_elements}))
+            dst_r = row_tile[:, None] * {tile_rows} + (lane // {tile_cols})[None, :]
+            dst_c = col_tile[:, None] * {tile_cols} + (lane % {tile_cols})[None, :]
             dst = base + slice_id[:, None] * {dst_slice} + dst_r * {dst_row} + dst_c
-            tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst, permuted)
+            tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst, permuted{dst_mask})
     """)
     return name, source, ["in_ptr", "out_ptr", "nbatch"], total_tiles // groups
 
