@@ -308,11 +308,21 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
     return name, source
 
 
-def build_maca_3d_real_boundary(direction: str, *, fp64: bool) -> tuple[str, str]:
+def build_maca_3d_real_boundary(
+    direction: str, *, fp64: bool, middle_length: int = 2048,
+) -> tuple[str, str]:
     inverse = direction == "inverse"
     mode = "c2r" if inverse else "r2c"
     precision = "fp64" if fp64 else "fp32"
-    name = f"maca_{precision}_3d_{mode}64"
+    masked = middle_length % 32 != 0
+    tiles_per_plane = (middle_length + 31) // 32
+    prime = "prime_" if masked else ""
+    name = f"maca_{precision}_3d_{prime}{mode}64"
+    mask_declaration = f"valid = middle < {middle_length}" if masked else ""
+    load_mask = ", valid[None, :, None], 0.0" if masked else ""
+    store_mask = ", valid[None, :, None]" if masked else ""
+    nyquist_mask = " & valid[None, :]" if masked else ""
+    zero_mask = ", valid" if masked else ""
     source = _dif_column_helpers(32, direction) + dedent(
         f"""
         @triton.jit
@@ -346,40 +356,71 @@ def build_maca_3d_real_boundary(direction: str, *, fp64: bool) -> tuple[str, str
             if block * 32 >= nbatch:
                 return
             INVERSE: tl.constexpr = {inverse}
-            plane = (block // 64).to(tl.int64)
-            middle = (block % 64) * 32 + tl.arange(0, 32)
+            plane = (block // {tiles_per_plane}).to(tl.int64)
+            middle = (block % {tiles_per_plane}) * 32 + tl.arange(0, 32)
+            {mask_declaration}
             k = tl.arange(0, 32)
             pair = tl.arange(0, 2)[None, None, :]
-            real_base = plane * 131072
-            compact_base = plane * 135168
+            real_base = plane * {middle_length * 64}
+            compact_base = plane * {middle_length * 66}
             real_off = real_base + middle[None, :] * 64 + k[:, None] * 2
-            compact_off = compact_base + (k[:, None] * 2048 + middle[None, :]) * 2
+            compact_off = compact_base + (k[:, None] * {middle_length} + middle[None, :]) * 2
             co = tl.load(phase_r_ptr + k)[:, None]
             si = tl.load(phase_i_ptr + k)[:, None]
             if INVERSE:
-                rev_off = compact_base + ((32 - k[:, None]) * 2048 + middle[None, :]) * 2
-                ar, ai = tl.split(tl.load(in_ptr + compact_off[:, :, None] + pair))
-                br, bi = tl.split(tl.load(in_ptr + rev_off[:, :, None] + pair))
+                rev_off = compact_base + ((32 - k[:, None]) * {middle_length} + middle[None, :]) * 2
+                ar, ai = tl.split(tl.load(in_ptr + compact_off[:, :, None] + pair{load_mask}))
+                br, bi = tl.split(tl.load(in_ptr + rev_off[:, :, None] + pair{load_mask}))
                 dr, di = ar - br, ai + bi
                 real = ar + br - (dr * si + di * co)
                 imag = ai - bi + (dr * co - di * si)
             else:
-                real, imag = tl.split(tl.load(in_ptr + real_off[:, :, None] + pair))
+                real, imag = tl.split(tl.load(in_ptr + real_off[:, :, None] + pair{load_mask}))
             for stage in tl.static_range(2):
                 real, imag = _first_axis_radix_four(real, imag, roots_r_ptr, roots_i_ptr, stage)
             real, imag = _packed_natural(real), _packed_natural(imag)
             if INVERSE:
-                tl.store(out_ptr + real_off[:, :, None] + pair, tl.join(real, imag))
+                tl.store(out_ptr + real_off[:, :, None] + pair, tl.join(real, imag){store_mask})
             else:
                 br, bi = _packed_mirror(real), _packed_mirror(imag)
                 dr, di = real - br, imag + bi
                 out_r = (real + br + dr * si + di * co) * 0.5
                 out_i = (imag - bi - dr * co + di * si) * 0.5
-                tl.store(out_ptr + compact_off[:, :, None] + pair, tl.join(out_r, out_i))
-                nyquist = compact_base + (32 * 2048 + middle) * 2
+                tl.store(out_ptr + compact_off[:, :, None] + pair, tl.join(out_r, out_i){store_mask})
+                nyquist = compact_base + (32 * {middle_length} + middle) * 2
                 nyquist_off = tl.broadcast_to(nyquist[None, :], (32, 32))
-                tl.store(out_ptr + nyquist_off, real - imag, k[:, None] == 0)
-                tl.store(out_ptr + nyquist + 1, 0.0)
+                tl.store(out_ptr + nyquist_off, real - imag, (k[:, None] == 0){nyquist_mask})
+                tl.store(out_ptr + nyquist + 1, 0.0{zero_mask})
         """
     )
+    return name, source
+
+
+def build_maca_3d_prime_real_outer(*, fp64: bool) -> tuple[str, str]:
+    precision = "fp64" if fp64 else "fp32"
+    name = f"maca_{precision}_3d_prime_outer16_forward"
+    source = _dif_column_helpers(16, "forward", tile=64) + dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
+            block = tl.program_id(0)
+            if block * 64 >= nbatch:
+                return
+            batch = block // 750
+            local = block % 750
+            lane = tl.arange(0, 64)
+            h = (local // 250) * 16 + lane // 4
+            m = (local % 250) * 4 + lane % 4
+            valid = (h < 33) & (m < 997)
+            k = tl.arange(0, 16)
+            pair = tl.arange(0, 2)[None, None, :]
+            base = (batch.to(tl.int64) * 16 + k) * 32901
+            src = (base[:, None] + h[None, :] * 997 + m[None, :]) * 2
+            dst = (base[:, None] + m[None, :] * 33 + h[None, :]) * 2
+            r, i = tl.split(tl.load(in_ptr + src[:, :, None] + pair, valid[None, :, None], 0.0))
+            for step in tl.static_range(2):
+                r, i = _first_axis_radix_four(r, i, roots_r_ptr, roots_i_ptr, step)
+            r = tl.reshape(tl.permute(tl.reshape(r, (4, 4, 64)), (1, 0, 2)), (16, 64))
+            i = tl.reshape(tl.permute(tl.reshape(i, (4, 4, 64)), (1, 0, 2)), (16, 64))
+            tl.store(out_ptr + dst[:, :, None] + pair, tl.join(r, i), valid[None, :, None])
+    """)
     return name, source

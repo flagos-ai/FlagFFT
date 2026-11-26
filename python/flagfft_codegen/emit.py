@@ -753,6 +753,8 @@ def emit_jit_kernel(
         "maca_fp64_3d_r2c64": (64, 2, 32),
         "maca_fp64_3d_c2r64": (64, 2, 32),
         "maca_fp32_3d_c2r64": (64, 2, 32),
+        "maca_3d_prime_r2c64": (64, 4, 32),
+        "maca_3d_prime_outer16": (16, 4, 64),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
     maca_split_column = perm_form in {"maca_split_column1768_prepare", "maca_split_column1768_finish"}
@@ -779,11 +781,23 @@ def emit_jit_kernel(
         n1 = n2 = 0
     elif maca_dif_layout:
         required_length, maca_warps, maca_pack = maca_dif_layout
-        required_dtype = "complex64" if perm_form == "maca_fp32_3d_c2r64" else "complex128"
+        prime_axes = perm_form.startswith("maca_3d_prime_")
+        required_dtypes = (("complex64", "complex128") if prime_axes else
+                           ("complex64",) if perm_form == "maca_fp32_3d_c2r64" else ("complex128",))
         if not (_maca_backend_active() and current_profile().device_arch == "102"
-                and dtype == required_dtype and length == required_length):
-            raise ValueError(f"{perm_form} requires a {required_length}-point C550 {required_dtype} transform")
-        if perm_form.startswith("maca_fp64_ct128"):
+                and dtype in required_dtypes and length == required_length):
+            raise ValueError(f"{perm_form} requires a {required_length}-point C550 transform of {required_dtypes}")
+        if prime_axes:
+            from .kernels_maca_dif import build_maca_3d_prime_real_outer, build_maca_3d_real_boundary
+
+            if direction != "forward":
+                raise ValueError("the fused 3D prime axes require the forward direction")
+            fp64 = dtype == "complex128"
+            if perm_form == "maca_3d_prime_outer16":
+                kernel_name, kernel_source = build_maca_3d_prime_real_outer(fp64=fp64)
+            else:
+                kernel_name, kernel_source = build_maca_3d_real_boundary(direction, fp64=fp64, middle_length=997)
+        elif perm_form.startswith("maca_fp64_ct128"):
             from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
 
             builder = (build_maca_fp64_outer_dif if perm_form.endswith("_dif")

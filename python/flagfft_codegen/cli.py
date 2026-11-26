@@ -219,6 +219,8 @@ def main() -> None:
             "maca_fp64_3d_r2c64",
             "maca_fp64_3d_c2r64",
             "maca_fp32_3d_c2r64",
+            "maca_3d_prime_r2c64",
+            "maca_3d_prime_outer16",
             "maca_prime_dif_c2c",
             "maca_prime_dif_r2c",
             "maca_prime_dif_c2r",

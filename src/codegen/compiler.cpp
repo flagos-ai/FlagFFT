@@ -5316,10 +5316,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::RealInverse64:
       key.perm_form = request.input_dtype == "complex128" ? "maca_fp64_3d_c2r64" : "maca_fp32_3d_c2r64";
       break;
+    case MacaLeafLayout::RealPrimeForward64: key.perm_form = "maca_3d_prime_r2c64"; break;
+    case MacaLeafLayout::RealPrimeOuter16: key.perm_form = "maca_3d_prime_outer16"; break;
   }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   const bool packed_boundary = maca_layout == MacaLeafLayout::RealForward64 ||
-                               maca_layout == MacaLeafLayout::RealInverse64;
+                               maca_layout == MacaLeafLayout::RealInverse64 ||
+                               maca_layout == MacaLeafLayout::RealPrimeForward64;
   const bool inverse = request.direction == "inverse";
   const bool fp64 = request.input_dtype == "complex128";
   auto tables = maca_layout != MacaLeafLayout::Auto
@@ -7138,6 +7141,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   if (request.device_type == "npu") {
     n0_request.real_transform_kind.clear();
     n0_request.real_transform = false;
+  }
+
+  const bool maca_fused_prime_forward = maca_prime_compact && request.device_arch == "102" &&
+      !inverse && (batch == 1 || batch == 4) &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy &&
+      request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1} &&
+      (packed_real_setting == nullptr || std::string(packed_real_setting) != "0") &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_FUSED_AXES", false);
+  if (maca_fused_prime_forward) {
+    auto real_axis = compile_raw_leaf(*n2_leaf, n2_request, MacaLeafLayout::RealPrimeForward64);
+    const ScopedBool prime_dif_scope(maca_3d_prime_dif_,
+        maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", true));
+    auto middle = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+    auto outer = compile_raw_leaf(*n0_leaf, n0_request, MacaLeafLayout::RealPrimeOuter16);
+    const auto bytes = static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
+    return std::make_shared<CompiledRaw3DRealLeafNode>(n0, n1, n2, false,
+        CompiledRaw3DRealLeafNode::Layout::FusedPrimeForward,
+        std::move(real_axis), std::move(middle), std::move(outer), nullptr, nullptr, nullptr,
+        adaptor::Memory(bytes), adaptor::Memory(bytes));
   }
 
   // Preserve the compact real spectrum while fusing the short outer-axis

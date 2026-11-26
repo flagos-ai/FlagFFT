@@ -1687,7 +1687,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
 // directly.  A non-leaf middle axis can run between two transposes while the
 // outer leaf still fuses its final permutation.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
-  enum class Layout { Legacy, Strided, FusedStore, Transposed, R2CFirstStore };
+  enum class Layout { Legacy, Strided, FusedStore, Transposed, R2CFirstStore, FusedPrimeForward };
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
                             int64_t n2,
@@ -1941,7 +1941,7 @@ class TritonCompiler {
 
   enum class MacaLeafLayout {
     Auto, Contiguous, ContiguousFourWarps, FirstAxis64, OuterPrepare128, OuterFinish128,
-    OuterPrepareDif128, OuterFinishDif128, RealForward64, RealInverse64
+    OuterPrepareDif128, OuterFinishDif128, RealForward64, RealInverse64, RealPrimeForward64, RealPrimeOuter16
   };
   std::shared_ptr<CompiledRawNode> compile_maca_1d_fp64_packed_dif(const LeafPlanNode &leaf,
                                                                  const FFTRequest &request);
