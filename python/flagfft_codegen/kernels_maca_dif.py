@@ -6,10 +6,10 @@
 from textwrap import dedent
 
 
-def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
-    name = f"maca_fp64_dif2048_{direction}"
-    sign = 1 if direction == "inverse" else -1
-    source = dedent(
+def _dif2048_helpers(direction: str | None) -> str:
+    sign = "SIGN" if direction is None else (1 if direction == "inverse" else -1)
+    sign_arg = ", SIGN: tl.constexpr" if direction is None else ""
+    return dedent(
         f"""
         @triton.jit
         def _dif_split_quarters(values, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
@@ -33,7 +33,7 @@ def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
             return real * co - imag * si, real * si + imag * co
 
         @triton.jit
-        def _dif_radix_four(real, imag, roots_r, roots_i, STAGE: tl.constexpr):
+        def _dif_radix_four(real, imag, roots_r, roots_i, STAGE: tl.constexpr{sign_arg}):
             GROUPS: tl.constexpr = 1 << (2 * STAGE)
             QUARTER: tl.constexpr = 2048 // (4 * GROUPS)
             ar, br, cr, dr = _dif_split_quarters(real, GROUPS, QUARTER)
@@ -67,7 +67,14 @@ def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
             result = tl.reshape(result, (4, 4, 4, 4, 4, 2))
             result = tl.permute(result, (5, 4, 3, 2, 1, 0))
             return tl.reshape(result, (2048,))
+        """
+    )
 
+
+def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
+    name = f"maca_fp64_dif2048_{direction}"
+    source = _dif2048_helpers(direction) + dedent(
+        f"""
         @triton.jit
         def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
             batch = tl.program_id(0)
@@ -82,6 +89,65 @@ def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
                 real, imag = _dif_radix_four(real, imag, roots_r_ptr, roots_i_ptr, stage)
             value = tl.join(_dif_natural_output(real), _dif_natural_output(imag))
             tl.store((out_ptr + base) + offset, value)
+        """
+    )
+    return name, source
+
+
+def build_maca_prime_dif(n: int, mode: str) -> tuple[str, str]:
+    name = f"maca_prime_dif_{mode}_n{n}"
+    source = _dif2048_helpers(None) + dedent(
+        f"""
+        @triton.jit
+        def _prime_input(in_ptr, chirp_ptr, row, k, N: tl.constexpr, MODE: tl.constexpr):
+            HALF: tl.constexpr = N // 2 + 1
+            pair = tl.arange(0, 2)[None, :]
+            if MODE == "r2c":
+                r = tl.load(in_ptr + row * N + k, k < N, 0.0)
+                i = tl.zeros_like(r)
+            elif MODE == "c2r":
+                mirror = tl.where(k < HALF, k, N - k)
+                offset = (row * HALF + mirror[:, None]) * 2 + pair
+                r, i = tl.split(tl.load(in_ptr + offset, k[:, None] < N, 0.0))
+                i = tl.where(k < HALF, i, -i)
+            else:
+                offset = (row * N + k[:, None]) * 2 + pair
+                r, i = tl.split(tl.load(in_ptr + offset, k[:, None] < N, 0.0))
+            cr, ci = tl.split(tl.load(chirp_ptr + k[:, None] * 2 + pair, k[:, None] < N, 0.0))
+            return r * cr - i * ci, i * cr + r * ci
+
+        @triton.jit
+        def _prime_output(out_ptr, chirp_ptr, row, k, r, i, N: tl.constexpr, MODE: tl.constexpr):
+            pair = tl.arange(0, 2)[None, :]
+            cr, ci = tl.split(tl.load(chirp_ptr + k[:, None] * 2 + pair, k[:, None] < N, 0.0))
+            re = r * cr - i * ci
+            if MODE == "c2r":
+                tl.store(out_ptr + row * N + k, re, k < N)
+            else:
+                ODIST: tl.constexpr = N // 2 + 1 if MODE == "r2c" else N
+                im = i * cr + r * ci
+                offset = (row * ODIST + k[:, None]) * 2 + pair
+                tl.store(out_ptr + offset, tl.join(re, im), k[:, None] < ODIST)
+
+        @triton.jit
+        def {name}(in_ptr, b_fft_ptr, chirp_ptr, out_ptr,
+                   roots_r_ptr, roots_fwd_ptr, roots_inv_ptr, nbatch):
+            row = tl.program_id(0)
+            if row >= nbatch:
+                return
+            k = tl.arange(0, 2048)
+            r, i = _prime_input(in_ptr, chirp_ptr, row, k, {n}, "{mode}")
+            for stage in tl.static_range(5):
+                r, i = _dif_radix_four(r, i, roots_r_ptr, roots_fwd_ptr, stage, -1)
+            r, i = _dif_natural_output(r), _dif_natural_output(i)
+            pair = tl.arange(0, 2)[None, :]
+            br, bi = tl.split(tl.load(b_fft_ptr + k[:, None] * 2 + pair))
+            br, bi = br * (1.0 / 2048), bi * (1.0 / 2048)
+            r, i = r * br - i * bi, i * br + r * bi
+            for stage in tl.static_range(5):
+                r, i = _dif_radix_four(r, i, roots_r_ptr, roots_inv_ptr, stage, 1)
+            r, i = _dif_natural_output(r), _dif_natural_output(i)
+            _prime_output(out_ptr, chirp_ptr, row, k, r, i, {n}, "{mode}")
         """
     )
     return name, source

@@ -46,6 +46,30 @@ namespace {
     return value == nullptr ? default_value : std::string(value) == "1";
   }
 
+  std::vector<DeviceAllocation> make_maca_dif_roots(int64_t length,
+                                                   bool fp64,
+                                                   bool inverse,
+                                                   bool both_directions = false) {
+    std::vector<double> cosine(length), sine(length);
+    const double phase_step = (inverse ? 2.0 : -2.0) * kPi / length;
+    for (int64_t i = 0; i < length; ++i) {
+      cosine[i] = std::cos(phase_step * i);
+      sine[i] = std::sin(phase_step * i);
+    }
+    const auto upload = [fp64](const std::vector<double>& values) {
+      return fp64 ? adaptor::Memory::from_doubles(values)
+                  : adaptor::Memory::from_floats(std::vector<float>(values.begin(), values.end()));
+    };
+    std::vector<DeviceAllocation> roots;
+    roots.push_back(upload(cosine));
+    roots.push_back(upload(sine));
+    if (both_directions) {
+      for (double& value : sine) value = -value;
+      roots.push_back(upload(sine));
+    }
+    return roots;
+  }
+
   // Compact real boundaries and graph replay are qualified on A100. Keep
   // the policy local to sm_80 and retain explicit rollback for comparisons.
   bool cuda_multid_flag(const FFTRequest &request, const char *name) {
@@ -2723,6 +2747,13 @@ namespace {
                                    const FFTRequest &request,
                                    int64_t batch) {
     const auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
+    if (bluestein && maca_prime_dif_requested(request) && batch == request.batch &&
+        bluestein->conv_length == 2048 &&
+        std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) &&
+        (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r" ||
+         request.real_transform_kind == "d2z" || request.real_transform_kind == "z2d")) {
+      return true;
+    }
     const bool cuda_real = bluestein && request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
         !request.packed_real_child && request.fft_length == request.requested_n &&
@@ -4379,6 +4410,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
+    if (leaf && bluestein->conv_length == 2048 && bluestein->length == request.requested_n &&
+        batch == request.batch && maca_prime_dif_requested(request)) {
+      const bool fp64 = request.input_dtype == "complex128";
+      auto key = KernelKey::leaf_bluestein(
+          triton_target_for_request(child_request), child_request.direction, request.input_dtype,
+          bluestein->length, leaf->length, leaf->factors, leaf->lanes,
+          fp64 ? 4 : 2, leaf->generic_radices, leaf->smem_size);
+      key.perm_form = "maca_prime_dif_" + (real_kind.empty() ? std::string("c2c") : real_kind);
+      return std::make_shared<CompiledRawBluesteinFullLeafNode>(
+          bluestein->length, bluestein->conv_length, std::move(fft), compile_kernel(key),
+          make_maca_dif_roots(2048, fp64, false, true), std::move(chirp), std::move(b_time),
+          std::move(b_fft_buf), real_kind,
+          real_kind.empty() ? std::function<std::shared_ptr<CompiledRawNode>()>{}
+                            : make_real_layout_fallback);
+    }
     if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf || use_hcu_boundary_leaf) {
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
@@ -5174,20 +5220,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::OuterFinish128: key.perm_form = "maca_fp64_ct128_finish"; break;
   }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
-  std::vector<DeviceAllocation> tables;
-  if (maca_layout != MacaLeafLayout::Auto) {
-    std::vector<double> roots_r(leaf.length);
-    std::vector<double> roots_i(leaf.length);
-    const double phase_step = (request.direction == "inverse" ? 2.0 : -2.0) * kPi / leaf.length;
-    for (int64_t i = 0; i < leaf.length; ++i) {
-      roots_r[i] = std::cos(phase_step * i);
-      roots_i[i] = std::sin(phase_step * i);
-    }
-    tables.push_back(adaptor::Memory::from_doubles(roots_r));
-    tables.push_back(adaptor::Memory::from_doubles(roots_i));
-  } else {
-    tables = build_raw_leaf_tables(leaf, request);
-  }
+  auto tables = maca_layout != MacaLeafLayout::Auto
+      ? make_maca_dif_roots(leaf.length, true, request.direction == "inverse")
+      : build_raw_leaf_tables(leaf, request);
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
                                                std::move(tables));

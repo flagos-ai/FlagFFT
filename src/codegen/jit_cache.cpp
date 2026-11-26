@@ -566,7 +566,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_packed_c2r";
       break;
     case KernelKind::LeafBluestein:
-      kernel_kind = key.perm_form == "outer" ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
+      if (key.perm_form == "maca_prime_dif_c2c") kernel_kind = "leaf_bluestein";
+      else if (key.perm_form == "maca_prime_dif_r2c") kernel_kind = "leaf_bluestein_r2c";
+      else if (key.perm_form == "maca_prime_dif_c2r") kernel_kind = "leaf_bluestein_c2r";
+      else kernel_kind = key.perm_form == "outer" ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
       break;
     case KernelKind::LeafRaderFull:
       kernel_kind = "leaf_rader_full";
@@ -858,6 +861,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::Leaf && key.perm_form.rfind("maca_fp64_", 0) == 0) ||
+      (key.kind == KernelKind::LeafBluestein && key.perm_form.rfind("maca_prime_dif_", 0) == 0) ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;

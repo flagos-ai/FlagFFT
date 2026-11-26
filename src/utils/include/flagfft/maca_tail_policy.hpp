@@ -36,10 +36,25 @@ inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
   return request.batch == 64 && (batch_policy == nullptr || std::string(batch_policy) != "0");
 }
 
+inline bool maca_prime_dif_requested(const FFTRequest& request) {
+  const char* setting = std::getenv("FLAGFFT_MACA_PRIME_DIF");
+  return setting && std::string(setting) == "1" &&
+      request.device_type == "maca" && request.device_arch == "102" &&
+      request.raw_dim == 1 && request.origin_rank <= 1 &&
+      (request.batch == 1 || request.batch == 64) && !request.convolution_child &&
+      !request.packed_real_child && request.fft_length == request.requested_n &&
+      (request.requested_n == 997 || request.requested_n == 1009) &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.output_dtype == request.input_dtype && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && !request.input_strides.empty() &&
+      request.input_strides.back() == 1;
+}
+
 // An explicit old root experiment, including 'default', wins over the policy.
 inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   const char* old = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   if (old && *old) return {};
+  if (maca_prime_dif_requested(request)) return "bs2048";
   if (request.batch == 64 && maca_663000_c2c_enabled(request)) return "ct780x850";
   if (!maca_tail_policy_enabled(request)) return {};
   const auto n = request.requested_n;

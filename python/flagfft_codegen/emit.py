@@ -728,7 +728,19 @@ def emit_jit_kernel(
         "maca_fp64_ct128_prepare": (128, 4, 4),
         "maca_fp64_ct128_finish": (128, 4, 8),
     }.get(perm_form) if kernel == "leaf" else None
-    if maca_fp64_layout:
+    maca_prime_dif = perm_form.startswith("maca_prime_dif_")
+    if maca_prime_dif:
+        mode = perm_form.removeprefix("maca_prime_dif_")
+        expected_kernel = "leaf_bluestein" if mode == "c2c" else f"leaf_bluestein_{mode}"
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and mode in {"c2c", "r2c", "c2r"} and kernel == expected_kernel
+                and dtype in {"complex64", "complex128"} and length == 2048 and prime_n in {997, 1009}):
+            raise ValueError("the MACA prime DIF kernel requires a C550 997- or 1009-point transform")
+        from .kernels_maca_dif import build_maca_prime_dif
+
+        kernel_name, kernel_source = build_maca_prime_dif(prime_n, mode)
+        n1 = n2 = 0
+    elif maca_fp64_layout:
         required_length, maca_warps, maca_pack = maca_fp64_layout
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and dtype == "complex128" and length == required_length):
@@ -827,7 +839,7 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM or maca_fp64_layout:
+    if spec.family == STOCKHAM or maca_fp64_layout or maca_prime_dif:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):
@@ -841,7 +853,7 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    if spec.is_leaf_like and not maca_fp64_layout:
+    if spec.is_leaf_like and not (maca_fp64_layout or maca_prime_dif):
         radices = tuple(
             sorted(
                 codelet_radices_for(factors)
@@ -877,6 +889,8 @@ def emit_jit_kernel(
     )
     if maca_fp64_layout:
         metadata.update(num_warps=maca_warps, batch_per_block=maca_pack)
+    if maca_prime_dif:
+        metadata.update(num_warps=4 if dtype == "complex128" else 2, batch_per_block=1)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:

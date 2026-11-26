@@ -165,6 +165,34 @@ def test_c550_fp64_specialized_leaf_launch_abi(
         reset_profile(token)
 
 
+@pytest.mark.parametrize("mode", ("c2c", "r2c", "c2r"))
+@pytest.mark.parametrize("length,dtype,warps", ((1009, "complex64", 2), (997, "complex128", 4)))
+def test_c550_prime_dif_leaf_launch_abi(tmp_path, mode, length, dtype, warps):
+    from flagfft_codegen.emit import emit_jit_kernel
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf_bluestein" if mode == "c2c" else f"leaf_bluestein_{mode}",
+            length=2048, factors=(16, 16, 8), lanes=128, num_warps=warps,
+            generic_radices=(), smem_size=2048, direction="forward", dtype=dtype,
+            prime_n=length, four_step_n1=0, four_step_n2=0,
+            perm_form=f"maca_prime_dif_{mode}", out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == f"maca_prime_dif_{mode}_n{length}"
+        assert metadata["num_warps"] == warps
+        assert metadata["batch_per_block"] == 1
+        assert metadata["arg_names"] == [
+            "in_ptr", "b_fft_ptr", "chirp_ptr", "out_ptr",
+            "roots_r_ptr", "roots_fwd_ptr", "roots_inv_ptr", "nbatch",
+        ]
+    finally:
+        reset_profile(token)
+
+
 @pytest.mark.parametrize(
     "length,factors,lanes,expected",
     [
