@@ -2809,7 +2809,7 @@ namespace {
                                                           const FFTRequest &request,
                                                           int64_t batch,
                                                           bool inverse,
-                                                          bool maca_fused_rows) {
+                                                          bool maca_packed_rows) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
     const bool hcu_large_packed = hcu_large_packed_real_enabled(original_plan, request, batch);
@@ -2818,7 +2818,7 @@ namespace {
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
                        hcu_large_packed ||
-                       maca_fused_rows ||
+                       maca_packed_rows ||
                        hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
@@ -5004,11 +5004,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
-  const bool maca_fused_rows = allow_packed &&
+  const bool maca_packed_rows = allow_packed &&
       maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, true, maca_fused_rows)
+              ? select_packed_real_child(node, request, batch, true, maca_packed_rows)
               : std::nullopt) {
     const int64_t packed = n / 2;
     const char *packed_fuse_setting = performance_env("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
@@ -5029,6 +5029,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool cuda_fused_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
+    // Screen compact-spectrum reconstruction followed by the existing
+    // 1024-point inverse leaf as a resource alternative to the fused CTA.
+    const bool maca_fused_rows = maca_packed_rows &&
+        !(n == 2048 && request.input_dtype == "complex128" &&
+          flag_or_default("FLAGFFT_MACA_2D_SPLIT_PACKED_C2R", false));
     const bool use_packed_fused_leaf = cuda_fused_leaf || maca_fused_rows ||
                                       hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
