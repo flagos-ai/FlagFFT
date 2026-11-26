@@ -17,7 +17,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_C2C_PACK2",
                              "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
                              "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF",
-                             "FLAGFFT_MACA_663000_REAL"}) {
+                             "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
+                             "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -183,6 +184,28 @@ TEST_F(TailPolicy, C550Packed663000ResourcesMatchMeasuredRequests) {
   setenv("FLAGFFT_MACA_663000_REAL", "0", 1);
   EXPECT_FALSE(flagfft::maca_663000_real_enabled(r));
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+}
+
+TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {
+  auto r = request(663000, "complex64");
+  r.device_arch = "102";
+  r.batch = 64;
+  r.input_layout = "contiguous";
+  r.input_strides = {663000, 1};
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c663000");
+  flagfft::PlanBuilder builder;
+  auto fourstep = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(663000, r));
+  ASSERT_NE(fourstep, nullptr);
+  EXPECT_EQ(fourstep->n1, 375);
+  EXPECT_EQ(fourstep->n2, 1768);
+  r.requires_contiguous_copy = true;
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  r.requires_contiguous_copy = false;
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
 }
 
 TEST_F(TailPolicy, NativeDescriptorKeepsOriginalApiAndRank) {

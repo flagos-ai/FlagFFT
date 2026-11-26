@@ -4299,13 +4299,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const auto workspace_bytes = static_cast<std::size_t>(batch * four_step->length * element_bytes);
       DeviceAllocation stage1 = adaptor::Memory(workspace_bytes);
       auto row_kernel = compile_four_step_row_kernel(*row_leaf, request, n1, n2);
-      if (batch == 1 && batch == request.batch && n1 == 375 && n2 == 1768 &&
+      const bool split_column = batch == 1
+          ? maca_flag_or_default("FLAGFFT_MACA_663000_SPLIT_COLUMN", false)
+          : maca_663000_batch_split_column_enabled(request);
+      if (split_column && batch == request.batch && n1 == 375 && n2 == 1768 &&
           maca_663000_c2c_enabled(request) && request.input_layout == "contiguous" &&
-          !request.requires_contiguous_copy && !row_kernel->tle_fused_twiddle &&
-          maca_flag_or_default("FLAGFFT_MACA_663000_SPLIT_COLUMN", false)) {
+          !request.requires_contiguous_copy && !row_kernel->tle_fused_twiddle) {
         auto key = KernelKey::four_step_col(triton_target_for_request(request), request.direction,
             request.input_dtype, n1, n2, col_leaf->length, col_leaf->factors, col_leaf->lanes,
-            col_leaf->num_warps, col_leaf->generic_radices, col_leaf->smem_size);
+            batch == 64 ? 4 : 2, col_leaf->generic_radices, col_leaf->smem_size);
         const bool inverse = request.direction == "inverse";
         key.perm_form = "maca_split_column1768_prepare";
         auto column_preparation = CompiledRawFourStepFusedNode::ColumnPreparation{

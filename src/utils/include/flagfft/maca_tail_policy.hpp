@@ -36,6 +36,13 @@ inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
   return request.batch == 64 && (batch_policy == nullptr || std::string(batch_policy) != "0");
 }
 
+inline bool maca_663000_batch_split_column_enabled(const FFTRequest& request) {
+  const char* setting = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
+  return setting && std::string(setting) == "1" && request.batch == 64 &&
+      maca_663000_c2c_enabled(request) && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy;
+}
+
 inline bool maca_663000_real_enabled(const FFTRequest& request) {
   const int64_t length = request.packed_real_child ? 331500 : 663000;
   if (request.device_type != "maca" || request.device_arch != "102" ||
@@ -83,7 +90,9 @@ inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   const char* old = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   if (old && *old) return {};
   if (maca_prime_dif_requested(request)) return "bs2048";
-  if (request.batch == 64 && maca_663000_c2c_enabled(request)) return "ct780x850";
+  if (request.batch == 64 && maca_663000_c2c_enabled(request)) {
+    return maca_663000_batch_split_column_enabled(request) ? "ct375x1768" : "ct780x850";
+  }
   if (!maca_tail_policy_enabled(request)) return {};
   const auto n = request.requested_n;
   if (request.real_transform) {
@@ -125,8 +134,10 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
-  if (maca_663000_c2c_enabled(request))
-    return request.batch == 64 ? "c2c663000-batch" : "c2c663000";
+  if (maca_663000_c2c_enabled(request)) {
+    return request.batch == 64 && !maca_663000_batch_split_column_enabled(request)
+        ? "c2c663000-batch" : "c2c663000";
+  }
   if (request.packed_real_child && maca_663000_real_enabled(request)) {
     if (request.batch == 64) return "batch-c2r663000";
     if (request.input_dtype == "complex64") return "r2c663000";

@@ -8,9 +8,10 @@ from textwrap import dedent
 from .ix_prime_codelets import emit_prime_codelet
 
 
-def build_maca_split_column1768(direction: str, prepare: bool) -> tuple[str, str, int]:
+def build_maca_split_column1768(direction: str, prepare: bool, warps: int) -> tuple[str, str, int]:
     phase = "prepare" if prepare else "finish"
-    name = f"maca_split_column1768_{phase}_{direction}"
+    suffix = "_w4" if warps == 4 else ""
+    name = f"maca_split_column1768_{phase}{suffix}_{direction}"
     tile = 128 if prepare else 32
     columns, radix13, radix17, radix8 = 375, 13, 17, 8
     inner = radix17 * radix8

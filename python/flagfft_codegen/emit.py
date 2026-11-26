@@ -761,12 +761,13 @@ def emit_jit_kernel(
     if maca_split_column:
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and kernel == "four_step_col" and dtype == "complex64"
+                and num_warps in (2, 4)
                 and (length, four_step_n1, four_step_n2) == (1768, 375, 1768)):
             raise ValueError("the split column requires FP32 FourStep 375 × 1768 on C550")
         from .kernels_maca_column import build_maca_split_column1768
 
         prepare_column = perm_form.endswith("_prepare")
-        kernel_name, kernel_source, column_grid = build_maca_split_column1768(direction, prepare_column)
+        kernel_name, kernel_source, column_grid = build_maca_split_column1768(direction, prepare_column, num_warps)
         n1, n2 = four_step_n1, four_step_n2
     elif maca_prime_dif:
         mode = perm_form.removeprefix("maca_prime_dif_")
@@ -960,7 +961,7 @@ def emit_jit_kernel(
     if maca_prime_dif:
         metadata.update(num_warps=4 if dtype == "complex128" else 2, batch_per_block=1)
     if maca_split_column:
-        metadata.update(num_warps=2, grid_x_override=column_grid, tle_fused_twiddle=False)
+        metadata.update(num_warps=num_warps, grid_x_override=column_grid, tle_fused_twiddle=False)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:

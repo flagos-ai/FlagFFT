@@ -25,6 +25,7 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
     if (automatic == "ct1024x1024") return {{automatic, 1024, 1024}};
     if (automatic == "ct405x810") return {{automatic, 405, 810}};
     if (automatic == "ct780x850") return {{automatic, 780, 850}};
+    if (automatic == "ct375x1768") return {{automatic, 375, 1768}};
   }
   const bool c550_large_batch = request.device_arch == "102" && request.origin_rank <= 1 &&
       request.batch == 64 && n == 663000 && !request.real_transform &&
