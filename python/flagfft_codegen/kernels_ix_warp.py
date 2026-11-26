@@ -14,6 +14,7 @@
 
 """IX warp-local radix-4 x FFT64 prototype; source generator only."""
 import math
+import os
 
 
 def strided_input_tile_shape(pack, output_major=False):
@@ -199,8 +200,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("IX warp FFT pack must be 1, 2, 4, 8, 16, 32 or 64")
     if root_period not in {0, 4, 8} or (root_period and not (wide or table_roots)):
         raise ValueError("periodic wave roots require supplied tables and period 4 or 8")
-    if strided_input and (mode != "inner" or manual_store):
-        raise ValueError("strided wave input requires an ordinary inner store")
+    if strided_input and (mode not in {"inner", "outer"} or manual_store):
+        raise ValueError("strided wave input requires a permuted store")
     if strided_output_major and not strided_input:
         raise ValueError("output-major row tiles require strided input")
     if packed_output_transpose and mode != "packed_r2c":
@@ -253,7 +254,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
        f'    lane=tl.arange(0,{lane_width})[None,:]']
-    if strided_input:
+    if strided_input and mode == "inner":
         outer_tile, span_tile = strided_input_tile_shape(pack, strided_output_major)
         a += [f'    span_groups=(span+{span_tile-1})//{span_tile}',
               f'    outer_row=(pid//span_groups)*{outer_tile}+slot//{span_tile}',
@@ -290,6 +291,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if packed_output_transpose:
         a += [f'    gbase=(row//span)*({n+1}*span)+row%span']
     if strided_input:
+        if mode == "outer":
+            a += [f'    outer_row=pid//groups+tl.full(({pack},),0,tl.int32)',
+                  f'    span_row=(pid%groups)*{pack}+slot']
         a += ['    valid_row=(outer_row<(nbatch//span))&(span_row<span)',
               '    valid=valid_row[:,None]']
     if four_step:
@@ -676,12 +680,13 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     four_outputs = perm_form.endswith("_dif_chunk4")
     perm_form = perm_form.removesuffix("_chunk1").removesuffix("_chunk4")
     dif_store = perm_form.endswith("_dif")
+    strided_columns = perm_form == "outer_strided"
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
         "contiguous_r2c":"contiguous_r2c",
         "packed_r2c":"packed_r2c", "packed_c2r":"packed_c2r",
         "permuted_r2c":"r2c", "permuted_store_r2c":"r2c",
-    }.get(io_mode, perm_form.removesuffix("_dif"))
+    }.get(io_mode, "outer" if strided_columns else perm_form.removesuffix("_dif"))
     n=plan.length
     chunk=(2 if n==256 else 8 if n>=1024 else 0) if mode in {'outer','inner','r2c'} else 0
     if single_output:
@@ -689,9 +694,15 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     elif four_outputs:
         chunk = 4
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
+    codelet = recurrence = False
+    if n == 2048 and mode in {"outer", "c2r"}:
+        codelet = os.getenv("FLAGFFT_IX_WARP2048_CODELET", "0") == "1"
+        recurrence = os.getenv("FLAGFFT_IX_WARP2048_RECURRENCE", "0") == "1"
+        chunk = int(os.getenv("FLAGFFT_IX_WARP2048_CHUNK", str(chunk)))
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
-                                    output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c)
+                                    output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c,
+                                    strided_input=strided_columns, local_codelet=codelet, recurrence=recurrence)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:

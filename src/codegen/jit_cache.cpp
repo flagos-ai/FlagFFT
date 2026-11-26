@@ -460,6 +460,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                                      std::string(pair_store) == "1" ? "1" : "0");
     cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
   }
+  if (adaptor::backend_name() == "ix" && key.length == 2048 && key.ix_warp_fft_pack > 0) {
+    for (const char *name : {"FLAGFFT_IX_WARP2048_CODELET", "FLAGFFT_IX_WARP2048_RECURRENCE",
+                             "FLAGFFT_IX_WARP2048_CHUNK"}) {
+      if (const char *value = performance_env(name)) cache_key += ";" + std::string(name) + "=" + value;
+    }
+  }
   if (key.kind == KernelKind::FourStepCol && adaptor::backend_name() == "ix" &&
       key.four_step_n1 == 1024 && key.four_step_n2 == 512) {
     if (const char *setting = performance_env("FLAGFFT_IX_FOURSTEP_COL_TWIDDLE_RECURRENCE")) {
@@ -1265,6 +1271,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
       (kernel->kernel_name == "ix_prime_r2c_last" ||
+       (key.perm_form == "outer_strided" && kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+        kernel->kernel_name.find("_stridedinput") != std::string::npos) ||
        (kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
         kernel->kernel_name.find("_stridedinput") != std::string::npos))) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");

@@ -406,6 +406,11 @@ def _metadata(
             inner_pack=warp_pack
             tle_fused_twiddle=True
     strided_grid = {}
+    if kernel_name.startswith("ix_warp") and "_stridedinput" in kernel_name:
+        if permutation_span <= 0 or permutation_batch <= 0 or permutation_batch % permutation_span:
+            raise ValueError("IX strided columns require complete compact planes")
+        strided_grid["grid_x_override"] = (
+            (permutation_batch // permutation_span) * ((permutation_span + batch_per_block - 1) // batch_per_block))
     if kernel_name == "ix_prime_r2c_last":
         from .kernels_ix_warp import IX_PRIME_R2C_LAST_GRID, PRIME_R2C_LAST_TILE
         num_warps = 1

@@ -202,6 +202,7 @@ def main() -> None:
             "outer_dif_chunk1",
             "outer_dif_chunk4",
             "outer_packed",
+            "outer_strided",
             "ix_band_c2c",
             "ix_band_r2c",
             "ix_band_c2r",

@@ -3825,9 +3825,11 @@ def _build_leaf_kernel_source_for_io(
                 include_four_step_twiddle=io_mode in {'four_step_row','four_step_real_row','four_step_hermitian_row'}),warp_pack)
     if (warp_pack and _ix_backend_active() and current_profile().device_arch == "71"
             and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length in {16,64,128,256,512,1024,2048}
-            and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "packed_r2c", "packed_c2r", "permuted_store", "permuted_r2c", "permuted_store_r2c"}
+            and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "packed_r2c", "packed_c2r", "permuted_store",
+                            "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
             and perm_form in {"outer", "inner", "outer_dif", "inner_dif",
-                              "outer_dif_chunk1", "inner_dif_chunk1", "outer_dif_chunk4"}):
+                              "outer_dif_chunk1", "inner_dif_chunk1", "outer_dif_chunk4", "outer_strided"}
+            and (io_mode == "strided_permuted_store") == (perm_form == "outer_strided")):
         from .kernels_ix_warp import build_ix_warp256_leaf_source
         return build_ix_warp256_leaf_source(
             plan,io_mode,perm_form,_leaf_kernel_params_for_io(plan,io_mode=io_mode),
