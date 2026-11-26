@@ -6360,7 +6360,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const bool maca_dif_shape = maca_first_store_fp64_enabled && request.device_arch == "102" &&
         n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4);
     const bool maca_first_dif = maca_dif_shape &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_FIRST", false);
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_FIRST", true);
     auto n2_fft = maca_first_dif
         ? compile_raw_leaf(*n2_leaf, n2_request, MacaLeafLayout::FirstAxis64)
         : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");

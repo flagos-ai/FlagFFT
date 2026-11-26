@@ -22,10 +22,26 @@ inline bool maca_tail_policy_enabled(const FFTRequest& request) {
   return true;
 }
 
+inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || request.real_transform ||
+      request.convolution_child || request.packed_real_child ||
+      request.requested_n != 663000 || request.fft_length != 663000 ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_strides.empty() || request.input_strides.back() != 1) return false;
+  const char* setting = std::getenv("FLAGFFT_MACA_663000_C2C");
+  if (setting != nullptr && std::string(setting) != "1") return false;
+  if (request.batch == 1) return maca_tail_policy_enabled(request);
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  return request.batch == 64 && (batch_policy == nullptr || std::string(batch_policy) != "0");
+}
+
 // An explicit old root experiment, including 'default', wins over the policy.
 inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   const char* old = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  if (!maca_tail_policy_enabled(request) || (old && *old)) return {};
+  if (old && *old) return {};
+  if (request.batch == 64 && maca_663000_c2c_enabled(request)) return "ct780x850";
+  if (!maca_tail_policy_enabled(request)) return {};
   const auto n = request.requested_n;
   if (request.real_transform) {
     // Only these real-prime/API pairs have paired device evidence.
@@ -66,6 +82,7 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
+  if (maca_663000_c2c_enabled(request)) return "c2c663000";
   if (request.device_type == "maca" && request.device_arch == "102" &&
       request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
       request.fft_length == request.requested_n && !request.input_strides.empty() &&
@@ -138,6 +155,8 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
+    if (root == "c2c663000" && dtype == "complex64" &&
+        ((n1 == 375 && n2 == 1768) || (n1 == 780 && n2 == 850))) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||
          (n1 == 64 && n2 == 128) ||
