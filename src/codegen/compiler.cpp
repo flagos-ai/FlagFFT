@@ -4311,7 +4311,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                       : maca_663000_batch_split_column_enabled(request));
       const bool split_fp64 = request.input_dtype == "complex128" && (batch == 1 || batch == 64) &&
           maca_663000_c2c_scope(request) && maca_flag_or_default("FLAGFFT_MACA_663000_C2C", true) &&
-          maca_flag_or_default("FLAGFFT_MACA_663000_FP64_SPLIT_COLUMN", false);
+          maca_flag_or_default("FLAGFFT_MACA_663000_FP64_SPLIT_COLUMN", true);
       if (n1 == 375 && n2 == 1768 && (split_fp32 || split_fp64) && batch == request.batch &&
           request.input_layout == "contiguous" &&
           !request.requires_contiguous_copy && !row_kernel->tle_fused_twiddle) {
