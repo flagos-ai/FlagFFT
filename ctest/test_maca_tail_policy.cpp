@@ -16,7 +16,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
                              "FLAGFFT_MACA_BATCH_C2C_PACK2",
                              "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
-                             "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF"}) {
+                             "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF",
+                             "FLAGFFT_MACA_663000_REAL"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -147,6 +148,40 @@ TEST_F(TailPolicy, FusedC550PrimeDefaultScopeAndFallback) {
   EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
   r.origin_rank = 3;
   EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+}
+
+TEST_F(TailPolicy, C550Packed663000ResourcesMatchMeasuredRequests) {
+  using flagfft::KernelKind;
+  auto r = request(663000, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {663000, 1};
+  r.real_transform = true;
+  r.real_transform_kind = "r2c";
+  r.direction = "forward";
+  EXPECT_FALSE(flagfft::maca_663000_real_enabled(r));
+  setenv("FLAGFFT_MACA_663000_REAL", "1", 1);
+  EXPECT_TRUE(flagfft::maca_663000_real_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  r.packed_real_child = true;
+  r.fft_length = r.requested_n = 331500;
+  r.input_strides.front() = 331500;
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "r2c663000");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("r2c663000", KernelKind::FourStepCol,
+                                         "complex64", 1105, 300, 1105), "r2c663000");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("r2c663000", KernelKind::FourStepCol,
+                                         "complex64", 884, 375, 884), "off");
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_663000_real_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  r.batch = 64;
+  r.real_transform_kind = "z2d";
+  r.direction = "inverse";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-c2r663000");
+  setenv("FLAGFFT_MACA_663000_REAL", "0", 1);
+  EXPECT_FALSE(flagfft::maca_663000_real_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
 }
 
 TEST_F(TailPolicy, NativeDescriptorKeepsOriginalApiAndRank) {

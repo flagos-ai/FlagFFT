@@ -36,6 +36,28 @@ inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
   return request.batch == 64 && (batch_policy == nullptr || std::string(batch_policy) != "0");
 }
 
+inline bool maca_663000_real_enabled(const FFTRequest& request) {
+  const int64_t length = request.packed_real_child ? 331500 : 663000;
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || !request.real_transform ||
+      request.convolution_child || request.requested_n != length || request.fft_length != length ||
+      (request.input_dtype != "complex64" && request.input_dtype != "complex128") ||
+      request.output_dtype != request.input_dtype || request.input_layout != "contiguous" ||
+      request.requires_contiguous_copy || request.input_strides.empty() ||
+      request.input_strides.back() != 1) return false;
+  const char* setting = std::getenv("FLAGFFT_MACA_663000_REAL");
+  if (setting == nullptr || std::string(setting) != "1") return false;
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  if (plan && *plan) return false;
+  const auto& kind = request.real_transform_kind;
+  if (request.batch == 1 && request.direction == "forward" && (kind == "r2c" || kind == "d2z")) {
+    return maca_tail_policy_enabled(request);
+  }
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  return request.batch == 64 && request.direction == "inverse" && (kind == "c2r" || kind == "z2d") &&
+      (batch_policy == nullptr || std::string(batch_policy) != "0");
+}
+
 inline bool maca_prime_dif_requested(const FFTRequest& request) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 ||
@@ -105,6 +127,10 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
   if (maca_663000_c2c_enabled(request))
     return request.batch == 64 ? "c2c663000-batch" : "c2c663000";
+  if (request.packed_real_child && maca_663000_real_enabled(request)) {
+    if (request.batch == 64) return "batch-c2r663000";
+    if (request.input_dtype == "complex64") return "r2c663000";
+  }
   if (request.device_type == "maca" && request.device_arch == "102" &&
       request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
       request.fft_length == request.requested_n && !request.input_strides.empty() &&
@@ -180,6 +206,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
     if (dtype == "complex64" &&
         ((root == "c2c663000" && n1 == 375 && n2 == 1768) ||
          (root == "c2c663000-batch" && n1 == 780 && n2 == 850))) return root;
+    if (n1 == 300 && n2 == 1105 &&
+        ((root == "r2c663000" && dtype == "complex64") ||
+         (root == "batch-c2r663000" && (dtype == "complex64" || dtype == "complex128")))) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||
          (n1 == 64 && n2 == 128) ||

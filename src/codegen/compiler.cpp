@@ -2861,6 +2861,7 @@ namespace {
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
                        hcu_large_packed ||
                        maca_packed_rows ||
+                       (!inverse && batch == 1 && maca_663000_real_enabled(request)) ||
                        hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);

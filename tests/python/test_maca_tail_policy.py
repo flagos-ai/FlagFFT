@@ -68,6 +68,31 @@ def test_plan_local_resources_match_measured_manual_configuration(tmp_path, monk
     assert Path(manual["module_path"]).read_text() == candidate_source
 
 
+@pytest.mark.parametrize("kernel", ["four_step_row", "four_step_col"])
+@pytest.mark.parametrize("mode,dtype,direction,settings", [
+    ("r2c663000", "complex64", "forward", {"RADER_CODELET": "1", "VEC_IO": "packed"}),
+    ("batch-c2r663000", "complex64", "inverse", {"VEC_IO": "packed"}),
+    ("batch-c2r663000", "complex128", "inverse", {"VEC_IO": "packed"}),
+])
+def test_packed_663000_resources_match_manual_mode(tmp_path, monkeypatch, kernel, mode, dtype, direction, settings):
+    row = kernel == "four_step_row"
+    request = dict(
+        kernel=kernel, length=300 if row else 1105, factors=(5, 5, 4, 3) if row else (17, 13, 5),
+        lanes=5 if row else 1, num_warps=4, generic_radices=() if row else (13, 17),
+        smem_size=300 if row else 1105, direction=direction, dtype=dtype, prime_n=0,
+        four_step_n1=300, four_step_n2=1105,
+    )
+    set_maca_tail_mode(mode)
+    candidate = emit_jit_kernel(**request, out_dir=tmp_path / "scoped")
+    set_maca_tail_mode("off")
+    for name, value in settings.items():
+        monkeypatch.setenv(f"FLAGFFT_MACA_{name}", value)
+    manual = emit_jit_kernel(**request, out_dir=tmp_path / "manual")
+    assert Path(candidate["module_path"]).read_text() == Path(manual["module_path"]).read_text()
+    for name in ("inner_pack", "num_warps", "signature"):
+        assert candidate[name] == manual[name]
+
+
 @pytest.mark.parametrize("kernel", ["leaf", "four_step_row_strided", "four_step_real_row",
     "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col",
     "bluestein_four_step_prepare_row", "bluestein_four_step_pointwise_row",
