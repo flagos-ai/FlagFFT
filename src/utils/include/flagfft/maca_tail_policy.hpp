@@ -176,7 +176,8 @@ inline std::string maca_tail_codegen_identity(const std::string& mode) {
                            "FLAGFFT_MACA_3D_REAL_FUSED16",
                            "FLAGFFT_MACA_3D_C2C_FUSED32",
                            "FLAGFFT_MACA_3D_C2C32_MORE_LANES",
-                           "FLAGFFT_MACA_RADER_CODELET"}) {
+                           "FLAGFFT_MACA_RADER_CODELET",
+                           "FLAGFFT_MACA_COMPACT_STAGES"}) {
     const char* value = std::getenv(name);
     identity += std::string(";") + name + "=";
     identity += value ? std::to_string(std::string(value).size()) + ":" + value : "unset";

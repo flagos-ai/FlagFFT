@@ -1309,14 +1309,25 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
-    compact_npu_stage = (portable_exchange and _npu_backend_active()
-        and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"
+    compact_maca_stage = (
+        _maca_backend_active()
+        and current_profile().device_arch == "102"
+        and _maca_knob("COMPACT_STAGES") == "1"
+        and _maca_knob("MIXED_EXCHANGE") != "direct"
+        and io_mode in {"four_step_row", "four_step_col"}
+    )
+    compact_stage = (portable_exchange
+        and (compact_maca_stage or (_npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"))
         and any(factor & (factor-1) for factor in factors)
         and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r",
                         "four_step_row", "four_step_col", "four_step_real_row",
                         "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"})
-    if compact_npu_stage:
-        lane_block = 1 << (current_lanes-1).bit_length()
+    if compact_stage:
+        lane_block = lane_block_for(current_lanes)
+        if compact_maca_stage:
+            # Retain the MetaX gather width while reducing padded registers.
+            lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
     npu_affine_tables = (portable_exchange and _npu_backend_active()
         and os.environ.get("FLAGFFT_NPU_AFFINE_MATRIX_IO") == "1")
     npu_matrix_io = (npu_affine_tables and inner_pack >= 4 and dtype == "complex64"
@@ -1483,7 +1494,7 @@ def _emit_stage_block(
                 lines.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
         else:
             lines.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
-    if compact_npu_stage:
+    if compact_stage:
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
             width = four_step_n2 if io_mode in {"four_step_row","four_step_real_row","four_step_hermitian_row"} else four_step_n1
