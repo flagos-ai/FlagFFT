@@ -9,12 +9,13 @@ from .ix_prime_codelets import emit_prime_codelet
 
 
 def build_maca_split_column1768(
-    direction: str, prepare: bool, warps: int, *, pfa: bool = False,
+    direction: str, prepare: bool, warps: int, *, pfa: bool = False, fp64: bool = False,
 ) -> tuple[str, str, int]:
     phase = "prepare" if prepare else "finish"
     suffix = "_w4" if warps == 4 else ""
-    name = f"maca_split_column1768_{phase}{suffix}{'_pfa' if pfa else ''}_{direction}"
-    tile = 128 if prepare else 32
+    precision = "_fp64" if fp64 else ""
+    name = f"maca_split_column1768_{phase}{suffix}{'_pfa' if pfa else ''}{precision}_{direction}"
+    tile = 128 if prepare else (16 if fp64 else 32)
     columns, radix13, radix17, radix8 = 375, 13, 17, 8
     inner = radix17 * radix8
     total = columns * radix13 * inner

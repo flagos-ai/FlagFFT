@@ -764,16 +764,18 @@ def emit_jit_kernel(
     }
     if maca_split_column:
         pfa_column = perm_form.endswith("_pfa")
+        fp64_column = dtype == "complex128"
+        allowed_warps = (2,) if fp64_column else ((4,) if pfa_column else (2, 4))
         if not (_maca_backend_active() and current_profile().device_arch == "102"
-                and kernel == "four_step_col" and dtype == "complex64"
-                and num_warps in ((4,) if pfa_column else (2, 4))
+                and kernel == "four_step_col" and dtype in {"complex64", "complex128"}
+                and num_warps in allowed_warps
                 and (length, four_step_n1, four_step_n2) == (1768, 375, 1768)):
-            raise ValueError("the split column requires FP32 FourStep 375 × 1768 on C550")
+            raise ValueError("the split column requires FP32 or FP64 FourStep 375 × 1768 on C550")
         from .kernels_maca_column import build_maca_split_column1768
 
         prepare_column = perm_form.startswith("maca_split_column1768_prepare")
         kernel_name, kernel_source, column_grid = build_maca_split_column1768(
-            direction, prepare_column, num_warps, pfa=pfa_column,
+            direction, prepare_column, num_warps, pfa=pfa_column, fp64=fp64_column,
         )
         n1, n2 = four_step_n1, four_step_n2
     elif maca_prime_dif:

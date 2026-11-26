@@ -22,13 +22,17 @@ inline bool maca_tail_policy_enabled(const FFTRequest& request) {
   return true;
 }
 
+inline bool maca_663000_c2c_scope(const FFTRequest& request) {
+  return request.device_type == "maca" && request.device_arch == "102" &&
+      request.raw_dim == 1 && request.origin_rank <= 1 && !request.real_transform &&
+      !request.convolution_child && !request.packed_real_child &&
+      request.requested_n == 663000 && request.fft_length == 663000 &&
+      request.input_dtype == request.output_dtype &&
+      !request.input_strides.empty() && request.input_strides.back() == 1;
+}
+
 inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
-  if (request.device_type != "maca" || request.device_arch != "102" ||
-      request.raw_dim != 1 || request.origin_rank > 1 || request.real_transform ||
-      request.convolution_child || request.packed_real_child ||
-      request.requested_n != 663000 || request.fft_length != 663000 ||
-      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
-      request.input_strides.empty() || request.input_strides.back() != 1) return false;
+  if (!maca_663000_c2c_scope(request) || request.input_dtype != "complex64") return false;
   const char* setting = std::getenv("FLAGFFT_MACA_663000_C2C");
   if (setting != nullptr && std::string(setting) != "1") return false;
   if (request.batch == 1) return maca_tail_policy_enabled(request);

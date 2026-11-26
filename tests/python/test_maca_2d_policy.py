@@ -252,9 +252,12 @@ def test_c550_1d_fp64_packed_dif_distances(tmp_path, direction):
 
 
 @pytest.mark.parametrize("direction", ("forward", "inverse"))
-@pytest.mark.parametrize("warps,pfa", ((2, False), (4, False), (4, True)))
-@pytest.mark.parametrize("stage,grid", (("prepare", 399), ("finish", 153)))
-def test_c550_split_column_launch_abi(tmp_path, direction, warps, pfa, stage, grid):
+@pytest.mark.parametrize("dtype,warps,pfa", (
+    ("complex64", 2, False), ("complex64", 4, False), ("complex64", 4, True),
+    ("complex128", 2, False), ("complex128", 2, True),
+))
+@pytest.mark.parametrize("stage", ("prepare", "finish"))
+def test_c550_split_column_launch_abi(tmp_path, direction, dtype, warps, pfa, stage):
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
     from flagfft_codegen.emit import emit_jit_kernel
 
@@ -266,11 +269,13 @@ def test_c550_split_column_launch_abi(tmp_path, direction, warps, pfa, stage, gr
         method = "_pfa" if pfa else ""
         metadata = emit_jit_kernel(
             kernel="four_step_col", length=1768, factors=(13, 17, 8), lanes=8, num_warps=warps,
-            generic_radices=(), smem_size=1768, direction=direction, dtype="complex64",
+            generic_radices=(), smem_size=1768, direction=direction, dtype=dtype,
             prime_n=0, four_step_n1=375, four_step_n2=1768, perm_form=form + method, out_dir=tmp_path,
         )
         suffix = "_w4" if warps == 4 else ""
-        assert metadata["kernel_name"] == f"{form}{suffix}{method}_{direction}"
+        precision = "_fp64" if dtype == "complex128" else ""
+        assert metadata["kernel_name"] == f"{form}{suffix}{method}{precision}_{direction}"
+        grid = 399 if stage == "prepare" else (305 if dtype == "complex128" else 153)
         assert metadata["num_warps"] == warps
         assert metadata["grid_x_override"] == grid
         args = ["in_ptr", "out_ptr"]
