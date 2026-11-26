@@ -1046,9 +1046,12 @@ namespace {
     if (permuted) {
       if (span <= 0) return;
       const bool inner = key.perm_form == "inner";
+      const bool ragged_prime_real = request.ix_prime_3d_default && request.ix_warp_fft_pack_default > 0 &&
+          key.kind == KernelKind::LeafR2CPermutedStore && key.length == 64 && span == 997;
       // These conditions justify a contiguous, aligned output FFT-slot tile.
       if (inner ? request.batch % span != 0 || (request.batch / span) % pack != 0
-                : key.kind == KernelKind::LeafR2CPermutedStore && span % pack != 0) return;
+                : key.kind == KernelKind::LeafR2CPermutedStore && span % pack != 0 &&
+                  !ragged_prime_real) return;
       key.permutation_span = span;
       if (request.ix_warp256_dif_chunk > 0 && key.length == 256 && pack == 16 &&
           (inner || key.perm_form == "outer")) {
@@ -7367,6 +7370,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
       n0_request.ix_warp_fft_pack_default=ix_nd_pack;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
+  const bool ix_prime_r2c = ix_prime_3d && request.real_transform_kind == "r2c" &&
+      !inverse && batch == 1 && n0 == 16 && n1 == 997 && n2 == 64 && fused_first && fused_n0 &&
+      flag_or_default("FLAGFFT_IX_3D_PRIME_R2C", true);
   // On the dense 256-cube R2C path, each fused store can apply the lane
   // bit reversal directly in its output coordinates.
   const bool dif_store = ix_nd_pack == 16 && request.real_transform_kind == "r2c" &&
@@ -7422,6 +7428,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     // write its compact rows directly in that transposed layout.
     key.kind = KernelKind::LeafR2CPermutedStore;
     key.perm_form = "outer";
+    if (ix_prime_r2c) n2_request.ix_warp_fft_pack_default = 8;
     mark_static_permutation_span(key, n2_request, n1);
     mark_ix_warp_fft(key, n2_request, n1);
     n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
@@ -7443,7 +7450,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
              ? compile_raw_permuted_store_leaf(*n1_leaf, n1_cube_request, half, "inner")
              : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half, false));
   std::shared_ptr<CompiledRawNode> n0_fft;
-  if (npu_fused_outer_stores) {
+  if (ix_prime_r2c) {
+    n0_fft = compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * half,
+                                            "ix_prime_r2c_last", true);
+  } else if (npu_fused_outer_stores) {
     n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * half, true);
   }
 #if defined(FLAGFFT_BACKEND_NPU)
@@ -7499,7 +7509,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
     perm_021 = fused_first
         ? std::shared_ptr<JitKernel>{}
         : compile_transpose3d_kernel(request, n0, n1, half, "021");
-    perm_210 = fused_middle
+    perm_210 = fused_middle || ix_prime_r2c
         ? std::shared_ptr<JitKernel>{}
         : compile_transpose3d_kernel(request, n0, half, n1, "210");
     perm_201 = fused_n0

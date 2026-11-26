@@ -822,6 +822,8 @@ def emit_jit_kernel(
                 | codelet_radices_for(emitted_leaf_factors(plan, spec.io_mode))
             )
         )
+        if kernel_name == "ix_prime_r2c_last":
+            radices = (*radices, 16)
     elif spec.family == STOCKHAM:
         radices = tuple(sorted(codelet_radices_for(factors[:1])))
     else:

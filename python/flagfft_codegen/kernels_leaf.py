@@ -3516,6 +3516,11 @@ def _build_leaf_kernel_source_for_io(
     permutation_batch: int = 0,
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
+    if (_ix_backend_active() and perm_form == "ix_prime_r2c_last" and
+            io_mode == "strided_permuted_store" and plan.length == 16 and
+            plan.direction == "forward" and plan.dtype == "complex64"):
+        from .kernels_ix_warp import build_ix_prime_r2c_last_source
+        return build_ix_prime_r2c_last_source(_leaf_kernel_params_for_io(plan, io_mode=io_mode))
     kernel_perm_form = perm_form
     batched_permutation = perm_form.endswith("_batched")
     if batched_permutation:

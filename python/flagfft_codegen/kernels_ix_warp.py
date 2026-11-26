@@ -29,6 +29,55 @@ def _reverse_lane_bits(index, bits):
     return "|".join(f"((({index} >> {bit}) & 1) << {bits - 1 - bit})" for bit in range(bits))
 
 
+_PRIME_R2C_COLUMNS = 997
+_PRIME_R2C_HALF = 33
+PRIME_R2C_LAST_TILE = 8
+_PRIME_R2C_COLUMN_TILES = (_PRIME_R2C_COLUMNS + PRIME_R2C_LAST_TILE - 1) // PRIME_R2C_LAST_TILE
+IX_PRIME_R2C_LAST_GRID = (
+    (_PRIME_R2C_HALF + PRIME_R2C_LAST_TILE - 1) // PRIME_R2C_LAST_TILE
+) * _PRIME_R2C_COLUMN_TILES
+
+
+def build_ix_prime_r2c_last_source(params):
+    """Apply FFT16 on the strided axis and write the natural compact cube."""
+    from .kernels_leaf import _emit_radix16_codelet_call
+
+    name = "ix_prime_r2c_last"
+    tile = PRIME_R2C_LAST_TILE
+    columns = _PRIME_R2C_COLUMNS
+    half = _PRIME_R2C_HALF
+    stride = columns * half
+    lines = [
+        "@triton.jit",
+        f"def {name}({', '.join(params)}):",
+        "    tile_id = tl.program_id(0)",
+        f"    half_row = (tile_id // {_PRIME_R2C_COLUMN_TILES}) * {tile} + tl.arange(0, {tile})",
+        f"    frequency = (tile_id % {_PRIME_R2C_COLUMN_TILES}) * {tile} + tl.arange(0, {tile})",
+        f"    source = half_row[:, None] * {columns} + frequency[None, :]",
+        f"    valid = (half_row[:, None] < {half}) & (frequency[None, :] < {columns})",
+        "    pairs = tl.cast(in_ptr, tl.pointer_type(tl.uint64))",
+    ]
+    for axis in range(16):
+        lines.extend([
+            f"    pair = tl.load(pairs + source + {stride * axis}, valid, 0)",
+            f"    r{axis} = tl.cast(tl.cast(pair, tl.uint32), tl.float32, bitcast=True)",
+            f"    i{axis} = tl.cast(tl.cast(pair >> 32, tl.uint32), tl.float32, bitcast=True)",
+        ])
+    lines.extend(_emit_radix16_codelet_call("    ", "forward"))
+    lines.extend([
+        "    result = tl.cast(out_ptr, tl.pointer_type(tl.uint64))",
+        f"    target = frequency[:, None] * {half} + half_row[None, :]",
+        "    store_mask = tl.trans(valid)",
+    ])
+    for axis in range(16):
+        lines.extend([
+            f"    low = tl.cast(tl.cast(r{axis}, tl.uint32, bitcast=True), tl.uint64)",
+            f"    high = tl.cast(tl.cast(i{axis}, tl.uint32, bitcast=True), tl.uint64)",
+            f"    tl.store(result + target + {stride * axis}, tl.trans(low | (high << 32)), store_mask)",
+        ])
+    return name, "\n".join(lines) + "\n"
+
+
 def _emit_dif64(pack, radix, sign):
     lines = []
     for half in (32, 16, 8, 4, 2, 1):
@@ -75,7 +124,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          strided_input: bool = False,
                          strided_output_major: bool = False,
                          packed_output_transpose: bool = False,
-                         dif_store: bool = False) -> tuple[str, str]:
+                         dif_store: bool = False,
+                         ragged_r2c: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -113,6 +163,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if dif_store and (n != 256 or mode not in {"outer", "inner", "r2c"} or lane_width != 64
                       or manual_store or strided_input or wide or table_roots or packed_gather):
         raise ValueError("DIF store requires a dense FP32 256-point wave and a permuted store")
+    if ragged_r2c and (mode != "r2c" or manual_store):
+        raise ValueError("ragged tiles require a regular R2C permuted store")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
     if four_step: name+=f'_other{four_step_other}'
@@ -121,6 +173,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if local_codelet: name+='_codelet'
     if manual_store: name+='_manual'
     if output_radix_chunk: name+=f'_chunk{chunk}'
+    if ragged_r2c: name+='_ragged'
     if lane_width!=64: name+=f'_lanes{lane_width}'
     if packed_gather: name+='_pairgather'
     if wide: name+='_f64'
@@ -145,11 +198,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a+= [f'    row_base=(pid//span)*{pack}*span+pid%span',
              '    row=row_base+slot*span',
              f'    gbase=(pid%span)*(nbatch//span)+(pid//span)*{pack}+slot']
-    elif mode=='outer':
+    elif mode=='outer' or ragged_r2c:
+        output_length = n // 2 + 1 if ragged_r2c else n
         a += [f'    groups=(span+{pack-1})//{pack}',
               f'    row_base=(pid//groups)*span+(pid%groups)*{pack}',
               '    row=row_base+slot',
-              f'    gbase=(pid//groups)*({n}*span)+(pid%groups)*{pack}+slot']
+              f'    gbase=(pid//groups)*({output_length}*span)+(pid%groups)*{pack}+slot']
     else:
         a+= [f'    row_base=pid*{pack}','    row=row_base+slot']
         if mode in {'outer','r2c'}:
@@ -164,7 +218,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if four_step:
         a += [f'    valid=row[:,None]<{four_step_other}',
               f'    matrix_base=tl.program_id(1)*{n*four_step_other}']
-    if mode=='outer': a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
+    if mode=='outer' or ragged_r2c:
+        a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
     for j in range(radix):
         a+=[f'    pos=lane+{j*lane_width}']
         if four_step:
@@ -474,7 +529,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                 # still map separately; only aligned full runs get a hint.
                 a += [f'    if span%{pack}==0:',
                       f'        gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})']
-            elif not strided_input:
+            elif not strided_input and not ragged_r2c:
                 a+=['    gbase=tl.max_contiguous(tl.multiple_of(gbase,'+str(pack)+'),'+str(pack)+')']
             elif strided_output_major:
                 a += [f'    if (nbatch//span)%{pack}==0:',
@@ -482,7 +537,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             a+=['    stride=nbatch' if mode=='inner' else '    stride=span',
                  '    address=freq[:,None]*stride+gbase[None,:]',
                  '    mask=valid_row[None,:]' if strided_input else '    mask=(row[None,:]<nbatch)']
-            if mode=='outer': a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
+            if mode=='outer' or ragged_r2c:
+                a += [f'    mask=mask&(((pid%groups)*{pack}+slot[None,:])<span)']
             if mode=='r2c': a+=[f'    mask=mask&(freq[:,None]<{n//2+1})']
             if wide_complex:
                 a += ['    z=tl.join(tl.trans(zr),tl.trans(zi))',
@@ -532,8 +588,9 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     if single_output:
         chunk = 1
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
+    ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
-                                    output_radix_chunk=chunk, dif_store=dif_store)
+                                    output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:

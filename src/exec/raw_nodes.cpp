@@ -2098,7 +2098,11 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     auto launch = [&]() {
-      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+      auto blocks = ceil_div(context.batch, kernel->batch_per_block);
+      if (perm_span > 0 && kernel->kernel_name.find("_ragged") != std::string::npos) {
+        blocks = ceil_div(context.batch, perm_span) * ceil_div(perm_span, kernel->batch_per_block);
+      }
+      kernel->launch(context.stream, args, blocks, 1, 1);
     };
     launch();
     if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,

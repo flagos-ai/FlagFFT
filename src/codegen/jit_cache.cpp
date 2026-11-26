@@ -1199,11 +1199,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     kernel->grid_x_override = 2;
   }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
-      kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
-      kernel->kernel_name.find("_stridedinput") != std::string::npos) {
+      (kernel->kernel_name == "ix_prime_r2c_last" ||
+       (kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
+        kernel->kernel_name.find("_stridedinput") != std::string::npos))) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
     if (kernel->grid_x_override <= 0)
-      throw std::runtime_error("HCU strided wave requires a positive tile-derived launch grid");
+      throw std::runtime_error("strided wave requires a positive tile-derived launch grid");
   }
   if (key.kind == KernelKind::Hcu3DCTFirst || key.kind == KernelKind::Hcu3DCTLast) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
