@@ -503,9 +503,10 @@ TEST_F(TailPolicy, C550BatchedPackedReal185640UsesTwoMeasuredLeafPacks) {
   r.real_transform = r.packed_real_child = true;
   r.direction = "inverse";
   r.real_transform_kind = "c2r";
+  setenv("FLAGFFT_MACA_185640_PACKED_REAL_SPLIT", "0", 1);
   EXPECT_FALSE(flagfft::maca_185640_packed_real_split_enabled(r));
 
-  setenv("FLAGFFT_MACA_185640_PACKED_REAL_SPLIT", "1", 1);
+  unsetenv("FLAGFFT_MACA_185640_PACKED_REAL_SPLIT");
   flagfft::PlanBuilder builder;
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(92820, r));
   ASSERT_NE(plan, nullptr);
