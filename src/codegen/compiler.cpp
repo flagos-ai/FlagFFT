@@ -9019,8 +9019,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
                                                      use_col_permuted_store);
   }
 
-  // RC fast path for inverse real transforms: column IFFT first, then expand,
-  // row IFFT, and real pack -- no transposes.
+  // RC fast path for inverse real transforms: column IFFT first, then
+  // consume the compact rows directly where the real boundary is enabled.
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
   auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan);
@@ -9033,8 +9033,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
+    const bool maca_short_fp64_row = request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 2 && request.origin_rank <= 2 && request.real_transform_kind == "z2d" &&
+        request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        n0 == 128 && n1 == 128 && batch == 1 && batch == request.batch &&
+        maca_flag_or_default("FLAGFFT_MACA_2D_128_FP64_COMPACT_C2R", false);
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
-        (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
+        (maca_short_fp64_row || cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "musa" &&
           flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)) ||
