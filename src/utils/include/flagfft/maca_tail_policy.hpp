@@ -434,8 +434,13 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_340200_single_split_enabled(request)) {
     if (request.input_dtype == "complex128") return "z2z340200-single";
     const char* inverse_pack = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK");
-    return request.direction == "inverse" && (!inverse_pack || std::string_view(inverse_pack) == "1")
-        ? "c2c340200-inverse-pack" : "c2c340200-single";
+    const bool use_inverse_pack = request.direction == "inverse" &&
+        (!inverse_pack || std::string_view(inverse_pack) == "1");
+    const char* row_phase = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE");
+    if (row_phase && std::string_view(row_phase) == "1") {
+      return use_inverse_pack ? "c2c340200-inverse-pack-row-phase" : "c2c340200-single-row-phase";
+    }
+    return use_inverse_pack ? "c2c340200-inverse-pack" : "c2c340200-single";
   }
   if (maca_340200_batch_split_enabled(request)) {
     if (request.input_dtype == "complex128") return "z2z340200-split";
@@ -548,6 +553,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       ((kind == KernelKind::FourStepRow && length == n1) ||
        (kind == KernelKind::FourStepCol && length == n2))) return root;
   if (((dtype == "complex64" && (root == "c2c340200-single" || root == "c2c340200-inverse-pack" ||
+                               root == "c2c340200-single-row-phase" || root == "c2c340200-inverse-pack-row-phase" ||
                                root == "c2c340200-batch-900x378")) ||
        (dtype == "complex128" && root == "z2z340200-single")) && n1 == 900 && n2 == 378 &&
       ((kind == KernelKind::FourStepRow && length == n1) ||

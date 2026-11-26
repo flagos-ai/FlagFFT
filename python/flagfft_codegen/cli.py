@@ -315,6 +315,7 @@ def main() -> None:
                                  "c2c663000-batch", "r2c663000", "batch-c2r663000",
                                  "batch-c2r663000-split", "c2c340200-split", "c2c340200-single",
                                  "c2c340200-inverse-pack", "c2c340200-batch-900x378",
+                                 "c2c340200-single-row-phase", "c2c340200-inverse-pack-row-phase",
                                  "z2z340200-split", "z2z340200-single",
                                  "batch-real340200-split", "batch-real16384-split",
                                  "batch-real524288-row4", "batch-real524288-split",

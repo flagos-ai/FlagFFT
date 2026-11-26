@@ -52,6 +52,7 @@ from .kernels_common import (
     use_four_step_row_fused_twiddle,
     use_tle_fused_twiddle,
 )
+from .maca_tail_policy import resource_default
 
 
 def _fmt_const(value: float) -> str:
@@ -1399,6 +1400,7 @@ def _emit_stage_block(
         fuse_twiddle_into_row and _maca_backend_active()
         and use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, dtype)
     )
+    recurrent_row_twiddle = maca_row_twiddle and resource_default("ROW_TWIDDLE_RECURRENCE") == "1"
     smem_swizzle = (fuse_twiddle_into_row and not maca_row_twiddle) or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
@@ -2776,6 +2778,10 @@ def _emit_stage_block(
                                 f"{indent}tw_i{j} = tl.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
                                 f"mask=lane_mask, other={zero})"
                             )
+                    elif recurrent_row_twiddle and j:
+                        lines.append(
+                            f"{indent}tw_r{j}, tw_i{j} = _cmul(tw_r{j - 1}, tw_i{j - 1}, step_r, step_i)"
+                        )
                     else:
                         outer_twiddle_scale = (
                             _direction_sign(direction)
@@ -2790,6 +2796,11 @@ def _emit_stage_block(
                         if maca_row_twiddle:
                             lines.append(f"{indent}tw_r{j} = tl.cos(outer_angle{j})")
                             lines.append(f"{indent}tw_i{j} = tl.sin(outer_angle{j})")
+                            if recurrent_row_twiddle:
+                                lines.extend([
+                                    f"{indent}step_angle = four_step_inner * {n // radix} * {outer_twiddle_scale:.17g}",
+                                    f"{indent}step_r, step_i = tl.cos(step_angle), tl.sin(step_angle)",
+                                ])
                         else:
                             lines.append(
                                 f"{indent}tw_i{j}, tw_r{j} = "

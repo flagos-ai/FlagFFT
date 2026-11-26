@@ -24,6 +24,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER",
                              "FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT",
                              "FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK",
+                             "FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE",
                              "FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT",
                              "FLAGFFT_MACA_340200_BATCH_SPLIT",
                              "FLAGFFT_MACA_340200_FP32_BATCH_900X378",
@@ -324,6 +325,15 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(flagfft::maca_tail_codegen_root(inverse), mode);
   setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "1", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode);
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode + "-row-phase");
+  const auto phase_mode = flagfft::maca_tail_codegen_root(inverse);
+  EXPECT_EQ(phase_mode, inverse_mode + "-row-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow, "complex64", 900, 900, 378),
+            phase_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow, "complex64", 900, 900, 400),
+            "off");
+  unsetenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE");
   auto other = r;
   other.batch = 64;
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));

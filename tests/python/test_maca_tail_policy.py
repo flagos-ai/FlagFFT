@@ -393,6 +393,28 @@ def test_340200_single_inverse_pack_matches_the_screen(tmp_path, monkeypatch, ax
     assert Path(candidate["module_path"]).read_bytes() == Path(manual["module_path"]).read_bytes()
 
 
+@pytest.mark.parametrize("direction,mode,row_pack,col_pack", [
+    ("forward", "c2c340200-single-row-phase", 2, 4),
+    ("inverse", "c2c340200-inverse-pack-row-phase", 1, 2),
+])
+def test_340200_single_row_phase_keeps_the_twiddle_abi(tmp_path, direction, mode, row_pack, col_pack):
+    set_maca_tail_mode(mode)
+    for axis, length, factors, lanes, pack in (
+        ("row", 900, (10, 9, 10), 10, row_pack),
+        ("col", 378, (7, 6, 9), 3, col_pack),
+    ):
+        metadata = emit_jit_kernel(kernel=f"four_step_{axis}", length=length, factors=factors,
+            lanes=lanes, num_warps=2, generic_radices=(), smem_size=1 << (length - 1).bit_length(),
+            direction=direction, dtype="complex64", prime_n=0, four_step_n1=900,
+            four_step_n2=378, out_dir=tmp_path)
+        assert metadata["inner_pack"] == pack
+        assert metadata["tle_fused_twiddle"]
+        assert ("twiddle_ptr" in metadata["arg_names"]) == (axis == "row")
+        source = Path(metadata["module_path"]).read_text()
+        assert ("step_angle = four_step_inner * 90" in source) == (axis == "row")
+        assert ("tw_r9, tw_i9 = _cmul(tw_r8, tw_i8, step_r, step_i)" in source) == (axis == "row")
+
+
 @pytest.mark.parametrize("axis,length,factors,lanes,pack,max_warps", [
     ("row", 900, (10, 10, 9), 10, 2, 4),
     ("col", 378, (9, 7, 6), 3, 4, 8),
