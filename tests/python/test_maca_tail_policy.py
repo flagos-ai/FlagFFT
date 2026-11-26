@@ -85,6 +85,22 @@ def test_fused_c2r_row_binds_the_phase_after_output(tmp_path):
     assert "tl.where(src_idx0 == 0, 0.0, ai0)" in source
 
 
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_32_real_plane_dif_keeps_the_boundary_arguments(tmp_path, direction):
+    from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel
+
+    config = dict(dtype="complex128", direction=direction, out_dir=tmp_path)
+    base = emit_fused_32_real_plane_kernel(**config)
+    fused = emit_fused_32_real_plane_kernel(**config, maca_dif=True)
+    assert fused["kernel_name"] == f"maca_real32_plane_dif_{direction}"
+    assert fused["arg_names"] == base["arg_names"]
+    assert fused["signature"] == base["signature"]
+    assert fused["num_warps"] == 4
+    assert fused["module_path"] != base["module_path"]
+    with pytest.raises(ValueError):
+        emit_fused_32_real_plane_kernel(**{**config, "dtype": "complex64"}, maca_dif=True)
+
+
 @pytest.mark.parametrize("kernel", ["four_step_row", "four_step_col"])
 @pytest.mark.parametrize("mode,n1", [("p4w4", 1024), ("z2z524288-pack4", 512)])
 def test_plan_local_resources_match_measured_manual_configuration(tmp_path, monkeypatch, kernel, mode, n1):

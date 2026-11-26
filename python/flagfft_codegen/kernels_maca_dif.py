@@ -308,6 +308,50 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
     return name, source
 
 
+def build_maca_fp64_real32_plane(direction: str) -> tuple[str, str]:
+    name = f"maca_real32_plane_dif_{direction}"
+    inverse = direction == "inverse"
+    source = _dif_column_helpers(32, direction) + dedent(f"""
+        @triton.jit
+        def _plane_fft32_finish(values):
+            pair = tl.permute(tl.reshape(values, (16, 2, 32)), (0, 2, 1))
+            a, b = tl.split(pair)
+            digits = tl.reshape(tl.join(a + b, a - b), (4, 4, 32, 2))
+            return tl.reshape(tl.permute(digits, (3, 1, 0, 2)), (32, 32))
+
+        @triton.jit
+        def _plane_fft32(real, imag, roots_r, roots_i):
+            for stage in tl.static_range(2):
+                real, imag = _first_axis_radix_four(real, imag, roots_r, roots_i, stage)
+            return _plane_fft32_finish(real), _plane_fft32_finish(imag)
+
+        @triton.jit
+        def {name}(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
+            plane = tl.program_id(0)
+            row = tl.arange(0, 32)[:, None]
+            col = tl.arange(0, 32)[None, :]
+            pair = tl.arange(0, 2)[None, None, :]
+            if {inverse}:
+                reflected = col > 16
+                src_row = tl.where(reflected, (32 - row) % 32, row)
+                src_col = tl.where(reflected, 32 - col, col)
+                src = (plane * 544 + src_row * 17 + src_col) * 2
+                real, imag = tl.split(tl.load(in_ptr + src[:, :, None] + pair))
+                imag = tl.where(reflected, -imag, imag)
+            else:
+                real = tl.load(in_ptr + plane * 1024 + row * 32 + col)
+                imag = tl.zeros((32, 32), tl.float64)
+            real, imag = _plane_fft32(tl.trans(real), tl.trans(imag), tw_r_ptr, tw_i_ptr)
+            real, imag = _plane_fft32(tl.trans(real), tl.trans(imag), tw_r_ptr, tw_i_ptr)
+            if {inverse}:
+                tl.store(out_ptr + plane * 1024 + row * 32 + col, real)
+            else:
+                dst = (plane * 544 + row * 17 + col) * 2
+                tl.store(out_ptr + dst[:, :, None] + pair, tl.join(real, imag), (col < 17)[:, :, None])
+    """)
+    return name, source
+
+
 def build_maca_3d_real_boundary(
     direction: str, *, fp64: bool, middle_length: int = 2048,
 ) -> tuple[str, str]:

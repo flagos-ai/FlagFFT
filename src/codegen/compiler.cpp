@@ -7305,10 +7305,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED32", true);
   if (maca_fused_real32) {
     const std::string complex_dtype = complex_dtype_for(request.input_dtype);
-    std::vector<double> tw_r_d(16);
-    std::vector<double> tw_i_d(16);
+    const bool plane_dif = request.device_arch == "102" && complex_dtype == "complex128" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_REAL32_PLANE_DIF", false);
+    const int64_t twiddle_count = plane_dif ? 32 : 16;
+    std::vector<double> tw_r_d(twiddle_count);
+    std::vector<double> tw_i_d(twiddle_count);
     const double sign = inverse ? 1.0 : -1.0;
-    for (int64_t k = 0; k < 16; ++k) {
+    for (int64_t k = 0; k < twiddle_count; ++k) {
       const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
       tw_r_d[k] = std::cos(angle);
       tw_i_d[k] = std::sin(angle);
@@ -7322,8 +7325,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
       tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
     }
-    auto plane_fft = compile_kernel(KernelKey::fused_32_real_plane(
-        triton_target_for_request(request), request.direction, complex_dtype));
+    auto plane_key = KernelKey::fused_32_real_plane(
+        triton_target_for_request(request), request.direction, complex_dtype);
+    if (plane_dif) plane_key.perm_form = "maca_real32_plane_dif";
+    auto plane_fft = compile_kernel(plane_key);
     auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(packed * complex_element_bytes(complex_dtype)));

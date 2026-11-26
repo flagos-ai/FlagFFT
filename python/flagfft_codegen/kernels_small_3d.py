@@ -20,8 +20,11 @@ import json
 from pathlib import Path
 
 from .artifacts import write_text_atomic
+from .backend_profile import current_profile
 from .kernels_common import _dtype_suffix, _hcu_backend_active
+from .kernels_maca_dif import build_maca_fp64_real32_plane
 from .metadata import _module_source, _signature
+from .target import backend_name
 
 
 def emit_fused_16_plane_kernel(
@@ -687,6 +690,14 @@ def {kernel_name}(in_ptr, out_ptr, tw_r_ptr, tw_i_ptr):
 {store}
 """
     name = f"flagfft_jit_fused_{n}_real_plane_{direction}_{_dtype_suffix(dtype)}"
+    return _write_fused_real_plane_kernel(
+        n, dtype, direction, out_dir, name, kernel_name, source, num_warps,
+    )
+
+
+def _write_fused_real_plane_kernel(
+    n: int, dtype: str, direction: str, out_dir: Path, name: str, kernel_name: str, source: str, num_warps: int,
+) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{name}.py"
     write_text_atomic(module_path, _module_source(source))
@@ -712,8 +723,18 @@ def emit_fused_16_real_plane_kernel(*, dtype: str, direction: str, out_dir: Path
     return _emit_fused_real_plane_kernel(n=16, dtype=dtype, direction=direction, out_dir=out_dir)
 
 
-def emit_fused_32_real_plane_kernel(*, dtype: str, direction: str, out_dir: Path) -> dict:
+def emit_fused_32_real_plane_kernel(
+    *, dtype: str, direction: str, out_dir: Path, maca_dif: bool = False,
+) -> dict:
     """Emit one fused 32x32 R2C/C2R plane for the small-cube experiment."""
+    if maca_dif:
+        if (backend_name() != "maca" or current_profile().device_arch != "102"
+                or dtype != "complex128" or direction not in {"forward", "inverse"}):
+            raise ValueError("MACA DIF real32 planes require C550 FP64 forward or inverse")
+        kernel_name, source = build_maca_fp64_real32_plane(direction)
+        return _write_fused_real_plane_kernel(
+            32, dtype, direction, out_dir, f"flagfft_jit_{kernel_name}", kernel_name, source, 4,
+        )
     return _emit_fused_real_plane_kernel(n=32, dtype=dtype, direction=direction, out_dir=out_dir)
 
 

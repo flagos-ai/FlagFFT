@@ -237,6 +237,7 @@ def main() -> None:
             "maca_paired_real_boundary_w2",
             "maca_paired_real_boundary_w4",
             "maca_packed_c2r_row",
+            "maca_real32_plane_dif",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",
@@ -735,6 +736,7 @@ def main() -> None:
         elif args.kernel == "fused_32_real_plane":
             metadata = emit_fused_32_real_plane_kernel(
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+                maca_dif=args.perm_form == "maca_real32_plane_dif",
             )
         elif args.kernel == "fused_32_plane":
             metadata = emit_fused_32_plane_kernel(
