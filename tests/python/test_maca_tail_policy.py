@@ -143,18 +143,19 @@ def test_packed_663000_resources_match_manual_mode(tmp_path, monkeypatch, kernel
         assert candidate["inner_pack"] == (4 if row else 2)
 
 
-@pytest.mark.parametrize("mode,dtype,n1,n2,vec_io", [
-    ("c2c340200-split", "complex64", 567, 600, "packed"),
-    ("z2z340200-split", "complex128", 504, 675, "packed"),
-    ("z2z16384-split", "complex128", 256, 64, "1"),
+@pytest.mark.parametrize("mode,dtype,n1,n2,vec_io,max_warps", [
+    ("c2c340200-split", "complex64", 567, 600, "packed", "4"),
+    ("z2z340200-split", "complex128", 504, 675, "packed", "4"),
+    ("batch-real340200-split", "complex64", 405, 420, "packed", "8"),
+    ("z2z16384-split", "complex128", 256, 64, "1", "4"),
 ])
-def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n2, vec_io):
+def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n2, vec_io, max_warps):
     other_dtype = "complex128" if dtype == "complex64" else "complex64"
     set_maca_tail_mode(mode)
     for kernel, length in (("four_step_row", n1), ("four_step_col", n2)):
         with maca_tail_kernel_scope(kernel, length, dtype, n1, n2):
             assert resource_default("VEC_IO") == vec_io
-            assert resource_default("MAX_WARPS") == "4"
+            assert resource_default("MAX_WARPS") == max_warps
         assert eligible_kernel_mode(kernel, length, other_dtype, n1, n2) == "off"
         assert eligible_kernel_mode(kernel, length, dtype, 378, 900) == "off"
     assert resource_default("VEC_IO") is None
