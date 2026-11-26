@@ -527,6 +527,10 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                           return build_auto_node(length, heuristic);
                                         });
   }
+  if (n == 340200 && maca_340200_fp32_batch_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 567, 600,
+        make_leaf_plan(567, {7, 9, 9}), make_leaf_plan(600, {6, 10, 10}));
+  }
   const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const bool maca_batch_c2c = request.device_type == "maca" && request.device_arch == "102" &&
                               request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&

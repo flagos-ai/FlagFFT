@@ -20,6 +20,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
                              "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
                              "FLAGFFT_MACA_663000_PACKED_C2R_SPLIT",
+                             "FLAGFFT_MACA_340200_FP32_BATCH_SPLIT",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
@@ -235,6 +236,38 @@ TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
   r.input_dtype = r.output_dtype = "complex128";
   r.real_transform_kind = "z2d";
   EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+}
+
+TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
+  auto r = request(340200, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {340200, 1};
+  r.batch = 64;
+  flagfft::PlanBuilder builder;
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(340200, r)).repr();
+  EXPECT_FALSE(flagfft::maca_340200_fp32_batch_split_enabled(r));
+
+  setenv("FLAGFFT_MACA_340200_FP32_BATCH_SPLIT", "1", 1);
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 567);
+  EXPECT_EQ(plan->n2, 600);
+  const auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->row_plan);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t>{7, 9, 9}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{6, 10, 10}));
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "c2c340200-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, flagfft::KernelKind::FourStepRow,
+                                         "complex64", 567, 567, 600), mode);
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, r)).repr(), baseline);
+  unsetenv("FLAGFFT_MACA_1D_BATCH");
+  r.input_strides.front() += 5;
+  EXPECT_FALSE(flagfft::maca_340200_fp32_batch_split_enabled(r));
 }
 
 TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {

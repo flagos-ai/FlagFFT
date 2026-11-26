@@ -81,6 +81,23 @@ inline bool maca_663000_packed_c2r_split_enabled(const FFTRequest& request) {
       maca_663000_real_enabled(request);
 }
 
+inline bool maca_340200_fp32_batch_split_enabled(const FFTRequest& request) {
+  constexpr int64_t length = 340200;
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
+      request.requested_n != length || request.fft_length != length || request.real_transform ||
+      request.convolution_child || request.packed_real_child || request.input_dtype != "complex64" ||
+      request.output_dtype != "complex64" || request.input_layout != "contiguous" ||
+      request.requires_contiguous_copy || request.input_strides != std::vector<int64_t>{length, 1}) {
+    return false;
+  }
+  const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_BATCH_SPLIT");
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  return setting && std::string(setting) == "1" && (!batch_policy || std::string(batch_policy) != "0") &&
+      (!plan || !*plan);
+}
+
 inline bool maca_prime_dif_requested(const FFTRequest& request) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 ||
@@ -173,6 +190,7 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
+  if (maca_340200_fp32_batch_split_enabled(request)) return "c2c340200-split";
   if (maca_663000_c2c_enabled(request)) {
     return request.batch == 64 && !maca_663000_batch_split_column_enabled(request)
         ? "c2c663000-batch" : "c2c663000";
@@ -261,6 +279,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
         ((root == "r2c663000" && dtype == "complex64") ||
          (root == "batch-c2r663000" && (dtype == "complex64" || dtype == "complex128")))) return root;
     if (root == "batch-c2r663000-split" && dtype == "complex64" && n1 == 340 && n2 == 975) return root;
+    if (root == "c2c340200-split" && dtype == "complex64" && n1 == 567 && n2 == 600) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||
          (n1 == 64 && n2 == 128) ||

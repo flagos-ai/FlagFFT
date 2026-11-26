@@ -104,6 +104,17 @@ def test_packed_663000_resources_match_manual_mode(tmp_path, monkeypatch, kernel
         assert candidate["inner_pack"] == (4 if row else 2)
 
 
+def test_340200_split_resources_are_local_to_its_fourstep_axes():
+    mode = "c2c340200-split"
+    set_maca_tail_mode(mode)
+    for kernel, length in (("four_step_row", 567), ("four_step_col", 600)):
+        with maca_tail_kernel_scope(kernel, length, "complex64", 567, 600):
+            assert resource_default("VEC_IO") == "packed"
+        assert eligible_kernel_mode(kernel, length, "complex128", 567, 600) == "off"
+        assert eligible_kernel_mode(kernel, length, "complex64", 378, 900) == "off"
+    assert resource_default("VEC_IO") is None
+
+
 @pytest.mark.parametrize("kernel", ["leaf", "four_step_row_strided", "four_step_real_row",
     "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col",
     "bluestein_four_step_prepare_row", "bluestein_four_step_pointwise_row",
