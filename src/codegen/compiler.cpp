@@ -1080,7 +1080,8 @@ namespace {
         request.requires_contiguous_copy || request.input_layout != "contiguous" ||
         !ix_real_single_pack_policy_enabled(request)) return 0;
     const char *setting = performance_env("FLAGFFT_IX_CT_WAVE_BANDS");
-    if (!setting || std::string(setting) == "0") return 0;
+    if (!setting) return 16;
+    if (std::string(setting) == "0") return 0;
     const std::string value(setting);
     if (value != "2" && value != "4" && value != "8" && value != "16")
       throw std::runtime_error("FLAGFFT_IX_CT_WAVE_BANDS must be 0, 2, 4, 8 or 16");
@@ -4599,7 +4600,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
     DeviceAllocation a_buf =
         adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
-    const bool real_boundaries = real_kind == "r2c" && bluestein->length == 524287;
+    const bool real_boundaries = request.device_type == "ix" &&
+        real_kind == "r2c" && bluestein->length == 524287;
     return std::make_shared<CompiledRawBluesteinNode>(
         bluestein->length,
         bluestein->conv_length,
@@ -8111,7 +8113,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const bool ix_small_complex = n0 == 64 && n1 == 64 && batch == 1 &&
       request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
       flag_or_default("FLAGFFT_IX_ND_WARP", true) && flag_or_default("FLAGFFT_IX_WARP_FFT", true) &&
-      flag_or_default("FLAGFFT_IX_2D_C2C_64_TRANSPOSE", false);
+      flag_or_default("FLAGFFT_IX_2D_C2C_64_TRANSPOSE", true);
   const bool use_ix_2d_transpose_store =
       request.device_type == "ix" && request.device_arch == "71" && request.origin_rank == 2 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -8258,7 +8260,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       (!policy || std::string(policy) == "balanced") &&
       flag_or_default("FLAGFFT_IX_ND_WARP", true) && flag_or_default("FLAGFFT_IX_WARP_FFT", true) &&
       flag_or_default(n0 == 64 ? "FLAGFFT_IX_2D_R2C_64_TRANSPOSE" : "FLAGFFT_IX_2D_R2C_128_TRANSPOSE",
-                      n0 == 128) &&
+                      true) &&
       adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
@@ -8571,10 +8573,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
       request.output_dtype == "complex64" && n0 == n1 && (n0 == 64 || n0 == 128 || n0 == 2048) &&
       (batch == 1 || batch == 4) && ix_row_leaf && ix_col_leaf &&
       flag_or_default("FLAGFFT_IX_ND_WARP", true) && flag_or_default("FLAGFFT_IX_WARP_FFT", true) &&
-      flag_or_default("FLAGFFT_IX_2D_C2R_DIRECT_COLS", false);
+      flag_or_default("FLAGFFT_IX_2D_C2R_DIRECT_COLS", n0 < 2048 && batch == 1);
   if (ix_direct_columns) {
-    col_request.ix_warp_fft_pack_default = n0 == 2048 ? 4 : 8;
-    row_request.ix_warp_fft_pack_default = n1 == 2048 ? 4 : 8;
+    col_request.ix_warp_fft_pack_default = n0 == 2048 ? 4 : 2;
+    row_request.ix_warp_fft_pack_default = n1 == 2048 ? 4 : 2;
     auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer_strided", true);
     auto row_c2r = compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
     const auto bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);

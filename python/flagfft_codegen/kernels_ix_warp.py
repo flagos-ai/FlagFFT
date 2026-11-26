@@ -14,7 +14,6 @@
 
 """IX warp-local radix-4 x FFT64 prototype; source generator only."""
 import math
-import os
 
 
 def strided_input_tile_shape(pack, output_major=False):
@@ -694,15 +693,10 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     elif four_outputs:
         chunk = 4
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
-    codelet = recurrence = False
-    if n == 2048 and mode in {"outer", "c2r"}:
-        codelet = os.getenv("FLAGFFT_IX_WARP2048_CODELET", "0") == "1"
-        recurrence = os.getenv("FLAGFFT_IX_WARP2048_RECURRENCE", "0") == "1"
-        chunk = int(os.getenv("FLAGFFT_IX_WARP2048_CHUNK", str(chunk)))
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c,
-                                    strided_input=strided_columns, local_codelet=codelet, recurrence=recurrence)
+                                    strided_input=strided_columns)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:
