@@ -24,6 +24,7 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
     if (automatic == "bs2048") return {{automatic, 2048}};
     if (automatic == "bs16384") return {{automatic, 16384}};
     if (automatic == "bs32768") return {{automatic, 32768}};
+    if (automatic == "bs1048576") return {{automatic, 1048576}};
     if (automatic == "ct1024x1024") return {{automatic, 1024, 1024}};
     if (automatic == "ct405x810") return {{automatic, 405, 810}};
     if (automatic == "ct340x975") return {{automatic, 340, 975}};

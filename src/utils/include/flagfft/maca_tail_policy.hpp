@@ -146,6 +146,10 @@ inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   if (request.input_dtype == "complex128") {
     if (n == 997) return "bs2048";
     if (n == 1048576) return "ct1024x1024";
+    if (n == 524287 && request.fft_length == n && request.device_arch == "102" &&
+        !request.convolution_child && !request.packed_real_child &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        request.input_strides == std::vector<int64_t>{n, 1}) return "bs1048576";
   } else if (request.input_dtype == "complex64") {
     if (n == 1009) return "bs2048";
   }

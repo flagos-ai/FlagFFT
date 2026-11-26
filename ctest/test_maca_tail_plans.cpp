@@ -116,6 +116,16 @@ TEST_F(MacaTailPlans, C550SingleFp64Prime524287UsesBalancedBluestein) {
   EXPECT_EQ(convolution->n2, 1024);
   EXPECT_NE(std::dynamic_pointer_cast<LeafPlanNode>(convolution->row_plan), nullptr);
   EXPECT_NE(std::dynamic_pointer_cast<LeafPlanNode>(convolution->col_plan), nullptr);
+
+  setting.set(nullptr);
+  EXPECT_NE(key(builder.build(524287, request)), key(plan));
+  policy.set(nullptr);
+  EXPECT_EQ(key(builder.build(524287, request)), key(plan));
+  setting.set("default");
+  EXPECT_NE(key(builder.build(524287, request)), key(plan));
+  setting.set(nullptr);
+  request.requires_contiguous_copy = true;
+  EXPECT_NE(key(builder.build(524287, request)), key(plan));
 }
 
 struct Experiment {
