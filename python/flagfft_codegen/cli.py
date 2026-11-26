@@ -258,6 +258,7 @@ def main() -> None:
             "maca_rader_four_step_scatter_sorted",
             "maca_rader_four_step_scatter_r2c",
             "maca_rader_four_step_scatter_c2r",
+            "maca_rader_four_step_spectral",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",

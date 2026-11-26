@@ -747,6 +747,7 @@ def emit_jit_kernel(
         dtype=dtype,
     )
     spec = kernel_spec(kernel)
+    maca_rader_spectral = perm_form == "maca_rader_four_step_spectral"
     maca_real48_forward = perm_form in {"maca_fp32_r2c48_to_columns", "maca_fp64_r2c48_to_columns"}
     maca_real48_inverse = perm_form == "maca_fp64_c2r48_from_columns"
     maca_dif_layout = {
@@ -888,6 +889,15 @@ def emit_jit_kernel(
                     terminal8=perm_form == "maca_fp64_dif_terminal8",
                 )
         n1 = n2 = 0
+    elif maca_rader_spectral:
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and direction == "forward" and dtype == "complex64"
+                and (prime_n, four_step_n1, four_step_n2, length, factors) == (16381, 180, 91, 91, (13, 7))):
+            raise ValueError("the fused Rader spectrum requires the C550 FP32 16381-point FourStep column")
+        from .kernels_maca_rader import SPECTRAL_PACK, SPECTRAL_WARPS, build_maca_rader16381_spectral
+
+        kernel_name, kernel_source = build_maca_rader16381_spectral()
+        n1, n2 = four_step_n1, four_step_n2
     elif spec.is_leaf_like:
         io_mode = (
             "permuted_r2c"
@@ -1033,6 +1043,8 @@ def emit_jit_kernel(
         metadata.update(num_warps=4 if dtype == "complex128" else 2, batch_per_block=1)
     if maca_split_column:
         metadata.update(num_warps=num_warps, grid_x_override=column_grid, tle_fused_twiddle=False)
+    if maca_rader_spectral:
+        metadata.update(num_warps=SPECTRAL_WARPS, inner_pack=SPECTRAL_PACK, tle_fused_twiddle=False)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:

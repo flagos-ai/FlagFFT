@@ -1772,14 +1772,20 @@ flagfftResult CompiledRawMacaRaderFourStepNode::execute(adaptor::DevicePtr input
     }
     launch(*kernels.gather, n2, {gather_indices.get(), input, stage1.get()}, row_tables, input_distance);
     if (boundary == Boundary::Complex) {
+      const std::vector<DeviceAllocation> no_tables;
       launch(*kernels.product, n1,
-             {spectrum.get(), input, output, input_zero.get(), stage1.get(), stage2.get()}, col_tables);
+             {spectrum.get(), input, output, input_zero.get(), stage1.get(), stage2.get()},
+             kernels.inverse_row ? col_tables : no_tables);
     } else {
       launch(*kernels.product, n1,
              {spectrum.get(), input, input_zero.get(), stage1.get(), stage2.get()}, col_tables, input_distance);
     }
-    launch(*kernels.inverse_row, n1, {stage2.get(), stage1.get()}, col_tables);
-    launch(*kernels.scatter, n2, {scatter_indices.get(), input_zero.get(), stage1.get(), output},
+    auto scatter_input = stage2.get();
+    if (kernels.inverse_row) {
+      launch(*kernels.inverse_row, n1, {stage2.get(), stage1.get()}, col_tables);
+      scatter_input = stage1.get();
+    }
+    launch(*kernels.scatter, n2, {scatter_indices.get(), input_zero.get(), scatter_input, output},
            row_tables, output_distance);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &error) {
@@ -1793,7 +1799,7 @@ std::string CompiledRawMacaRaderFourStepNode::describe() const {
   oss << "CompiledRawMacaRaderFourStep(n1=" << n1 << ", n2=" << n2
       << ", gather=" << kernels.gather->execution_description()
       << ", product=" << kernels.product->execution_description()
-      << ", inverse_row=" << kernels.inverse_row->execution_description()
+      << ", inverse_row=" << (kernels.inverse_row ? kernels.inverse_row->execution_description() : "fused")
       << ", scatter=" << kernels.scatter->execution_description() << ")";
   return oss.str();
 }

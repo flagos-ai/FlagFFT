@@ -89,6 +89,21 @@ def test_maca_rader_sorted_scatter_keeps_the_int32_table_abi(tmp_path):
     assert "x0r + r0 / 16380" in source
 
 
+def test_maca_rader_fused_spectrum_emits_the_table_free_middle_stage(tmp_path):
+    config = dict(kernel="four_step_col", length=91, factors=(13, 7), lanes=1,
+                  num_warps=2, generic_radices=(), smem_size=128, direction="forward",
+                  dtype="complex64", prime_n=16381, four_step_n1=180, four_step_n2=91,
+                  perm_form="maca_rader_four_step_spectral", out_dir=tmp_path)
+    metadata = emit_jit_kernel(**config)
+    assert metadata["arg_names"] == [
+        "b_fft_ptr", "user_ptr", "dc_ptr", "zero_ptr", "in_ptr", "out_ptr", "nbatch",
+    ]
+    assert (metadata["inner_pack"], metadata["num_warps"]) == (8, 2)
+    assert not metadata["tle_fused_twiddle"]
+    with pytest.raises(ValueError, match="16381-point FourStep column"):
+        emit_jit_kernel(**dict(config, prime_n=8191))
+
+
 @pytest.mark.parametrize("real_kind", ["r2c", "c2r"])
 @pytest.mark.parametrize("prime,row,col", [(8191, (7, 10), (13, 9)), (16381, (5, 4, 3, 3), (13, 7))])
 def test_maca_rader_direct_real_passes_accept_public_distances(tmp_path, real_kind, prime, row, col):
