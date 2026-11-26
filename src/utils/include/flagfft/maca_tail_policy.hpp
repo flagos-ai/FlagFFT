@@ -173,7 +173,8 @@ inline bool maca_fp64_fft16_native_enabled(const FFTRequest& request) {
 
 inline bool maca_340200_fp32_batch_900x378_enabled() {
   const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_BATCH_900X378");
-  return setting && std::string_view(setting) == "1";
+  if (setting) return std::string_view(setting) == "1";
+  return std::getenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER") == nullptr;
 }
 
 inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
