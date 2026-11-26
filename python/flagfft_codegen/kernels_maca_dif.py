@@ -252,6 +252,20 @@ def build_maca_fp64_3d_real_boundary(direction: str) -> tuple[str, str]:
             return tl.reshape(tl.permute(digits, (2, 1, 0, 3)), (32, 32))
 
         @triton.jit
+        def _packed_mirror(values):
+            # Negation modulo 32 complements the bits above the lowest set bit.
+            # Static swaps keep this permutation in the compiler's layout model.
+            for bit in tl.static_range(1, 5):
+                LOWER: tl.constexpr = 1 << bit
+                GROUPS: tl.constexpr = 32 // (LOWER * 2)
+                digits = tl.reshape(values, (GROUPS, 2, LOWER, 32))
+                low, high = tl.split(tl.permute(digits, (0, 2, 3, 1)))
+                flip = tl.arange(0, LOWER)[None, :, None] != 0
+                swapped = tl.join(tl.where(flip, high, low), tl.where(flip, low, high))
+                values = tl.reshape(tl.permute(swapped, (0, 3, 1, 2)), (32, 32))
+            return values
+
+        @triton.jit
         def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, phase_r_ptr, phase_i_ptr, nbatch):
             block = tl.program_id(0)
             if block * 32 >= nbatch:
@@ -282,9 +296,7 @@ def build_maca_fp64_3d_real_boundary(direction: str) -> tuple[str, str]:
             if INVERSE:
                 tl.store(out_ptr + real_off[:, :, None] + pair, tl.join(real, imag))
             else:
-                mirror = tl.broadcast_to(((32 - k) & 31)[:, None], (32, 32))
-                br = tl.gather(real, mirror, axis=0)
-                bi = tl.gather(imag, mirror, axis=0)
+                br, bi = _packed_mirror(real), _packed_mirror(imag)
                 dr, di = real - br, imag + bi
                 out_r = (real + br + dr * si + di * co) * 0.5
                 out_i = (imag - bi - dr * co + di * si) * 0.5
