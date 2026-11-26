@@ -233,6 +233,19 @@ struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
   DeviceAllocation roots;
   bool use_residues;
 };
+
+struct CompiledRawMacaLongAxisNode final : CompiledRawNode {
+  enum class Stage { FirstFp64, LastFp32 };
+
+  CompiledRawMacaLongAxisNode(DeviceAllocation roots, Stage stage)
+      : roots(std::move(roots)), stage(stage) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+  Stage stage;
+};
 #endif
 
 // A fused axis permutation is defined within one ND transform. Reuse its

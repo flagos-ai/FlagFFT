@@ -36,6 +36,8 @@ extern "C" int flagfft_maca_launch_fp64_fft16(const double* input, double* outpu
                                              unsigned batch, int direction, void* stream);
 extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* output, const void* roots,
                                                bool use_residues, void* stream);
+extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, const void* roots,
+                                             unsigned batch, bool innermost_fp64, void* stream);
 
 flagfftResult CompiledRawMacaFp64FFT16Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
@@ -60,6 +62,23 @@ flagfftResult CompiledRawMacaFp32R2C2048Node::execute(adaptor::DevicePtr input, 
 std::string CompiledRawMacaFp32R2C2048Node::describe() const {
   return use_residues ? "CompiledRawMacaFp32R2C2048(kernel=maca_fp32_r2c2048_sdk_residues)"
                       : "CompiledRawMacaFp32R2C2048(kernel=maca_fp32_r2c2048_sdk_shared)";
+}
+
+flagfftResult CompiledRawMacaLongAxisNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                                 const RawExecutionContext &context) const {
+  const bool first = stage == Stage::FirstFp64;
+  // The hybrid plan passes the number of axis transforms, including all cubes.
+  const int64_t rows_per_cube = first ? 128 * 2048 : 2048 * 64;
+  const auto batch = static_cast<unsigned>(context.batch / rows_per_cube);
+  const int status = flagfft_maca_launch_long_axis(reinterpret_cast<const void*>(input),
+      reinterpret_cast<void*>(output), roots.data(), batch, first, context.stream);
+  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+}
+
+std::string CompiledRawMacaLongAxisNode::describe() const {
+  return stage == Stage::FirstFp64
+      ? "CompiledRawMacaLongAxis(kernel=maca_sdk_fp64_first64_transpose, tile=32, warps=8)"
+      : "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_last128_transpose, tile=16, warps=4)";
 }
 #endif
 
