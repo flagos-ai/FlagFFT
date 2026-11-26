@@ -15,6 +15,7 @@ from flagfft_codegen.maca_tail_policy import (
     reset_maca_tail_mode, set_maca_tail_mode, variant_suffix,
 )
 from flagfft_codegen.target import (
+    reset_maca_1d_batch_default, set_maca_1d_batch_default,
     set_codegen_target, set_maca_1d_single_default, reset_maca_1d_single_default,
 )
 
@@ -173,6 +174,23 @@ def test_16384_packed_real_resources_match_the_measured_axes(tmp_path, dtype):
         )
         assert (metadata["num_warps"], metadata["inner_pack"]) == (2, inner_pack)
     assert eligible_kernel_mode("four_step_row", 64, dtype, 64, 128) == "off"
+
+
+def test_524288_packed_real_row_pack_preserves_the_default_column(tmp_path):
+    request = dict(length=512, factors=(8, 4, 4, 4), lanes=64, num_warps=2,
+                   generic_radices=(), smem_size=512, direction="inverse",
+                   dtype="complex64", prime_n=0, four_step_n1=512, four_step_n2=512,
+                   out_dir=tmp_path)
+    batch = set_maca_1d_batch_default(True)
+    try:
+        set_maca_tail_mode("batch-vecio")
+        baseline = emit_jit_kernel(kernel="four_step_col", **request)
+        set_maca_tail_mode("batch-real524288-row4")
+        assert emit_jit_kernel(kernel="four_step_col", **request) == baseline
+        row = emit_jit_kernel(kernel="four_step_row", **request)
+        assert (row["num_warps"], row["inner_pack"]) == (8, 4)
+    finally:
+        reset_maca_1d_batch_default(batch)
 
 
 @pytest.mark.parametrize("kernel", ["leaf", "four_step_row_strided", "four_step_real_row",

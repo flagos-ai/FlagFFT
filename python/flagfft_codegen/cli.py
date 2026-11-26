@@ -293,7 +293,7 @@ def main() -> None:
                                  "batch-c2c-tree", "batch-prime-rader-vecio", "c2c663000",
                                  "c2c663000-batch", "r2c663000", "batch-c2r663000",
                                  "batch-c2r663000-split", "c2c340200-split", "z2z340200-split",
-                                 "batch-real340200-split", "batch-real16384-split",
+                                 "batch-real340200-split", "batch-real16384-split", "batch-real524288-row4",
                                  "z2z16384-split", "z2z524288-pack4"),
                         default="off")
     parser.add_argument(
