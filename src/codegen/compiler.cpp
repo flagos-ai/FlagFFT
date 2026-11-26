@@ -3144,7 +3144,7 @@ namespace {
         (n == 185640 || n == 524288 || (n == 340200 && request.input_dtype == "complex64"));
     const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
     return measured_batch && (!batch_policy || std::string(batch_policy) != "0") &&
-        maca_flag_or_default("FLAGFFT_MACA_BATCH_PAIRED_REAL", n != 185640)
+        maca_flag_or_default("FLAGFFT_MACA_BATCH_PAIRED_REAL", true)
         ? "maca_paired_real_boundary_w4" : nullptr;
   }
 
