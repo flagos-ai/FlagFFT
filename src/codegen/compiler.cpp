@@ -6596,7 +6596,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const bool maca_middle_dif = maca_dif_shape &&
         maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF", true);
     const auto middle_layout = maca_dif_shape &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_TERMINAL8", false)
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_TERMINAL8", true)
         ? MacaLeafLayout::TerminalEight : MacaLeafLayout::Contiguous;
     auto n1_fft = maca_middle_dif
         ? compile_raw_leaf(*n1_leaf, n1_request, middle_layout)
