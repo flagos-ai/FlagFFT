@@ -762,6 +762,7 @@ def emit_jit_kernel(
         "maca_fp64_3d_c2r64": (64, 2, 32),
         "maca_fp64_c2r48_from_columns": (48, 2, 16),
         "maca_fp32_3d_c2r64": (64, 2, 32),
+        "maca_fp32_fft210_pfa": (210, 2, 2),
         "maca_3d_prime_r2c64": (64, 4, 32),
         "maca_3d_prime_c2r64": (64, 4, 32),
         "maca_3d_prime_outer16": (16, 4, 64),
@@ -818,12 +819,17 @@ def emit_jit_kernel(
     elif maca_dif_layout:
         required_length, maca_warps, maca_pack = maca_dif_layout
         prime_axes = perm_form.startswith("maca_3d_prime_")
+        fp32_leaf = perm_form in {"maca_fp32_3d_c2r64", "maca_fp32_fft210_pfa"}
         required_dtypes = (("complex64", "complex128") if prime_axes else
-                           ("complex64",) if perm_form == "maca_fp32_3d_c2r64" else ("complex128",))
+                           ("complex64",) if fp32_leaf else ("complex128",))
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and dtype in required_dtypes and length == required_length):
             raise ValueError(f"{perm_form} requires a {required_length}-point C550 transform of {required_dtypes}")
-        if perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide"}:
+        if perm_form == "maca_fp32_fft210_pfa":
+            from .kernels_maca_pfa import build_maca_fp32_fft210_pfa
+
+            kernel_name, kernel_source = build_maca_fp32_fft210_pfa(direction)
+        elif perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide"}:
             from .kernels_maca_dif import build_maca_3d_prime_real_outer
 
             kernel_name, kernel_source = build_maca_3d_prime_real_outer(
@@ -969,6 +975,8 @@ def emit_jit_kernel(
         radices = (3, 8)
     elif perm_form == "maca_fp64_dif_terminal8":
         radices = (8,)
+    elif perm_form == "maca_fp32_fft210_pfa":
+        radices = (5, 6, 7)
     elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(

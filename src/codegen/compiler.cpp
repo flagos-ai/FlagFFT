@@ -5367,6 +5367,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
+  if (leaf.length == 210 && request.input_dtype == "complex64" &&
+      maca_batch_c2c_option_enabled(request, 210, "FLAGFFT_MACA_210_FP32_BATCH_PFA", false)) {
+    key.perm_form = "maca_fp32_fft210_pfa";
+    return std::make_shared<CompiledRawLeafNode>(leaf.length, compile_kernel(key),
+                                                std::vector<DeviceAllocation>{});
+  }
   if (maca_layout == MacaLeafLayout::Auto && maca_2d_fp64_dif_policy_ &&
       request.input_dtype == "complex128" && leaf.length == 2048) {
     maca_layout = MacaLeafLayout::Contiguous;

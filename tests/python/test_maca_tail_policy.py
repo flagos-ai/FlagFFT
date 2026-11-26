@@ -134,6 +134,21 @@ def test_fp64_dif_terminal8_uses_the_existing_middle_axis_arguments(tmp_path):
 
 
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_fp32_210_pfa_has_no_external_twiddle_tables(tmp_path, direction):
+    config = dict(kernel="leaf", length=210, factors=(7, 5, 3, 2), lanes=1,
+                  num_warps=2, generic_radices=(), smem_size=256, direction=direction,
+                  dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0,
+                  out_dir=tmp_path, perm_form="maca_fp32_fft210_pfa")
+    meta = emit_jit_kernel(**config)
+    assert meta["kernel_name"] == f"maca_fp32_fft210_pfa_{direction}"
+    assert meta["arg_names"] == ["in_ptr", "out_ptr", "nbatch"]
+    assert meta["batch_per_block"] == 2
+    assert meta["num_warps"] == 2
+    with pytest.raises(ValueError):
+        emit_jit_kernel(**{**config, "dtype": "complex128"})
+
+
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
 def test_32_real_plane_dif_keeps_the_boundary_arguments(tmp_path, direction):
     from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel
 
