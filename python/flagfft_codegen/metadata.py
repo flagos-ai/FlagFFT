@@ -389,7 +389,8 @@ def _metadata(
     if kernel_name.startswith("ix_warp"):
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()
-        physical_warps=max(1,(warp_pack*min(plan.length,64)+63)//64)
+        wave_rows = 32 if "_pfa_" in kernel_name and "_batch" in kernel_name else min(plan.length,64)
+        physical_warps=max(1,(warp_pack*wave_rows+63)//64)
         profile.validate(physical_warps)
         exchange_points=plan.length
         if "_chunk" in kernel_name:

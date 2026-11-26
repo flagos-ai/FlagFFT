@@ -221,7 +221,8 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   CompiledRawLeafNode(int64_t length,
                       std::shared_ptr<JitKernel> kernel,
                       std::vector<DeviceAllocation> tables,
-                      std::shared_ptr<CompiledRawNode> layout_fallback = nullptr);
+                      std::shared_ptr<CompiledRawNode> layout_fallback = nullptr,
+                      int64_t fixed_batch = 1);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -232,6 +233,7 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
   std::shared_ptr<CompiledRawNode> layout_fallback;
+  int64_t fixed_batch;
   mutable Raw1DGraphState graph_state;
 };
 

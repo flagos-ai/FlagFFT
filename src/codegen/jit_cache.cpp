@@ -1320,11 +1320,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     kernel->grid_x_override = 2;
   }
   if (ix_wave_bands) {
-    if (kernel->batch_per_block != 1 || kernel->num_warps != 1 ||
+    const bool batched_pfa = key.length == 210 && key.permutation_batch > 0;
+    const int64_t pack = batched_pfa ? key.ix_warp_fft_pack : 1;
+    if (kernel->batch_per_block != pack || kernel->num_warps != (pack + 1) / 2 ||
         kernel->kernel_name.find("_frequency_bands") == std::string::npos)
       throw std::runtime_error("invalid IX wave frequency-band leaf");
-    kernel->grid_x_override = key.perm_form == "ix_band_r2c" && key.length != 210
+    const int64_t bands = key.perm_form == "ix_band_r2c" && key.length != 210
         ? key.permutation_span / 2 + 1 : key.permutation_span;
+    const int64_t tiles = batched_pfa ? (key.permutation_batch + pack - 1) / pack : 1;
+    kernel->grid_x_override = bands * tiles;
   }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
       (kernel->kernel_name == "ix_prime_r2c_last" ||

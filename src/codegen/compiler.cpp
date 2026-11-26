@@ -1075,6 +1075,19 @@ namespace {
   }
 
   int64_t ix_short_frequency_bands(const FFTRequest &request, int64_t n) {
+    if (n == 210 && request.batch == 64 && request.raw_dim == 1 && request.origin_rank <= 1 &&
+        request.device_type == "ix" && request.device_arch == "71" &&
+        request.real_transform_kind == "r2c" && request.requested_n == n && request.fft_length == n &&
+        !request.convolution_child && !request.packed_real_child && !request.requires_contiguous_copy &&
+        request.input_layout == "contiguous" && !request.input_strides.empty() &&
+        request.input_strides.back() == 1 && request.input_dtype == "complex64" &&
+        request.output_dtype == "complex64") {
+      const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+      if ((!policy || std::string(policy) == "balanced") &&
+          flag_or_default("FLAGFFT_IX_CT_PFA210_BATCH", true)) {
+        return 7;
+      }
+    }
     if ((n != 210 && n != 1024 && n != 2048) || request.raw_dim != 1 || request.origin_rank > 1 ||
         request.requested_n != n || request.fft_length != n || request.convolution_child ||
         request.requires_contiguous_copy || request.input_layout != "contiguous" ||
@@ -5054,7 +5067,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
     auto original = std::make_shared<CompiledRawR2CLeafNode>(n,
         compile_leaf_r2c_kernel(*leaf, request), build_raw_leaf_tables(*leaf, request));
-    if (const auto bands = ix_short_frequency_bands(request, n); batch == 1 && bands > 0)
+    if (const auto bands = ix_short_frequency_bands(request, n); batch == request.batch && bands > 0)
       return compile_ix_wave_bands(n, bands, request, std::move(original));
     return original;
   }
@@ -5375,8 +5388,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_wave_bands(
   key.perm_form = request.real_transform_kind.empty() ? "ix_band_c2c" : "ix_band_" + request.real_transform_kind;
   key.ix_warp_fft_pack = 1;
   key.permutation_span = bands;
+  if (length == 210 && request.batch == 64) {
+    key.ix_warp_fft_pack = 2;
+    key.permutation_batch = request.batch;
+  }
   return std::make_shared<CompiledRawLeafNode>(
-      length, compile_kernel(key), std::vector<DeviceAllocation>{}, std::move(fallback));
+      length, compile_kernel(key), std::vector<DeviceAllocation>{}, std::move(fallback), request.batch);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

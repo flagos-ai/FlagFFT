@@ -353,9 +353,10 @@ namespace {
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
                                          std::shared_ptr<JitKernel> kernel,
                                          std::vector<DeviceAllocation> tables,
-                                         std::shared_ptr<CompiledRawNode> layout_fallback)
+                                         std::shared_ptr<CompiledRawNode> layout_fallback,
+                                         int64_t fixed_batch)
     : length(length), kernel(std::move(kernel)), tables(std::move(tables)),
-      layout_fallback(std::move(layout_fallback)) {
+      layout_fallback(std::move(layout_fallback)), fixed_batch(fixed_batch) {
 }
 
 std::string CompiledRawLeafNode::describe() const {
@@ -379,8 +380,8 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
       const auto complex_bytes = complex_element_bytes(context.request.input_dtype);
       const auto input_bytes = real_forward ? complex_bytes / 2 : complex_bytes;
       const auto output_bytes = real_inverse ? complex_bytes / 2 : complex_bytes;
-      const auto bytes = input < output ? in_elements * input_bytes : out_elements * output_bytes;
-      if (context.batch != 1 || separation < static_cast<adaptor::DevicePtr>(bytes) ||
+      const auto bytes = fixed_batch * (input < output ? in_elements * input_bytes : out_elements * output_bytes);
+      if (context.batch != fixed_batch || separation < static_cast<adaptor::DevicePtr>(bytes) ||
           (context.input_distance > 0 && context.input_distance != in_elements) ||
           (context.output_distance > 0 && context.output_distance != out_elements)) {
         return layout_fallback->execute(input, output, context);

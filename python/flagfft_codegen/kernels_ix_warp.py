@@ -161,28 +161,42 @@ def _emit_band_input(n, bands, mode, sign, digit):
     return lines
 
 
-def _build_ix_pfa210(mode, inverse):
+def _build_ix_pfa210(mode, inverse, batch_pack=0):
     """Seven independent residue classes of the 5 x 6 x 7 prime-factor FFT."""
     name = f"ix_warp210_pfa_{mode}_{'inv' if inverse else 'fwd'}_frequency_bands7_leaf"
+    if batch_pack:
+        name += f"_batch{batch_pack}"
     sign = 1 if inverse else -1
     lines = ["import triton", "import triton.language as tl", "@triton.jit",
-             f"def {name}(in_ptr,out_ptr,nbatch):",
-             "    band=tl.program_id(0)",
-             "    lane=tl.arange(0,32)",
-             "    p=tl.minimum(lane//6,4)",
+             f"def {name}(in_ptr,out_ptr,nbatch):"]
+    if batch_pack:
+        input_n = 106 if mode == "c2r" else 210
+        output_n = 106 if mode == "contiguous_r2c" else 210
+        lines += ["    pid=tl.program_id(0)", "    band=pid%7",
+                  f"    batch=(pid//7)*{batch_pack}+tl.arange(0,{batch_pack})[:,None]",
+                  "    lane=tl.arange(0,32)[None,:]",
+                  "    active=batch<nbatch",
+                  f"    input_base=batch*{input_n}",
+                  f"    output_base=batch*{output_n}"]
+    else:
+        lines += ["    band=tl.program_id(0)", "    lane=tl.arange(0,32)",
+                  "    active=True", "    input_base=0", "    output_base=0"]
+    zero_shape = f"({batch_pack},32)" if batch_pack else "(32,)"
+    lines += ["    p=tl.minimum(lane//6,4)",
              "    q=lane%6",
              "    base=42*p+35*q",
              "    ip=tl.cast(in_ptr,tl.pointer_type(tl.uint64))"]
     for j in range(7):
         lines += [f"    k=(base+{30*j})%210"]
         if mode == "contiguous_r2c":
-            lines += [f"    x{j}r=tl.load(in_ptr+k)", f"    x{j}i=tl.full((32,),0.0,tl.float32)"]
+            lines += [f"    x{j}r=tl.load(in_ptr+input_base+k,active,0.0)",
+                      f"    x{j}i=tl.full({zero_shape},0.0,tl.float32)"]
         else:
             if mode == "c2r":
                 lines += ["    src=tl.minimum(k,210-k)"]
             else:
                 lines += ["    src=k"]
-            lines += ["    pair=tl.load(ip+src)",
+            lines += ["    pair=tl.load(ip+input_base+src,active,0)",
                       f"    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)",
                       f"    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)"]
             if mode == "c2r":
@@ -204,18 +218,25 @@ def _build_ix_pfa210(mode, inverse):
             lines.extend([f"    edge=tl.where(({frequency}&1)==0,1.0,-1.0)",
                           f"    {result}r=tl.fma(edge,{source}{radix//2}r,{result}r)",
                           f"    {result}i=tl.fma(edge,{source}{radix//2}i,{result}i)"])
+    axis = 1 if batch_pack else 0
     fold(7, "band", "x", "a")
     for j in range(5):
-        lines += [f"    v{j}r=tl.gather(ar,{6*j}+q,0)",
-                  f"    v{j}i=tl.gather(ai,{6*j}+q,0)"]
+        index = f"{6*j}+q"
+        if batch_pack:
+            index = f"tl.broadcast_to({index},({batch_pack},32))"
+        lines += [f"    v{j}r=tl.gather(ar,{index},{axis})",
+                  f"    v{j}i=tl.gather(ai,{index},{axis})"]
     fold(5, "p", "v", "b")
     for j in range(6):
-        lines += [f"    w{j}r=tl.gather(br,6*p+{j},0)",
-                  f"    w{j}i=tl.gather(bi,6*p+{j},0)"]
+        index = f"6*p+{j}"
+        if batch_pack:
+            index = f"tl.broadcast_to({index},({batch_pack},32))"
+        lines += [f"    w{j}r=tl.gather(br,{index},{axis})",
+                  f"    w{j}i=tl.gather(bi,{index},{axis})"]
     fold(6, "q", "w", "y")
-    lines += ["    k=(126*p+175*q+120*band)%210", "    valid=lane<30"]
+    lines += ["    k=(126*p+175*q+120*band)%210", "    valid=(lane<30)&active"]
     if mode == "c2r":
-        lines += ["    tl.store(out_ptr+k,yr,valid)"]
+        lines += ["    tl.store(out_ptr+output_base+k,yr,valid)"]
     else:
         if mode == "contiguous_r2c":
             lines += ["    valid=valid&(k<=105)", "    yi=tl.where((k==0)|(k==105),0.0,yi)"]
@@ -224,14 +245,16 @@ def _build_ix_pfa210(mode, inverse):
             "    yr_bits=tl.cast(tl.cast(yr,tl.uint32,bitcast=True),tl.uint64)",
             "    yi_bits=tl.cast(tl.cast(yi,tl.uint32,bitcast=True),tl.uint64)",
             "    pair=yr_bits|(yi_bits<<32)",
-            "    tl.store(out+k,pair,valid)",
+            "    tl.store(out+output_base+k,pair,valid)",
         ]
     return _finish_warp_source(name, lines, True, 0, False)
 
 
-def build_ix_warp_bands(plan, bands, mode):
+def build_ix_warp_bands(plan, bands, mode, permutation_batch=0):
     if plan.length == 210 and bands == 7:
-        return _build_ix_pfa210(mode, plan.direction == "inverse")
+        from .target import ix_warp_fft_pack
+        return _build_ix_pfa210(mode, plan.direction == "inverse",
+                                ix_warp_fft_pack() if permutation_batch else 0)
     name, source = build_ix_warp_source(plan.length, 1, mode, plan.direction == "inverse",
                                         fast_math=True, local_codelet=True, frequency_bands=bands)
     leaf_name = "ix_" + name + "_leaf"
