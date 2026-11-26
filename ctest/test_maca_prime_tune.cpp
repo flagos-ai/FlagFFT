@@ -633,6 +633,16 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
   request.batch = 1;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 4;
+  request.direction = "inverse";
+  unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.direction = "forward";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
 }
 
 TEST(Plan2D, MacaDensePolicyIsScopedToC550DenseMatrices) {
