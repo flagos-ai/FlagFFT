@@ -882,17 +882,18 @@ def _emit_tiled_transpose_jit_kernel(
     hcu_mode = os.environ.get("FLAGFFT_HCU_2D_TRANSPOSE", "auto") if _hcu_backend_active() else "auto"
     maca_target = _maca_backend_active()
     maca_mode = _maca_knob("2D_TRANSPOSE") if maca_target or _ix_backend_active() else ""
-    maca_tuned = maca_target and maca_mode == "tuned"
+    maca_tuned = maca_target and maca_mode in {"tuned", "vector"}
+    c550 = maca_tuned and current_profile().device_arch == "102"
+    fp64_vector = c550 and maca_mode == "vector" and dtype == "complex128"
+    column_first = fp64_vector and (n0, n1) == (1025, 2048)
+    flatten_pair = fp64_vector and (n0, n1) in {(2048, 1025), (2048, 2048)}
     num_warps = 4
-    if maca_tuned and min(n0, n1) >= 1024:
-        from .backend_profile import current_profile
-
-        if current_profile().device_arch == "102":
-            if dtype == "complex128":
-                tile_size = 16
-            elif n0 % 2 and n1 % tile_size == 0:
-                # A wider CTA improves stores to the odd half-spectrum pitch.
-                num_warps = 8
+    if c550 and min(n0, n1) >= 1024:
+        if dtype == "complex128":
+            tile_size = 16
+        elif n0 % 2 and n1 % tile_size == 0:
+            # A wider CTA improves stores to the odd half-spectrum pitch.
+            num_warps = 8
     if hcu_mode not in {"auto", "register", "scalar", "coalesced"}:
         raise ValueError("FLAGFFT_HCU_2D_TRANSPOSE must be auto, register, scalar or coalesced")
     if cuda_mode not in {"auto", "register", "scalar", "packed"}:
@@ -915,7 +916,7 @@ def _emit_tiled_transpose_jit_kernel(
         )
     elif maca_target and (maca_mode == "packed" or maca_tuned) and dtype == "complex128":
         kernel_name, kernel_source, arg_names = _build_paired_fp64_transpose_kernel_source(
-            n0, n1, tile_size
+            n0, n1, tile_size, flatten_pair=flatten_pair, column_first=column_first,
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
@@ -947,6 +948,9 @@ def _emit_tiled_transpose_jit_kernel(
         metadata["grid_x_override"] = npu_programs
         metadata["grid_y_override"] = 1
         metadata["npu_table_transpose"] = True
+    elif column_first:
+        metadata["grid_x_override"] = (n0 + tile_size - 1) // tile_size
+        metadata["grid_y_override"] = (n1 + tile_size - 1) // tile_size
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 

@@ -1229,6 +1229,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::TiledTranspose && adaptor::backend_name() == "maca") {
     kernel->transpose_tile_size = json_int_field(artifact_json, "tile_size");
+    if (artifact_json.find("\"grid_x_override\"") != std::string::npos) {
+      kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+      kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
+    }
   }
   if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
       key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||

@@ -76,6 +76,34 @@ def test_c550_tuned_transpose_metadata(monkeypatch, tmp_path, dtype, shape, tile
         reset_profile(token)
 
 
+@pytest.mark.parametrize(
+    "shape,layout,grid",
+    [
+        ((2048, 1025), "_flat_t16", (None, None)),
+        ((1025, 2048), "_column_t16", (65, 128)),
+        ((2048, 2048), "_flat_t16", (None, None)),
+        ((1024, 2048), "_f64_t16", (None, None)),
+    ],
+)
+def test_c550_vector_fp64_transpose_layout(monkeypatch, tmp_path, shape, layout, grid):
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "vector")
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        meta = emit._emit_tiled_transpose_jit_kernel(
+            n0=shape[0], n1=shape[1], dtype="complex128", out_dir=tmp_path,
+        )
+        assert meta["kernel_name"].endswith(layout)
+        assert meta["tile_size"] == 16
+        assert (meta.get("grid_x_override"), meta.get("grid_y_override")) == grid
+    finally:
+        reset_profile(token)
+
+
 def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
     from flagfft_codegen.kernels_common import _maca_knob

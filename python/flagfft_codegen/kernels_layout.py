@@ -1267,32 +1267,69 @@ def _build_packed_transpose_kernel_source(
 
 
 def _build_paired_fp64_transpose_kernel_source(
-    n0: int, n1: int, tile_size: int
+    n0: int, n1: int, tile_size: int, *,
+    flatten_pair: bool = False, column_first: bool = False,
 ) -> tuple[str, str, list[str]]:
     """Swap matrix axes while keeping both doubles of each value adjacent."""
-    kernel_name = f"_paired_transpose_kernel_n{n0}_{n1}_f64_t{tile_size}"
+    layout = "_flat" if flatten_pair else "_column" if column_first else ""
+    kernel_name = f"_paired_transpose_kernel_n{n0}_{n1}_f64{layout}_t{tile_size}"
+    row_axis, col_axis = (0, 1) if column_first else (1, 0)
     wide_index = ".to(tl.int64)" if 2 * n0 * n1 >= 2**31 else ""
+    if flatten_pair:
+        source = dedent(
+            f"""
+            @triton.jit
+            def {kernel_name}(in_ptr, out_ptr, nbatch):
+                tile_row = tl.program_id({row_axis}) * {tile_size}
+                tile_col = tl.program_id({col_axis}) * {tile_size}
+                batch = tl.program_id(2)
+                batch_base = batch.to(tl.int64) * {2 * n0 * n1}
+                in_ptr += batch_base
+                out_ptr += batch_base
+                row = tile_row + tl.arange(0, {tile_size})
+                col = tile_col + tl.arange(0, {tile_size})
+                src_pair = 2 * tile_col + tl.arange(0, {2 * tile_size})
+                dst_pair = 2 * tile_row + tl.arange(0, {2 * tile_size})
+                values = tl.load(
+                    in_ptr + row{wide_index}[:, None] * {2 * n1} + src_pair[None, :],
+                    (row[:, None] < {n0}) & (src_pair[None, :] < {2 * n1}) & (batch < nbatch),
+                    other=0.0,
+                )
+                values = tl.reshape(values, ({tile_size}, {tile_size}, 2))
+                values = tl.reshape(tl.permute(values, (1, 0, 2)), ({tile_size}, {2 * tile_size}))
+                tl.store(
+                    out_ptr + col{wide_index}[:, None] * {2 * n0} + dst_pair[None, :],
+                    values,
+                    (col[:, None] < {n1}) & (dst_pair[None, :] < {2 * n0}) & (batch < nbatch),
+                )
+            """
+        )
+        return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
+
+    input_base = "(in_ptr + batch_base)" if column_first else "in_ptr"
+    output_base = "(out_ptr + batch_base)" if column_first else "out_ptr"
+    batch_offset = "" if column_first else "batch_base + "
     source = dedent(
         f"""
         @triton.jit
         def {kernel_name}(in_ptr, out_ptr, nbatch):
-            row = tl.program_id(1) * {tile_size} + tl.arange(0, {tile_size})
-            col = tl.program_id(0) * {tile_size} + tl.arange(0, {tile_size})
+            row = tl.program_id({row_axis}) * {tile_size} + tl.arange(0, {tile_size})
+            col = tl.program_id({col_axis}) * {tile_size} + tl.arange(0, {tile_size})
             batch = tl.program_id(2)
             component = tl.arange(0, 2)[None, None, :]
             batch_base = batch.to(tl.int64) * {2 * n0 * n1}
-            src = batch_base + (row{wide_index}[:, None, None] * {n1} + col[None, :, None]) * 2
+            src = {batch_offset}(row{wide_index}[:, None, None] * {n1} + col[None, :, None]) * 2
             row_mask = row < {n0}
             col_mask = col < {n1}
             valid_batch = batch < nbatch
             values = tl.load(
-                in_ptr + src + component,
+                {input_base} + src + component,
                 mask=row_mask[:, None, None] & col_mask[None, :, None] & valid_batch,
                 other=0.0,
             )
-            dst = batch_base + (col{wide_index}[:, None, None] * {n0} + row[None, :, None]) * 2
+            dst = {batch_offset}(col{wide_index}[:, None, None] * {n0} + row[None, :, None]) * 2
             tl.store(
-                out_ptr + dst + component,
+                {output_base} + dst + component,
                 tl.permute(values, (1, 0, 2)),
                 mask=col_mask[:, None, None] & row_mask[None, :, None] & valid_batch,
             )
