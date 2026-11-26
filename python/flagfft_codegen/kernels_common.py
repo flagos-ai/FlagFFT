@@ -1447,7 +1447,7 @@ def ix_packed_real_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
         return False
     large = n == 8192 and factors == (16, 16, 16, 2)
     if io_mode == "packed_c2r":
-        return (n == 8192 and factors == (2, 16, 16, 16)
+        return ((n, factors) in {(1024, (2, 8, 8, 8)), (8192, (2, 16, 16, 16))}
                 and _maca_knob("PACKED_C2R_TLE", "0") == "1")
     short = n == 1024 and factors == (8, 8, 8, 2)
     return io_mode == "packed_r2c" and (short or large) and _maca_knob("PACKED_R2C_TLE", "0") == "1"

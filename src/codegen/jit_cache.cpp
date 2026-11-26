@@ -44,7 +44,6 @@ namespace {
       {"FLAGFFT_IX_PORTABLE_LEAF", "0"},
       {"FLAGFFT_IX_BATCH_PACK", "1"},
       {"FLAGFFT_IX_SMEM_SWIZZLE", "1"},
-      {"FLAGFFT_IX_SMEM_SWIZZLE_SHIFT", "5"},
       {"FLAGFFT_IX_TLE_DISJOINT_STAGE", "1"},
       {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
   };
@@ -274,6 +273,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   const bool ix_bluestein_cta = key.perm_form == "ix_bluestein_cta";
   const bool ix_packed_real_tle = key.perm_form == "ix_r2c_tle" || key.perm_form == "ix_c2r_tle";
+  const char *ix_packed_smem_shift = key.perm_form == "ix_c2r_tle" && key.length == 1024 ? "4" : "5";
   if (ix_bluestein_cta) {
     for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
       const char *value = performance_env(name);
@@ -285,6 +285,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       const char *value = performance_env(name);
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
+    const char *shift = performance_env("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT");
+    cache_key += ";FLAGFFT_IX_SMEM_SWIZZLE_SHIFT=" + std::string(shift ? shift : ix_packed_smem_shift);
   }
   if (adaptor::backend_name() == "hcu") {
     cache_key += ";" + hcu_performance_identity();
@@ -808,6 +810,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
     if (!performance_env("FLAGFFT_IX_WARPS")) jit_command << "FLAGFFT_IX_WARPS=" << key.num_warps << " ";
+    if (!performance_env("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT")) {
+      jit_command << "FLAGFFT_IX_SMEM_SWIZZLE_SHIFT=" << ix_packed_smem_shift << " ";
+    }
   }
   const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
       (key.perm_form == "ix_split_frequency" || key.perm_form == "ix_split_c2r_frequency");

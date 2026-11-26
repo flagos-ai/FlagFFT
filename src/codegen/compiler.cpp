@@ -2763,6 +2763,20 @@ namespace {
     return row && col && row->length < 512 && col->length < 512;
   }
 
+  bool ix_packed_c2r_tle_enabled(const FFTRequest &request, int64_t batch) {
+    const int64_t n = request.requested_n;
+    const bool qualified_shape = (n == 2048 && request.ix_fourstep_preset == 9) ||
+                                 (n == 16384 && request.ix_fourstep_preset == 7);
+    if (!qualified_shape || batch != 64) return false;
+    const char *batch_pack = performance_env("FLAGFFT_IX_BATCH_PACK");
+    return !performance_env("FLAGFFT_IX_PORTABLE_LEAF") && !performance_env("FLAGFFT_IX_LEAF_FACTORS") &&
+           !performance_env("FLAGFFT_IX_WARPS") && !performance_env("FLAGFFT_IX_CTA_RADIX_ORDER") &&
+           (!batch_pack || std::string(batch_pack) == "1") &&
+           !flag_or_default("FLAGFFT_IX_WARP_FFT", false) &&
+           flag_or_default("FLAGFFT_IX_PACKED_C2R_TLE", true) &&
+           adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
+  }
+
   bool ix_fused_c2r_leaf_enabled(const FFTRequest &request, int64_t batch) {
     const int64_t n = request.requested_n;
     const bool packed_cta = n==16384 && batch==64 &&
@@ -2783,10 +2797,9 @@ namespace {
     if (setting && std::string(setting) != "0" && std::string(setting) != "1") {
       throw std::runtime_error("FLAGFFT_IX_FUSED_C2R must be 0 or 1");
     }
-    // Screen the existing half-length inverse leaf without changing the
-    // qualified default until IX correctness and paired timings are available.
     return setting ? std::string(setting) == "1" :
-                     (cube_boundary || request.ix_fourstep_preset == 7);
+                     (cube_boundary || request.ix_fourstep_preset == 7 ||
+                      ix_packed_c2r_tle_enabled(request, batch));
   }
 
   struct PackedRealChild {
@@ -5088,17 +5101,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
         leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
       leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
-      const char *ix_batch_pack = performance_env("FLAGFFT_IX_BATCH_PACK");
-      const bool ix_packed_tle = leaf && n == 16384 && batch == 64 && request.ix_fourstep_preset == 7 &&
-          !performance_env("FLAGFFT_IX_PORTABLE_LEAF") && !performance_env("FLAGFFT_IX_LEAF_FACTORS") &&
-          !performance_env("FLAGFFT_IX_WARPS") && !performance_env("FLAGFFT_IX_CTA_RADIX_ORDER") &&
-          (!ix_batch_pack || std::string(ix_batch_pack) == "1") &&
-          !flag_or_default("FLAGFFT_IX_WARP_FFT", false) &&
-          flag_or_default("FLAGFFT_IX_PACKED_C2R_TLE", true) &&
-          adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
+      const bool ix_packed_tle = leaf && ix_packed_c2r_tle_enabled(request, batch);
       if (ix_packed_tle) {
-        leaf = std::make_shared<LeafPlanNode>(packed, std::vector<int64_t>{2, 16, 16, 16}, 1,
-                                             packed / 16, 8, std::vector<int64_t>{}, packed);
+        const int64_t radix = n == 2048 ? 8 : 16;
+        const int64_t warps = n == 2048 ? 4 : 8;
+        leaf = std::make_shared<LeafPlanNode>(packed, std::vector<int64_t>{2, radix, radix, radix}, 1,
+                                             packed / radix, warps, std::vector<int64_t>{}, packed);
       }
       if (leaf) {
         KernelKey key = KernelKey::leaf_c2r(

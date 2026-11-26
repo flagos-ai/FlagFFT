@@ -1333,6 +1333,17 @@ def _emit_ix_packed_c2r_radix2(n: int) -> list[str]:
     return lines
 
 
+def _emit_ix_twiddle_tree(indent: str, stage: int, digit: int) -> list[str]:
+    if digit == 1:
+        return [
+            f"{indent}tw_r{digit} = tl.load(tw{stage}_r_ptr + logical_phys{digit}, lane_mask, 0.0)",
+            f"{indent}tw_i{digit} = tl.load(tw{stage}_i_ptr + logical_phys{digit}, lane_mask, 0.0)",
+        ]
+    left = digit // 2
+    right = digit - left
+    return [f"{indent}tw_r{digit}, tw_i{digit} = _cmul(tw_r{left}, tw_i{left}, tw_r{right}, tw_i{right})"]
+
+
 def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
                               swizzle: bool, shift: int) -> list[str]:
     half = n // 2
@@ -1484,6 +1495,10 @@ def _emit_stage_block(
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
+    ix_short_packed_c2r = (
+        io_mode == "packed_c2r" and n == 1024 and not portable_exchange
+        and ix_packed_real_tle(n, factors, io_mode)
+    )
     next_lanes = (
         stage_lanes[stage + 1]
         if stage_lanes is not None and stage + 1 < len(stage_lanes)
@@ -2402,7 +2417,11 @@ def _emit_stage_block(
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
             )
-            if recurrence:
+            if recurrence and ix_short_packed_c2r:
+                if j:
+                    lines.extend(_emit_ix_twiddle_tree(indent, stage, j))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
+            elif recurrence:
                 # Each butterfly consumes powers of the digit-one root. The
                 # digit-zero root is exactly one, so it needs neither a load
                 # nor a multiply. Keep the recurrence scoped to measured FP32.
