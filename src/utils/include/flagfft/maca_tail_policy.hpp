@@ -97,7 +97,8 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
-  if (maca_663000_c2c_enabled(request)) return "c2c663000";
+  if (maca_663000_c2c_enabled(request))
+    return request.batch == 64 ? "c2c663000-batch" : "c2c663000";
   if (request.device_type == "maca" && request.device_arch == "102" &&
       request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
       request.fft_length == request.requested_n && !request.input_strides.empty() &&
@@ -170,8 +171,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
-    if (root == "c2c663000" && dtype == "complex64" &&
-        ((n1 == 375 && n2 == 1768) || (n1 == 780 && n2 == 850))) return root;
+    if (dtype == "complex64" &&
+        ((root == "c2c663000" && n1 == 375 && n2 == 1768) ||
+         (root == "c2c663000-batch" && n1 == 780 && n2 == 850))) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||
          (n1 == 64 && n2 == 128) ||

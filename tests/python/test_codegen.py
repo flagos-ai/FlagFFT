@@ -2195,6 +2195,35 @@ def _maca_profile():
     )
 
 
+def test_c550_663000_batch_uses_separate_stage_packs(monkeypatch):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import _four_step_col_inner_pack_for, _four_step_row_inner_pack_for
+    from flagfft_codegen.maca_tail_policy import maca_tail_kernel_scope, reset_maca_tail_mode, set_maca_tail_mode
+    from flagfft_codegen.target import set_codegen_target
+
+    for key in ("INNER_PACK", "FOURSTEP_ROW_PACK", "FOURSTEP_COL_PACK"):
+        monkeypatch.delenv(f"FLAGFFT_MACA_{key}", raising=False)
+    profile = set_profile(_maca_profile())
+    set_codegen_target("maca:102:64")
+    mode = set_maca_tail_mode("c2c663000-batch")
+    try:
+        with maca_tail_kernel_scope("four_step_row", 780, "complex64", 780, 850):
+            assert _four_step_row_inner_pack_for(780, 850) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", "1")
+            assert _four_step_row_inner_pack_for(780, 850) == 1
+            monkeypatch.setenv("FLAGFFT_MACA_FOURSTEP_ROW_PACK", "4")
+            assert _four_step_row_inner_pack_for(780, 850) == 4
+        monkeypatch.delenv("FLAGFFT_MACA_INNER_PACK")
+        with maca_tail_kernel_scope("four_step_col", 850, "complex64", 780, 850):
+            assert _four_step_col_inner_pack_for(780, 850) == 4
+        with maca_tail_kernel_scope("four_step_col", 975, "complex64", 680, 975):
+            assert _four_step_col_inner_pack_for(680, 975) == 1
+    finally:
+        reset_maca_tail_mode(mode)
+        set_codegen_target("")
+        reset_profile(profile)
+
+
 @pytest.mark.parametrize(
     "shape,order,flat",
     [

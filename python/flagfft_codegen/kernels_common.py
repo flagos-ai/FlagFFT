@@ -1118,6 +1118,8 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None, n1: int, n2: int, stage: s
             and n1 * n2 in {331500, 663000}):
         stage_name = f"FOURSTEP_{stage}_PACK"
         stage_override = os.environ.get(f"FLAGFFT_MACA_{stage_name}")
+        if stage_override is None and "FLAGFFT_MACA_INNER_PACK" not in os.environ:
+            stage_override = resource_default(stage_name)
         if stage_override is not None:
             override_name = stage_name
             override = stage_override.strip().lower()
