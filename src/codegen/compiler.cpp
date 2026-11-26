@@ -6415,7 +6415,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         ? compile_raw_leaf(*n1_leaf, n1_request, MacaLeafLayout::Contiguous)
         : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     const bool maca_outer_ct = maca_dif_shape &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_CT", false);
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_CT", true);
     auto perm_210 = maca_outer_ct ? nullptr : compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
     std::shared_ptr<CompiledRawNode> n0_first;
