@@ -23,6 +23,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_PACKED_COLUMN_PFA",
                              "FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER",
                              "FLAGFFT_MACA_340200_BATCH_SPLIT",
+                             "FLAGFFT_MACA_340200_FP32_RADIX_ORDER",
                              "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
@@ -299,6 +300,15 @@ TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(mode, "c2c340200-split");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, flagfft::KernelKind::FourStepRow,
                                          "complex64", 567, 567, 600), mode);
+  setenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER", "1", 1);
+  const auto reordered = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(reordered, nullptr);
+  const auto reordered_row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(reordered->row_plan);
+  const auto reordered_col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(reordered->col_plan);
+  ASSERT_NE(reordered_row, nullptr);
+  ASSERT_NE(reordered_col, nullptr);
+  EXPECT_EQ(reordered_row->factors, (std::vector<int64_t>{9, 7, 9}));
+  EXPECT_EQ(reordered_col->factors, (std::vector<int64_t>{10, 6, 10}));
   setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, r)).repr(), baseline);
   unsetenv("FLAGFFT_MACA_1D_BATCH");
