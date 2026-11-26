@@ -6778,6 +6778,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   }
 
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
+  const bool maca_real_middle_dif = maca_real_compact && request.device_arch == "102" &&
+      request.input_dtype == "complex128" && n0 == 128 && n1 == 2048 && n2 == 64 &&
+      (batch == 1 || batch == 4) && maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", false);
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
   const bool maca_r2c_first_store = maca_real_compact &&
@@ -7146,12 +7149,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
       n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
     } else if (maca_r2c_first_store) {
-      n1_fft = compile_raw_leaf(*n1_leaf, n1_request);
+      n1_fft = compile_raw_leaf(*n1_leaf, n1_request, maca_real_middle_dif);
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
       perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
     } else {
-      n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request)
+      n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request, maca_real_middle_dif)
                        : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       if (inverse) {

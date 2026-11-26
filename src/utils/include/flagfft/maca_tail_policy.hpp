@@ -170,6 +170,7 @@ inline std::string maca_tail_codegen_identity(const std::string& mode) {
                            "FLAGFFT_MACA_TRANSPOSE3D", "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
                            "FLAGFFT_MACA_TRANSPOSE3D_FP64", "FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL",
                            "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP",
+                           "FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE",
                            "FLAGFFT_MACA_3D_FIRST_STORE",
                            "FLAGFFT_MACA_3D_FINAL_STORE",
                            "FLAGFFT_MACA_3D_R2C_FIRST_STORE",

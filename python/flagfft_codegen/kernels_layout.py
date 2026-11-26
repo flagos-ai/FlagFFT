@@ -1344,6 +1344,10 @@ def _build_flat_fp64_transpose3d_kernel_source(
     """Transpose interleaved FP64 pairs in contiguous rows of each plane."""
     if order == "201":
         rows, cols, layers = n0 * n1, n2, 1
+    elif order == "120":
+        rows, cols, layers = n0, n1 * n2, 1
+    elif order == "021":
+        rows, cols, layers = n1, n2, n0
     elif order == "210":
         rows, cols, layers = n0, n2, n1
     else:
@@ -1353,6 +1357,12 @@ def _build_flat_fp64_transpose3d_kernel_source(
     col_tiles = (cols + tile - 1) // tile
     plane_tiles = row_tiles * col_tiles
     batch_stride = 2 * rows * cols * layers
+    if order == "021":
+        src_layer_stride = dst_layer_stride = 2 * rows * cols
+        src_row_stride, dst_row_stride = 2 * cols, 2 * rows
+    else:
+        src_layer_stride, dst_layer_stride = 2 * cols, 2 * rows
+        src_row_stride, dst_row_stride = 2 * layers * cols, 2 * layers * rows
     wide_index = ".to(tl.int64)" if batch_stride >= 2**31 else ""
     name = f"_tiled_transpose3d_kernel_{order}_n{n0}_{n1}_{n2}_f64_flat_t{tile}"
     source = dedent(
@@ -1366,21 +1376,21 @@ def _build_flat_fp64_transpose3d_kernel_source(
             tile_col = tile_in_plane % {col_tiles} * {tile}
             batch = tl.program_id(2)
             batch_base = batch.to(tl.int64) * {batch_stride}
-            src_base = in_ptr + batch_base + layer{wide_index} * {2 * cols}
-            dst_base = out_ptr + batch_base + layer{wide_index} * {2 * rows}
+            src_base = in_ptr + batch_base + layer{wide_index} * {src_layer_stride}
+            dst_base = out_ptr + batch_base + layer{wide_index} * {dst_layer_stride}
             row = tile_row + tl.arange(0, {tile})
             col = tile_col + tl.arange(0, {tile})
             src_pair = tile_col * 2 + tl.arange(0, {2 * tile})
             dst_pair = tile_row * 2 + tl.arange(0, {2 * tile})
             values = tl.load(
-                src_base + row{wide_index}[:, None] * {2 * layers * cols} + src_pair[None, :],
+                src_base + row{wide_index}[:, None] * {src_row_stride} + src_pair[None, :],
                 (row[:, None] < {rows}) & (src_pair[None, :] < {2 * cols}) & (batch < nbatch),
                 other=0.0,
             )
             values = tl.reshape(values, ({tile}, {tile}, 2))
             values = tl.reshape(tl.permute(values, (1, 0, 2)), ({tile}, {2 * tile}))
             tl.store(
-                dst_base + col{wide_index}[:, None] * {2 * layers * rows} + dst_pair[None, :],
+                dst_base + col{wide_index}[:, None] * {dst_row_stride} + dst_pair[None, :],
                 values,
                 (col[:, None] < {cols}) & (dst_pair[None, :] < {2 * rows}) & (batch < nbatch),
             )

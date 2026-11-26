@@ -1126,11 +1126,15 @@ def _emit_tiled_transpose3d_jit_kernel(
         raise ValueError(
             "FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec, flat or v1"
         )
-    if fp64_mode == "flat" and not (
-        current_profile().device_arch == "102" and maca_warps == "4"
-        and (n0, n1, n2, order) in {(128, 64, 2048, "210"), (2048, 64, 128, "201")}
-    ):
-        fp64_mode = "tile16vec"
+    if fp64_mode == "flat":
+        layout = (n0, n1, n2, order)
+        long_complex = layout in {(128, 64, 2048, "210"), (2048, 64, 128, "201")}
+        long_real = os.environ.get("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE") == "1" and layout in {
+            (128, 2048, 33, "021"), (128, 33, 2048, "021"), (128, 33, 2048, "210"),
+            (2048, 33, 128, "210"), (2048, 33, 128, "201"), (128, 2048, 33, "120"),
+        }
+        if current_profile().device_arch != "102" or maca_warps != "4" or not (long_complex or long_real):
+            fp64_mode = "tile16vec"
     if maca_mode == "pair64x16" and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
             raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")

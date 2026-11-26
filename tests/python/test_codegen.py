@@ -2213,6 +2213,7 @@ def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, 
         monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
     else:
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", mode)
+    monkeypatch.delenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", raising=False)
     flat = flat and mode != "tile16vec"
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
     token = set_profile(_maca_profile())
@@ -2225,6 +2226,34 @@ def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, 
         assert meta["num_warps"] == 4
         if flat:
             assert meta["grid_x_override"] == 65536
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize(
+    "shape,order,grid",
+    [
+        ((128, 2048, 33), "021", 49152),
+        ((128, 33, 2048), "210", 33792),
+        ((2048, 33, 128), "201", 33792),
+        ((128, 2048, 33), "120", 33792),
+    ],
+)
+def test_maca_flat_fp64_compact_3d_transpose_grid(monkeypatch, tmp_path, shape, order, grid):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+
+    monkeypatch.setenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", "1")
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+    token = set_profile(_maca_profile())
+    try:
+        n0, n1, n2 = shape
+        meta = _emit_tiled_transpose3d_jit_kernel(
+            n0=n0, n1=n1, n2=n2, order=order, dtype="complex128", out_dir=tmp_path,
+        )
+        assert meta["kernel_name"].endswith("_flat_t16")
+        assert meta["grid_x_override"] == grid
     finally:
         reset_profile(token)
 
