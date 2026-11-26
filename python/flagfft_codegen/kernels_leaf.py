@@ -1308,6 +1308,7 @@ def _emit_stage_block(
     maca_rader_phase: str = "",
     maca_rader_index_ptr: str = "idx_ptr",
     maca_rader_real: str = "",
+    maca_rader_sorted_scatter: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2328,6 +2329,29 @@ def _emit_stage_block(
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
+
+    if is_last and maca_rader_sorted_scatter:
+        tile = lane_block_for(n // radix) * inner_pack * 4
+        bank_size = lane_block * inner_pack * 4
+        shift = tile.bit_length() - 1
+        for j in range(radix):
+            lines.extend([
+                f"{indent}vr{j} = tl.cast(x0r + r{j} / {prime_n - 1}, tl.uint32, bitcast=True).to(tl.uint64)",
+                f"{indent}vi{j} = tl.cast(x0i - i{j} / {prime_n - 1}, tl.uint32, bitcast=True).to(tl.uint64)",
+                f"{indent}pair{j} = vr{j} | (vi{j} << 32)",
+            ])
+        lines.extend([
+            f"{indent}joined = tl.join(tl.join(pair0, pair2), tl.join(pair1, tl.zeros_like(pair0)))",
+            f"{indent}scatter_bank = tl.reshape(joined, ({bank_size},))",
+            f"{indent}packed_map = tl.load(idx_ptr + tl.program_id(0) * {tile} + tl.arange(0, {tile}))",
+            f"{indent}gathered = tl.gather(scatter_bank, packed_map & {tile - 1}, axis=0)",
+            f"{indent}dst = packed_map >> {shift}",
+            f"{indent}result_r = tl.cast(tl.cast(gathered, tl.uint32), tl.float32, bitcast=True)",
+            f"{indent}result_i = tl.cast(tl.cast(gathered >> 32, tl.uint32), tl.float32, bitcast=True)",
+            f"{indent}addr = (out_ptr + (four_step_batch * {prime_n} + dst) * 2)[:, None] + {_COMPLEX_PAIR_OFFSETS}",
+            f"{indent}tl.store(addr, tl.join(result_r, result_i), mask=(dst > 0)[:, None])",
+        ])
+        return lines
 
     if smem_tail:
         assert not portable_exchange and stage > 0 and groups == 1
@@ -3643,15 +3667,20 @@ def _build_leaf_kernel_source_for_io(
     maca_rader_phase, _, rader_variant = rader_layout.partition("_")
     narrow_rader_indices = rader_variant == "i16"
     maca_rader_real = rader_variant if rader_variant in {"r2c", "c2r"} else ""
+    maca_rader_sorted_scatter = rader_variant == "sorted"
     maca_rader_index_ptr = "idx16_ptr" if narrow_rader_indices else "idx_ptr"
     if maca_rader_phase:
         if not (
             _maca_backend_active() and current_profile().device_arch == "102"
             and plan.dtype == "complex64" and plan.direction == "forward"
             and prime_n in {8191, 16381} and four_step_n1 * four_step_n2 == prime_n - 1
-            and rader_variant in {"", "i16", "r2c", "c2r"}
+            and rader_variant in {"", "i16", "r2c", "c2r", "sorted"}
             and (not narrow_rader_indices or (prime_n == 8191 and maca_rader_phase in {"gather", "scatter"}))
             and (not maca_rader_real or maca_rader_phase in {"gather", "product", "scatter"})
+            and (not maca_rader_sorted_scatter or (
+                prime_n == 16381 and maca_rader_phase == "scatter"
+                and (four_step_n1, four_step_n2) == (91, 180) and plan.factors == (5, 4, 3, 3)
+            ))
             and io_mode in {"four_step_row", "four_step_col"}
             and (maca_rader_phase == "plain"
                  or (io_mode == "four_step_row" and maca_rader_phase == "gather")
@@ -4076,7 +4105,7 @@ def _build_leaf_kernel_source_for_io(
         body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
     if permutation_batch:
         body.append(f"    nbatch = tl.full((), {permutation_batch}, tl.int64)")
-    if _portable_complex_vector_io(plan.dtype):
+    if _portable_complex_vector_io(plan.dtype) or maca_rader_sorted_scatter:
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     from .target import ix_ct_single_default_enabled
     static_single = (
@@ -4346,6 +4375,7 @@ def _build_leaf_kernel_source_for_io(
                 maca_rader_phase=maca_rader_phase,
                 maca_rader_index_ptr=maca_rader_index_ptr,
                 maca_rader_real=maca_rader_real,
+                maca_rader_sorted_scatter=maca_rader_sorted_scatter,
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,

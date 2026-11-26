@@ -71,6 +71,22 @@ def test_maca_rader_compact_indices_preserve_launch_order(tmp_path, axis, phase,
     ) == wide_source
 
 
+def test_maca_rader_sorted_scatter_keeps_the_int32_table_abi(tmp_path):
+    config = dict(kernel="four_step_col", length=180, factors=(5, 4, 3, 3), lanes=3,
+                  num_warps=2, generic_radices=(), smem_size=256, direction="forward",
+                  dtype="complex64", prime_n=16381, four_step_n1=91, four_step_n2=180)
+    phase = "maca_rader_four_step_scatter"
+    base = emit_jit_kernel(**config, perm_form=phase, out_dir=tmp_path / "base")
+    sorted_indices = emit_jit_kernel(**config, perm_form=phase + "_sorted", out_dir=tmp_path / "sorted")
+
+    assert sorted_indices["arg_names"] == base["arg_names"]
+    assert sorted_indices["signature"] == base["signature"]
+    source = Path(sorted_indices["module_path"]).read_text()
+    assert source.count("tl.store(") == 1
+    assert "tl.gather(scatter_bank, packed_map" in source
+    assert "x0r + r0 / 16380" in source
+
+
 @pytest.mark.parametrize("real_kind", ["r2c", "c2r"])
 @pytest.mark.parametrize("prime,row,col", [(8191, (7, 10), (13, 9)), (16381, (5, 4, 3, 3), (13, 7))])
 def test_maca_rader_direct_real_passes_accept_public_distances(tmp_path, real_kind, prime, row, col):

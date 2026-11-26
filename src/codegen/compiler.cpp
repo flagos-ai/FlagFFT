@@ -4842,6 +4842,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_ste
   const int64_t m = prime - 1;
   const bool narrow_indices = prime == 8191 && !request.real_transform &&
       flag_or_default("FLAGFFT_MACA_8191_RADER_INDEX16", false);
+  const bool sorted_scatter = prime == 16381 && boundary == Boundary::Complex && !request.real_transform &&
+      flag_or_default("FLAGFFT_MACA_16381_RADER_SORTED_SCATTER", false);
   const std::string real_suffix = boundary == Boundary::RealForward ? "_r2c" :
       (boundary == Boundary::RealInverse ? "_c2r" : "");
   const std::string boundary_suffix = narrow_indices ? "_i16" : real_suffix;
@@ -4862,7 +4864,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_ste
   kernels.spectrum_row = compile_pass(row, n1, n2, true, "plain");
   kernels.spectrum_col = compile_pass(col, n1, n2, false, "plain");
   kernels.inverse_row = compile_pass(col, n2, n1, true, "plain");
-  kernels.scatter = compile_pass(row, n2, n1, false, "scatter" + boundary_suffix);
+  kernels.scatter = compile_pass(row, n2, n1, false,
+                                 "scatter" + (sorted_scatter ? "_sorted" : boundary_suffix));
 
   std::vector<int64_t> gather_indices(static_cast<std::size_t>(m));
   std::vector<int64_t> scatter_indices(static_cast<std::size_t>(m));
@@ -4876,10 +4879,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_ste
       scatter_indices[index] = plan.idx[time];
     }
   }
+  std::vector<int64_t> scatter_order;
+  if (sorted_scatter) {
+    const int64_t pack = kernels.scatter->inner_pack;
+    const int64_t radix = row.factors.back();
+    const int64_t branch_width = ceil_power_of_two(radix);
+    const int64_t lanes = n1 / radix;
+    const int64_t tile = ceil_power_of_two(lanes) * pack * branch_width;
+    scatter_order.resize(ceil_div(n2, pack) * tile);
+    for (int64_t first = 0; first < n2; first += pack) {
+      const auto begin = scatter_order.begin() + (first / pack) * tile;
+      auto next = begin;
+      for (int64_t lane = 0; lane < lanes; ++lane) {
+        for (int64_t slot = 0; slot < std::min(pack, n2 - first); ++slot) {
+          for (int64_t branch = 0; branch < radix; ++branch) {
+            const int64_t dest = scatter_indices[(lane + branch * lanes) * n2 + first + slot];
+            const int64_t source = (lane * pack + slot) * branch_width + branch;
+            *next++ = dest * tile + source;
+          }
+        }
+      }
+      // The high bits order the public stores and the low bits select a codelet output.
+      std::sort(begin, next);
+    }
+  }
   return std::make_shared<CompiledRawMacaRaderFourStepNode>(n1, n2, batch, boundary, std::move(kernels),
       build_raw_leaf_tables(row, child_request), build_raw_leaf_tables(col, child_request),
       build_raw_rader_idx_table(gather_indices, narrow_indices),
-      build_raw_rader_idx_table(scatter_indices, narrow_indices),
+      build_raw_rader_idx_table(sorted_scatter ? scatter_order : scatter_indices, narrow_indices),
       build_raw_rader_conv_kernel(request, prime, scatter_indices));
 }
 
