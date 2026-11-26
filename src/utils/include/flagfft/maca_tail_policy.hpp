@@ -153,6 +153,27 @@ inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
   return maca_batch_c2c_option_enabled(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT", true);
 }
 
+inline bool maca_batch_prime_real_four_step_enabled(const FFTRequest& request, int64_t length) {
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
+      (length != 8191 && length != 16381) || request.requested_n != length || request.fft_length != length ||
+      !request.real_transform || request.packed_real_child || request.convolution_child ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.input_strides.size() != 2 || request.input_strides.back() != 1) return false;
+
+  const int64_t distance = request.input_strides.front();
+  const bool forward = request.real_transform_kind == "r2c" && request.direction == "forward" &&
+      (distance == length || distance == length + 1);
+  const bool inverse = request.real_transform_kind == "c2r" && request.direction == "inverse" &&
+      distance == length / 2 + 1;
+  const char* setting = std::getenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP");
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  return (forward || inverse) && setting && std::string_view(setting) == "1" &&
+      (!batch_policy || std::string_view(batch_policy) != "0") && (!plan || !*plan);
+}
+
 inline bool maca_dense_rank1_fp64_complex(const FFTRequest& request, int64_t length) {
   return request.device_type == "maca" && request.device_arch == "102" && request.raw_dim == 1 &&
       request.origin_rank <= 1 && request.requested_n == length && request.fft_length == length &&

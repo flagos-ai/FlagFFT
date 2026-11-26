@@ -42,6 +42,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_16_D2Z_NATIVE",
                              "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
+                             "FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
@@ -687,6 +688,34 @@ TEST_F(TailPolicy, C550ShortBatchedComplexOptionsStayLocal) {
   EXPECT_EQ(leaf->factors, (std::vector<int64_t>{7, 6, 5}));
   r.real_transform = true;
   EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp32PrimeRaderAllowsPublicRealBoundaries) {
+  auto r = request(8191, "complex64");
+  r.device_arch = "102";
+  r.batch = 64;
+  r.input_layout = "contiguous";
+  r.real_transform = true;
+  r.real_transform_kind = "r2c";
+  r.input_strides = {8191, 1};
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "1", 1);
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  flagfft::PlanBuilder builder;
+  EXPECT_EQ(builder.build(8191, r)->kind, flagfft::PlanNodeKind::Rader);
+  r.input_strides = {8192, 1};
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  r.real_transform_kind = "c2r";
+  r.direction = "inverse";
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  r.input_strides = {4096, 1};
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_EQ(builder.build(8191, r)->kind, flagfft::PlanNodeKind::Rader);
+  r.origin_rank = 2;
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  r.origin_rank = 1;
+  r.input_dtype = r.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
 }
 
 TEST_F(TailPolicy, C550Fp64Fft16NativeStaysWithinDenseRootRequests) {
