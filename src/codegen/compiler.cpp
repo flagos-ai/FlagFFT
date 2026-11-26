@@ -2721,6 +2721,17 @@ namespace {
     return length / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
   }
 
+  bool maca_1d_fp64_2048_enabled(const FFTRequest &request, int64_t batch) {
+    return request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
+        (batch == 1 || batch == 64) && !request.convolution_child && !request.packed_real_child &&
+        request.fft_length == 2048 && request.requested_n == 2048 &&
+        request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        !request.input_strides.empty() && request.input_strides.back() == 1 &&
+        flag_or_default("FLAGFFT_MACA_1D_FP64_2048", false);
+  }
+
   bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
                                            bool inverse,
                                            int64_t batch,
@@ -3575,6 +3586,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
+    if (leaf->length == 2048 && !request.real_transform &&
+        maca_1d_fp64_2048_enabled(request, batch)) {
+      return compile_raw_leaf(*leaf, request, MacaLeafLayout::Contiguous);
+    }
     if (maca_2d_dense_policy_ && request.input_dtype == "complex128" &&
         leaf->length == 2048 && leaf->factors == std::vector<int64_t> {16, 16, 8} &&
         flag_or_default("FLAGFFT_MACA_2D_FP64_RADIX_ORDER", false)) {
@@ -4885,14 +4900,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
   }
-  const bool maca_fused_rows = allow_packed &&
-      maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
+  const bool maca_fused_packed = allow_packed &&
+      (maca_1d_fp64_2048_enabled(request, batch) ||
+       maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_));
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, false, maca_fused_rows)
+              ? select_packed_real_child(node, request, batch, false, maca_fused_packed)
               : std::nullopt) {
     const int64_t packed = n / 2;
-    if (maca_fused_rows ||
+    if (maca_fused_packed ||
         hcu_fused_packed_real_enabled(request, batch, n) ||
         (request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
@@ -5059,11 +5075,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
+  const bool maca_1d_fused = allow_packed && maca_1d_fp64_2048_enabled(request, batch);
   const bool maca_packed_rows = allow_packed &&
       maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, true, maca_packed_rows)
+              ? select_packed_real_child(node, request, batch, true, maca_packed_rows || maca_1d_fused)
               : std::nullopt) {
     const int64_t packed = n / 2;
     const char *packed_fuse_setting = performance_env("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
@@ -5089,7 +5106,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool maca_fused_rows = maca_packed_rows &&
         !(n == 2048 && request.input_dtype == "complex128" &&
           flag_or_default("FLAGFFT_MACA_2D_SPLIT_PACKED_C2R", false));
-    const bool use_packed_fused_leaf = cuda_fused_leaf || maca_fused_rows ||
+    const bool use_packed_fused_leaf = cuda_fused_leaf || maca_fused_rows || maca_1d_fused ||
                                       hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
                                        batch == 256 * 256 && packed_fuse_enabled) ||
