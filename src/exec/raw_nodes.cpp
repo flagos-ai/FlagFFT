@@ -446,7 +446,8 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(int64_t length,
                                                            std::shared_ptr<JitKernel> col_kernel,
                                                            std::vector<DeviceAllocation> col_tables,
                                                            DeviceAllocation twiddle,
-                                                           DeviceAllocation stage1)
+                                                           DeviceAllocation stage1,
+                                                           std::optional<ColumnPreparation> column_preparation)
     : length(length),
       n1(n1),
       n2(n2),
@@ -455,14 +456,18 @@ CompiledRawFourStepFusedNode::CompiledRawFourStepFusedNode(int64_t length,
       col_kernel(std::move(col_kernel)),
       col_tables(std::move(col_tables)),
       twiddle(std::move(twiddle)),
-      stage1(std::move(stage1)) {
+      stage1(std::move(stage1)),
+      column_preparation(std::move(column_preparation)) {
 }
 
 std::string CompiledRawFourStepFusedNode::describe() const {
   std::ostringstream oss;
   oss << "CompiledRawFourStepFused(n=" << length << ", n1=" << n1 << ", n2=" << n2
-      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null")
-      << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
+      << ", row_kernel=" << (row_kernel ? row_kernel->execution_description() : "null");
+  if (column_preparation) {
+    oss << ", col_prepare=" << column_preparation->kernel->execution_description();
+  }
+  oss << ", col_kernel=" << (col_kernel ? col_kernel->execution_description() : "null") << ")";
   return oss.str();
 }
 
@@ -495,12 +500,23 @@ flagfftResult CompiledRawFourStepFusedNode::execute(adaptor::DevicePtr input,
                         : raw_kernel_args({input_chunk, stage1_chunk}, row_tables, chunk_batch);
       row_kernel->launch(context.stream, row_args, ceil_div(n2, row_kernel->inner_pack), chunk_batch, 1);
 
+      auto column_input = stage1_chunk;
+      if (column_preparation) {
+        stage = "column preparation";
+        column_input = column_preparation->workspace.get() + byte_offset;
+        auto args = raw_kernel_args({stage1_chunk, twiddle.get(), column_input},
+                                    column_preparation->tables, chunk_batch);
+        const auto &kernel = column_preparation->kernel;
+        kernel->launch(context.stream, args, kernel->grid_x_override, chunk_batch, 1);
+      }
       stage = "column";
       std::vector<JitKernelArg> col_args =
-          fused_twiddle
-              ? raw_kernel_args({stage1_chunk, output_chunk}, col_tables, chunk_batch)
-              : raw_kernel_args({stage1_chunk, twiddle.get(), output_chunk}, col_tables, chunk_batch);
-      col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), chunk_batch, 1);
+          (fused_twiddle || column_preparation)
+              ? raw_kernel_args({column_input, output_chunk}, col_tables, chunk_batch)
+              : raw_kernel_args({column_input, twiddle.get(), output_chunk}, col_tables, chunk_batch);
+      const int64_t column_grid = column_preparation ? col_kernel->grid_x_override
+          : ceil_div(n1, col_kernel->inner_pack);
+      col_kernel->launch(context.stream, col_args, column_grid, chunk_batch, 1);
       stage = "row";
     }
     return FLAGFFT_SUCCESS;

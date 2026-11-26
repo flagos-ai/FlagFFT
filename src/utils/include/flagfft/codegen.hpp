@@ -477,6 +477,12 @@ struct CompiledRawDirectDftNode final : CompiledRawNode {
 };
 
 struct CompiledRawFourStepFusedNode final : CompiledRawNode {
+  struct ColumnPreparation {
+    std::shared_ptr<JitKernel> kernel;
+    std::vector<DeviceAllocation> tables;
+    DeviceAllocation workspace;
+  };
+
   CompiledRawFourStepFusedNode(int64_t length,
                                int64_t n1,
                                int64_t n2,
@@ -485,7 +491,8 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
                                std::shared_ptr<JitKernel> col_kernel,
                                std::vector<DeviceAllocation> col_tables,
                                DeviceAllocation twiddle,
-                               DeviceAllocation stage1);
+                               DeviceAllocation stage1,
+                               std::optional<ColumnPreparation> column_preparation = std::nullopt);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -500,6 +507,7 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
   std::vector<DeviceAllocation> col_tables;
   DeviceAllocation twiddle;
   DeviceAllocation stage1;
+  std::optional<ColumnPreparation> column_preparation;
 };
 
 struct CompiledRawBluesteinNode final : CompiledRawNode {

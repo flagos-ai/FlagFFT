@@ -857,7 +857,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --npu-portable-leaf";
     }
   }
-  if (key.kind == KernelKind::LeafPermutedStore ||
+  const bool maca_split_column = key.kind == KernelKind::FourStepCol &&
+      key.perm_form.rfind("maca_split_column1768_", 0) == 0;
+  if (maca_split_column || key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::Leaf && key.perm_form.rfind("maca_fp64_", 0) == 0) ||
@@ -1214,6 +1216,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
     if (kernel->grid_x_override <= 0) {
       throw std::runtime_error("HCU CT requires a positive, tile-derived launch grid");
+    }
+  }
+  if (maca_split_column) {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    if (kernel->grid_x_override <= 0) {
+      throw std::runtime_error("MACA split column requires a positive, tile-derived launch grid");
     }
   }
   if (key.kind == KernelKind::DirectDftCubeTransposed ||

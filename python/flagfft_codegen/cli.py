@@ -217,6 +217,8 @@ def main() -> None:
             "maca_prime_dif_c2c",
             "maca_prime_dif_r2c",
             "maca_prime_dif_c2r",
+            "maca_split_column1768_prepare",
+            "maca_split_column1768_finish",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",

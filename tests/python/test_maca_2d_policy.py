@@ -218,6 +218,33 @@ def test_c550_packed_3d_real_boundary_launch_abi(tmp_path, mode, direction):
         reset_profile(profile)
 
 
+@pytest.mark.parametrize("direction", ("forward", "inverse"))
+@pytest.mark.parametrize("stage,grid", (("prepare", 399), ("finish", 153)))
+def test_c550_split_column_launch_abi(tmp_path, direction, stage, grid):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        form = f"maca_split_column1768_{stage}"
+        metadata = emit_jit_kernel(
+            kernel="four_step_col", length=1768, factors=(13, 17, 8), lanes=8, num_warps=2,
+            generic_radices=(), smem_size=1768, direction=direction, dtype="complex64",
+            prime_n=0, four_step_n1=375, four_step_n2=1768, perm_form=form, out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == f"{form}_{direction}"
+        assert metadata["num_warps"] == 2
+        assert metadata["grid_x_override"] == grid
+        args = ["in_ptr", "out_ptr", "phase_r_ptr", "phase_i_ptr", "nbatch"]
+        if stage == "prepare":
+            args.insert(1, "twiddle_ptr")
+        assert metadata["arg_names"] == args
+    finally:
+        reset_profile(profile)
+
+
 @pytest.mark.parametrize(
     "length,factors,lanes,expected",
     [

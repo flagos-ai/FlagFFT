@@ -731,7 +731,18 @@ def emit_jit_kernel(
         "maca_fp64_3d_c2r64": (64, 2, 32),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
-    if maca_prime_dif:
+    maca_split_column = perm_form in {"maca_split_column1768_prepare", "maca_split_column1768_finish"}
+    if maca_split_column:
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and dtype == "complex64"
+                and (length, four_step_n1, four_step_n2) == (1768, 375, 1768)):
+            raise ValueError("the split column requires FP32 FourStep 375 × 1768 on C550")
+        from .kernels_maca_column import build_maca_split_column1768
+
+        prepare_column = perm_form.endswith("_prepare")
+        kernel_name, kernel_source, column_grid = build_maca_split_column1768(direction, prepare_column)
+        n1, n2 = four_step_n1, four_step_n2
+    elif maca_prime_dif:
         mode = perm_form.removeprefix("maca_prime_dif_")
         expected_kernel = "leaf_bluestein" if mode == "c2c" else f"leaf_bluestein_{mode}"
         if not (_maca_backend_active() and current_profile().device_arch == "102"
@@ -848,7 +859,7 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM or maca_fp64_layout or maca_prime_dif:
+    if spec.family == STOCKHAM or maca_fp64_layout or maca_prime_dif or maca_split_column:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):
@@ -862,7 +873,9 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    if spec.is_leaf_like and not (maca_fp64_layout or maca_prime_dif):
+    if maca_split_column:
+        radices = () if prepare_column else (8,)
+    elif spec.is_leaf_like and not (maca_fp64_layout or maca_prime_dif):
         radices = tuple(
             sorted(
                 codelet_radices_for(factors)
@@ -900,6 +913,8 @@ def emit_jit_kernel(
         metadata.update(num_warps=maca_warps, batch_per_block=maca_pack)
     if maca_prime_dif:
         metadata.update(num_warps=4 if dtype == "complex128" else 2, batch_per_block=1)
+    if maca_split_column:
+        metadata.update(num_warps=2, grid_x_override=column_grid, tle_fused_twiddle=False)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:
