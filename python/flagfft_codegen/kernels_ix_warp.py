@@ -252,7 +252,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          packed_output_transpose: bool = False,
                          dif_store: bool = False,
                          ragged_r2c: bool = False,
-                         frequency_bands: int = 0) -> tuple[str, str]:
+                         frequency_bands: int = 0,
+                         input_padding: int = 0,
+                         output_padding: int = 0) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -309,6 +311,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if manual_store: name+='_manual'
     if output_radix_chunk: name+=f'_chunk{chunk}'
     if ragged_r2c: name+='_ragged'
+    if input_padding: name+=f'_padin{input_padding}'
+    if output_padding: name+=f'_padout{output_padding}'
     if frequency_bands: name+=f'_frequency_bands{frequency_bands}'
     if lane_width!=64: name+=f'_lanes{lane_width}'
     if packed_gather: name+='_pairgather'
@@ -339,7 +343,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a += [f'    groups=(span+{pack-1})//{pack}',
               f'    row_base=(pid//groups)*span+(pid%groups)*{pack}',
               '    row=row_base+slot',
-              f'    gbase=(pid//groups)*({output_length}*span)+(pid%groups)*{pack}+slot']
+              f'    gbase=(pid//groups)*({output_length}*(span+{output_padding}))+(pid%groups)*{pack}+slot']
     else:
         a+= [f'    row_base=pid*{pack}','    row=row_base+slot']
         if mode in {'outer','r2c'}:
@@ -470,8 +474,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                       f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
         else:
+            alignment = math.gcd(n + input_padding, lane_width)
             a+=['    offset=row[:,None]*input_distance+pos',
-                 f'    offset=tl.max_contiguous(tl.multiple_of(offset,(1,{lane_width})),(1,{lane_width}))']
+                 f'    offset=tl.max_contiguous(tl.multiple_of(offset,(1,{alignment})),(1,{lane_width}))']
             if wide:
                 a += [f'    x{j}r=tl.load(inp+offset*2,valid,0.0)',
                       f'    x{j}i=tl.load(inp+offset*2+1,valid,0.0)']
@@ -705,7 +710,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             elif strided_output_major:
                 a += [f'    if (nbatch//span)%{pack}==0:',
                       f'        gbase=tl.max_contiguous(tl.multiple_of(gbase,{pack}),{pack})']
-            a+=['    stride=nbatch' if mode=='inner' else '    stride=span',
+            a+=['    stride=nbatch' if mode=='inner' else f'    stride=span+{output_padding}',
                  '    address=freq[:,None]*stride+gbase[None,:]',
                  '    mask=valid_row[None,:]' if strided_input else '    mask=(row[None,:]<nbatch)']
             if mode=='outer' or ragged_r2c:
@@ -745,6 +750,9 @@ def _finish_warp_source(name, lines, fast_math, codelet_radix, manual_store):
 def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: list[str],
                                  pack: int, permutation_span: int = 0) -> tuple[str,str]:
     """Retain the raw-leaf argument list, including unused twiddle pointers."""
+    input_padding = 16 if perm_form.endswith("_padinput16") else 0
+    output_padding = 16 if perm_form.endswith("_padoutput16") else 0
+    perm_form = perm_form.removesuffix("_padinput16").removesuffix("_padoutput16")
     single_output = perm_form.endswith("_dif_chunk1")
     four_outputs = perm_form.endswith("_dif_chunk4")
     perm_form = perm_form.removesuffix("_chunk1").removesuffix("_chunk4")
@@ -766,14 +774,16 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c,
-                                    strided_input=strided_columns)
+                                    strided_input=strided_columns,
+                                    input_padding=input_padding, output_padding=output_padding)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:
         aliases.append(f'    span=tl.full((),{permutation_span},tl.int64)')
     else:
         aliases.append('    span=perm_span' if 'perm_span' in params else '    span=tl.full((),1,tl.int64)')
-    if 'input_distance' not in params: aliases.append(f'    input_distance=tl.full((),{n},tl.int64)')
+    if 'input_distance' not in params:
+        aliases.append(f'    input_distance=tl.full((),{n+input_padding},tl.int64)')
     if 'output_distance' not in params:
         aliases.append(f'    output_distance=tl.full((),{n//2+1 if mode in {"r2c","contiguous_r2c"} else n+1 if mode=="packed_r2c" else n},tl.int64)')
     header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'

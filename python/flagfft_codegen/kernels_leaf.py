@@ -3827,8 +3827,9 @@ def _build_leaf_kernel_source_for_io(
             and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length in {16,64,128,256,512,1024,2048}
             and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "packed_r2c", "packed_c2r", "permuted_store",
                             "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
-            and perm_form in {"outer", "inner", "outer_dif", "inner_dif",
-                              "outer_dif_chunk1", "inner_dif_chunk1", "outer_dif_chunk4", "outer_strided"}
+            and perm_form.removesuffix("_padinput16").removesuffix("_padoutput16") in {
+                "outer", "inner", "outer_dif", "inner_dif", "outer_dif_chunk1",
+                "inner_dif_chunk1", "outer_dif_chunk4", "outer_strided"}
             and (io_mode == "strided_permuted_store") == (perm_form == "outer_strided")):
         from .kernels_ix_warp import build_ix_warp256_leaf_source
         return build_ix_warp256_leaf_source(

@@ -8168,12 +8168,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const bool ix_dif_store = use_ix_2d_transpose_store && ix_nd_pack == 16 &&
         n0 == 2048 && n1 == 2048 && batch == 1 &&
         flag_or_default("FLAGFFT_IX_2D_C2C_DIF_STORE", true);
-    const std::string store_form = ix_dif_store ? "outer_dif_chunk4" : "outer";
-    std::shared_ptr<CompiledRawNode> row_fft =
-        compile_raw_permuted_store_leaf(*row_leaf, row_request, n0, store_form);
-    std::shared_ptr<CompiledRawNode> col_fft =
-        compile_raw_permuted_store_leaf(*col_leaf, col_request, n1, store_form);
-    DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * element_bytes));
+    // Offset successive scratch rows from the power-of-two pitch while
+    // retaining dense input and output matrices.
+    const int64_t padding = ix_dif_store ? 16 : 0;
+    const char *row_form = ix_dif_store ? "outer_dif_chunk4_padoutput16" : "outer";
+    const char *col_form = ix_dif_store ? "outer_dif_chunk4_padinput16" : "outer";
+    auto row_fft = compile_raw_permuted_store_leaf(*row_leaf, row_request, n0, row_form);
+    auto col_fft = compile_raw_permuted_store_leaf(*col_leaf, col_request, n1, col_form);
+    DeviceAllocation temp1 = adaptor::Memory(
+        static_cast<std::size_t>(batch * (n0 + padding) * n1 * element_bytes));
     return std::make_shared<CompiledRaw2DRCNode>(n0,
                                                  n1,
                                                  std::move(row_fft),
