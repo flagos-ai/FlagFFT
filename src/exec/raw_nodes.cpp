@@ -153,16 +153,23 @@ namespace {
 
   bool ix_ct_batch_graph_enabled(const RawExecutionContext &context, int64_t length) {
     const FFTRequest &request = context.request;
-    const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
-    const bool enabled = setting == nullptr || std::string(setting) == "1";
     const bool measured_shape = length == 1024 ||
         (length == 2048 && (request.real_transform_kind == "r2c" ||
                             request.real_transform_kind == "c2r"));
-    return enabled && measured_shape && request.device_type == "ix" &&
-           request.device_arch == "71" && request.origin_rank <= 1 && request.raw_dim == 1 &&
-           request.requested_n == length &&
-           context.batch == 64 && request.input_dtype == "complex64" &&
-           request.output_dtype == "complex64";
+    if (!measured_shape || request.device_type != "ix" || request.device_arch != "71" ||
+        request.origin_rank > 1 || request.raw_dim != 1 || request.requested_n != length ||
+        context.batch != 64 || request.input_dtype != "complex64" ||
+        request.output_dtype != "complex64") {
+      return false;
+    }
+    if (const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH")) {
+      return std::string(setting) == "1";
+    }
+    const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+    const bool prefer_direct = (length == 1024 || request.real_transform_kind == "r2c") &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        (!policy || std::string(policy) == "balanced");
+    return !prefer_direct;
   }
 
   bool replay_leaf_graph(Raw1DGraphState &state,
