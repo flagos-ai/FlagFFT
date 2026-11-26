@@ -369,8 +369,9 @@ def _maca_knob(name: str, default: str = "") -> str:
         elif preset==12 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", RECURRENCE="1")
         elif preset==13 and current_profile().policy=="balanced":
+            pack = "1" if ix_real_single_pack_enabled() else "16"
             defaults.update(VEC_IO="packed", RECURRENCE="1", PORTABLE_LEAF="0",
-                            WARPS="16", BATCH_PACK="16", TLE_DISJOINT_STAGE="1",
+                            WARPS=pack, BATCH_PACK=pack, TLE_DISJOINT_STAGE="1",
                             TLE_REAL_DISJOINT="1")
         elif preset==10 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", RECURRENCE="1", SMEM_INTERLEAVE="1",

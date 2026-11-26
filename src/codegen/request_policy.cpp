@@ -120,10 +120,10 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
       throw std::runtime_error("FLAGFFT_IX_CT_BATCH_PACKED_IO must be 0 or 1");
     if (!packed || std::string(packed)=="1") {
       preset=request.requested_n==1024 ? 11 : 9;
-      if (request.requested_n==210 && request.real_transform_kind!="r2c") preset=12;
-      if (request.requested_n==210 && request.real_transform_kind=="r2c") preset=13;
+      if (request.requested_n==210) preset=request.real_transform_kind.empty() ? 12 : 13;
     }
   }
+  if (request.batch==1 && request.requested_n==210 && request.real_transform_kind=="r2c") preset=13;
   if (request.batch==64 && request.requested_n==8191) preset=1;
   if (request.batch==64 && request.requested_n==16381) preset=2;
   if (request.requested_n==16384 && request.real_transform_kind.empty())

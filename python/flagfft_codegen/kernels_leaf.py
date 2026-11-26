@@ -3934,8 +3934,9 @@ def _build_leaf_kernel_source_for_io(
     cta_disjoint = (batch_pack == 1 and _ix_full_cta_disjoint(n, factors, io_mode, prime_n)
         and all(n % (radix * width) == 0 for radix, width in zip(factors, stage_lanes)))
     real_disjoint = (
-        io_mode == "contiguous_r2c" and n == 210 and factors == (7,6,5)
-        and batch_pack == 16 and _maca_knob("WARPS", "") == "16"
+        ((io_mode == "contiguous_r2c" and batch_pack in {1, 16})
+         or (io_mode == "contiguous_c2r" and batch_pack == 16))
+        and n == 210 and factors == (7,6,5) and _maca_knob("WARPS", "") == str(batch_pack)
         and all(n == radix * width for radix,width in zip(factors,stage_lanes))
         and _maca_knob("TLE_REAL_DISJOINT", "0") == "1"
     )
