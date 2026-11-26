@@ -1050,9 +1050,9 @@ namespace {
       if (inner ? request.batch % span != 0 || (request.batch / span) % pack != 0
                 : key.kind == KernelKind::LeafR2CPermutedStore && span % pack != 0) return;
       key.permutation_span = span;
-      if (request.ix_warp256_dif_store && key.length == 256 && pack == 16 &&
+      if (request.ix_warp256_dif_chunk > 0 && key.length == 256 && pack == 16 &&
           (inner || key.perm_form == "outer")) {
-        key.perm_form += "_dif";
+        key.perm_form += request.ix_warp256_dif_chunk == 1 ? "_dif_chunk1" : "_dif";
       }
     }
     key.ix_warp_fft_pack = pack;
@@ -6537,6 +6537,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     // public descriptor batches several independent cubes.
     const bool ix_per_cube = request.device_type == "ix" && batch > 1;
     auto n2_cube_request = n2_request, n1_cube_request = n1_request, n0_cube_request = n0_request;
+    if (ix_nd_pack == 16 && request.real_transform_kind.empty() &&
+        n0 == 256 && n1 == 256 && n2 == 256 &&
+        flag_or_default("FLAGFFT_IX_3D_C2C_DIF_STORE", true)) {
+      n2_cube_request.ix_warp256_dif_chunk = 1;
+      n1_cube_request.ix_warp256_dif_chunk = 1;
+      n0_cube_request.ix_warp256_dif_chunk = 1;
+    }
     if (ix_per_cube) {
       n2_cube_request.batch = n0 * n1;
       n1_cube_request.batch = n0 * n2;
@@ -7365,9 +7372,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   const bool dif_store = ix_nd_pack == 16 && request.real_transform_kind == "r2c" &&
       n0 == 256 && n1 == 256 && n2 == 256 && fused_first && fused_middle && fused_n0 &&
       flag_or_default("FLAGFFT_IX_3D_R2C_DIF_STORE", true);
-  n2_request.ix_warp256_dif_store = dif_store;
-  n1_request.ix_warp256_dif_store = dif_store;
-  n0_request.ix_warp256_dif_store = dif_store;
+  if (dif_store) {
+    n2_request.ix_warp256_dif_chunk = 2;
+    n1_request.ix_warp256_dif_chunk = 2;
+    n0_request.ix_warp256_dif_chunk = 2;
+  }
   std::vector<DeviceAllocation> npu_transpose_indices;
 #if defined(FLAGFFT_BACKEND_NPU)
   if (npu_real_native) {

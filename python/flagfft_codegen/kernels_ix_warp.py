@@ -518,6 +518,8 @@ def _finish_warp_source(name, lines, fast_math, codelet_radix, manual_store):
 def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: list[str],
                                  pack: int, permutation_span: int = 0) -> tuple[str,str]:
     """Retain the raw-leaf argument list, including unused twiddle pointers."""
+    single_output = perm_form.endswith("_dif_chunk1")
+    perm_form = perm_form.removesuffix("_chunk1")
     dif_store = perm_form.endswith("_dif")
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
@@ -527,6 +529,8 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     }.get(io_mode, perm_form.removesuffix("_dif"))
     n=plan.length
     chunk=(2 if n==256 else 8 if n>=1024 else 0) if mode in {'outer','inner','r2c'} else 0
+    if single_output:
+        chunk = 1
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk, dif_store=dif_store)

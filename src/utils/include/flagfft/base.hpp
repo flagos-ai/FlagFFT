@@ -136,7 +136,8 @@ struct FFTRequest {
   // Parent-qualified IX layouts pass their measured tile to axis compilers.
   // Zero preserves the ordinary leaf policy.
   int64_t ix_warp_fft_pack_default = 0;
-  bool ix_warp256_dif_store = false;
+  // Number of radix outputs per permuted store for the qualified DIF wave.
+  int ix_warp256_dif_chunk = 0;
   bool ix_prime_3d_default = false;
   // Public-request preset, retained by convolution and packed-real children.
   int ix_fourstep_preset = 0;
