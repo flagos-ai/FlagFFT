@@ -206,9 +206,11 @@ bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
 int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                                 int64_t n0, int64_t n1, int64_t n2) {
   const bool small_matrix = n0 == 128 && n1 == 128 && request.real_transform_kind.empty();
+  const bool small_real_matrix = n0 == 64 && n1 == 64 && batch == 1 &&
+      request.real_transform_kind == "r2c";
   const bool large_matrix = n0 == 2048 && n1 == 2048;
   const bool matrix = request.origin_rank == 2 && request.raw_dim == 2 && n2 == 0 &&
-                      (small_matrix || large_matrix);
+                      (small_matrix || small_real_matrix || large_matrix);
   const bool cube=request.origin_rank==3 && request.raw_dim==3 &&
                   n0==256 && n1==256 && n2==256;
   const bool elongated=request.origin_rank==3 && request.raw_dim==3 &&
@@ -229,6 +231,7 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
   };
   if (!enabled("FLAGFFT_IX_ND_WARP",true) || !enabled("FLAGFFT_IX_WARP_FFT",true)) return 0;
   if (matrix) {
+    if (small_real_matrix) return enabled("FLAGFFT_IX_2D_R2C_WAVE", true) ? 1 : 0;
     if (!enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE", true)) return 0;
     if (small_matrix) return 8;
     return request.real_transform_kind == "c2r" ? 4 : 16;
