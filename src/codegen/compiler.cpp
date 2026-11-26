@@ -24,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <functional>
+#include <numeric>
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/npu_fft_contract.hpp"
@@ -4737,6 +4738,63 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
   if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);
     child_request.convolution_child = true;
+    const int64_t prime = rader->prime;
+    if ((prime == 8191 || prime == 16381) && request.input_dtype == "complex64" &&
+        batch == request.batch &&
+        maca_batch_c2c_option_enabled(request, prime, "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", false)) {
+      const auto make_leaf = [](std::vector<int64_t> factors) {
+        int64_t length = 1;
+        int64_t factor_lcm = 1;
+        for (const auto factor : factors) {
+          length *= factor;
+          factor_lcm = std::lcm(factor_lcm, factor);
+        }
+        return LeafPlanNode(length, std::move(factors), 1, length / factor_lcm, 2, {},
+                            ceil_power_of_two(length));
+      };
+      const auto row = make_leaf(prime == 8191
+          ? std::vector<int64_t>{7, 10} : std::vector<int64_t>{5, 4, 3, 3});
+      const auto col = make_leaf(prime == 8191
+          ? std::vector<int64_t>{13, 9} : std::vector<int64_t>{13, 7});
+      const int64_t n1 = row.length;
+      const int64_t n2 = col.length;
+      const int64_t m = prime - 1;
+      const auto compile_pass = [&](const LeafPlanNode& leaf, int64_t rows, int64_t columns,
+                                    bool is_row, const char* phase) {
+        const auto make_key = is_row ? KernelKey::four_step_row : KernelKey::four_step_col;
+        auto key = make_key(triton_target_for_request(child_request), child_request.direction,
+            child_request.input_dtype, rows, columns, leaf.length, leaf.factors, leaf.lanes,
+            leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+        key.rader_n = prime;
+        key.rader_m = m;
+        key.perm_form = std::string("maca_rader_four_step_") + phase;
+        return compile_kernel(key);
+      };
+      CompiledRawMacaRaderFourStepNode::Kernels kernels;
+      kernels.gather = compile_pass(row, n1, n2, true, "gather");
+      kernels.product = compile_pass(col, n1, n2, false, "product");
+      kernels.spectrum_row = compile_pass(row, n1, n2, true, "plain");
+      kernels.spectrum_col = compile_pass(col, n1, n2, false, "plain");
+      kernels.inverse_row = compile_pass(col, n2, n1, true, "plain");
+      kernels.scatter = compile_pass(row, n2, n1, false, "scatter");
+
+      std::vector<int64_t> gather_indices(static_cast<std::size_t>(m));
+      std::vector<int64_t> scatter_indices(static_cast<std::size_t>(m));
+      for (int64_t j1 = 0; j1 < n1; ++j1) {
+        for (int64_t j2 = 0; j2 < n2; ++j2) {
+          const int64_t index = j1 * n2 + j2;
+          // Good-Thomas orders the convolution input by residues. The two
+          // inverse passes then traverse the axes in the opposite order.
+          const int64_t time = (j1 * n2 + j2 * n1) % m;
+          gather_indices[index] = rader->idx[(m - time) % m];
+          scatter_indices[index] = rader->idx[time];
+        }
+      }
+      return std::make_shared<CompiledRawMacaRaderFourStepNode>(n1, n2, batch, std::move(kernels),
+          build_raw_leaf_tables(row, child_request), build_raw_leaf_tables(col, child_request),
+          build_raw_rader_idx_table(gather_indices), build_raw_rader_idx_table(scatter_indices),
+          build_raw_rader_conv_kernel(request, prime, scatter_indices));
+    }
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
         rader->conv_plan, child_request, batch, allow_npu_aiv256_transposed_store);
     std::shared_ptr<JitKernel> fused_leaf_kernel;

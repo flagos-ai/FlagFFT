@@ -862,12 +862,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        key.perm_form.rfind("maca_split_column1105_", 0) == 0);
   const bool maca_packed_c2r_row =
       key.kind == KernelKind::FourStepRow && key.perm_form == "maca_packed_c2r_row";
+  const bool maca_rader_four_step = (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepCol) &&
+      key.perm_form.rfind("maca_rader_four_step_", 0) == 0;
   const bool maca_real32_plane_dif =
       key.kind == KernelKind::Fused32RealPlane && key.perm_form == "maca_real32_plane_dif";
   const bool maca_paired_boundary =
       (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) &&
       key.perm_form.rfind("maca_paired_real_boundary_", 0) == 0;
-  if (maca_split_column || maca_packed_c2r_row || maca_real32_plane_dif || maca_paired_boundary ||
+  if (maca_split_column || maca_packed_c2r_row || maca_rader_four_step ||
+      maca_real32_plane_dif || maca_paired_boundary ||
       key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
@@ -909,7 +912,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::BluesteinPointwise || key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }
-  if (key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
+  if (maca_rader_four_step ||
+      key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
       key.kind == KernelKind::LeafRaderFinish || key.kind == KernelKind::RaderPrepare ||
       key.kind == KernelKind::RaderPointwise ||
       key.kind == KernelKind::RaderFinalize) {

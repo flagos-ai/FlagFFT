@@ -125,6 +125,8 @@ def maca_tail_kernel_scope(kernel, length, dtype, n1=0, n2=0, *, perm_form="oute
     mode = eligible_kernel_mode(kernel, length, dtype, n1, n2)
     if backend_name() == "maca" and perm_form == "maca_packed_c2r_row":
         mode = perm_form
+    if backend_name() == "maca" and perm_form.startswith("maca_rader_four_step_"):
+        mode = "maca_rader_four_step"
     token = _kernel_mode.set(mode)
     try:
         yield
@@ -182,7 +184,7 @@ def resource_default(name):
     if _kernel_mode.get() == "c2c663000-batch":
         return {"RADER_CODELET": "1", "VEC_IO": "packed",
                 "FOURSTEP_ROW_PACK": "2", "FOURSTEP_COL_PACK": "4"}.get(name)
-    if _kernel_mode.get() in {"batch-vecio", "batch-prime-vecio"}:
+    if _kernel_mode.get() in {"batch-vecio", "batch-prime-vecio", "maca_rader_four_step"}:
         return {"VEC_IO": "1"}.get(name)
     if _kernel_mode.get() in {"batch-real-pack2", "batch-c2c-pack2"}:
         return {"INNER_PACK": "2"}.get(name)

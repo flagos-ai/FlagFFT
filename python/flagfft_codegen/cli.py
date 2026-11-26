@@ -245,6 +245,10 @@ def main() -> None:
             "maca_paired_real_boundary_w4",
             "maca_packed_c2r_row",
             "maca_real32_plane_dif",
+            "maca_rader_four_step_plain",
+            "maca_rader_four_step_gather",
+            "maca_rader_four_step_product",
+            "maca_rader_four_step_scatter",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",
@@ -832,10 +836,8 @@ def main() -> None:
             smem_size=args.smem_size,
             direction=args.direction,
             dtype=args.dtype,
-            prime_n=(args.rader_n if args.kernel in {"leaf_rader_full",
-                                                    "leaf_rader_prepare",
-                                                    "leaf_rader_finish"}
-                     else args.bluestein_n) or 0,
+            prime_n=(args.rader_n if args.kernel.startswith("leaf_rader_")
+                     or args.perm_form.startswith("maca_rader_four_step_") else args.bluestein_n) or 0,
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,

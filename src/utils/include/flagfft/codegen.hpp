@@ -728,6 +728,32 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
   mutable std::mutex layout_mutex;
 };
 
+struct CompiledRawMacaRaderFourStepNode final : CompiledRawNode {
+  struct Kernels {
+    std::shared_ptr<JitKernel> gather;
+    std::shared_ptr<JitKernel> product;
+    std::shared_ptr<JitKernel> inverse_row;
+    std::shared_ptr<JitKernel> scatter;
+    std::shared_ptr<JitKernel> spectrum_row;
+    std::shared_ptr<JitKernel> spectrum_col;
+  };
+
+  CompiledRawMacaRaderFourStepNode(int64_t n1, int64_t n2, int64_t batch,
+                                 Kernels kernels, std::vector<DeviceAllocation> row_tables,
+                                 std::vector<DeviceAllocation> col_tables, DeviceAllocation gather_indices,
+                                 DeviceAllocation scatter_indices,
+                                 DeviceAllocation convolution_input);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n1, n2;
+  Kernels kernels;
+  std::vector<DeviceAllocation> row_tables, col_tables;
+  DeviceAllocation gather_indices, scatter_indices;
+  DeviceAllocation stage1, stage2, spectrum, input_zero;
+};
+
 struct CompiledRawRaderNode final : CompiledRawNode {
   CompiledRawRaderNode(int64_t length,
                        int64_t conv_length,

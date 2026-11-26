@@ -1305,6 +1305,7 @@ def _emit_stage_block(
     perm_batched: bool = False,
     packed_smem_alias: bool = False,
     maca_packed_c2r_row: bool = False,
+    maca_rader_phase: str = "",
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2024,7 +2025,13 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
-                if maca_packed_c2r_row:
+                if maca_rader_phase == "gather":
+                    lines.append(f"{indent}src_idx{j} = tl.load(idx_ptr + src_idx{j}, lane_mask, 0)")
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"in_ptr + (four_step_batch * {prime_n} + src_idx{j}) * 2",
+                        "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io,
+                    ))
+                elif maca_packed_c2r_row:
                     half = four_step_n1 * four_step_n2
                     k = f"src_idx{j}"
                     base = f"four_step_batch.to(tl.int64) * {half + 1}"
@@ -2146,7 +2153,7 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
-                if fuse_twiddle_into_row:
+                if fuse_twiddle_into_row or maca_rader_phase:
                     if vectorized_complex_io:
                         lines.extend(
                             _emit_vectorized_complex_load(
@@ -2815,6 +2822,47 @@ def _emit_stage_block(
                     f"(four_step_batch_base + dst_idx{j} * outer_stride) * 2 + 1, "
                     f"i{j}, mask=lane_mask)"
                 )
+            elif maca_rader_phase in {"product", "scatter"}:
+                lines.append(f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner")
+                if maca_rader_phase == "product":
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"b_fft_ptr + dst_idx{j} * 2", "lane_mask",
+                        f"br{j}", f"bi{j}", dtype, vectorized_complex_io,
+                    ))
+                    lines.extend([
+                        f"{indent}rader_r{j} = r{j} * br{j} - i{j} * bi{j}",
+                        f"{indent}rader_i{j} = -(r{j} * bi{j} + i{j} * br{j})",
+                    ])
+                    batch_base = "four_step_batch_base"
+                    if j == 0:
+                        lines.extend([
+                            f"{indent}zero_offset = four_step_batch * 2 + tl.zeros_like(dst_idx0)",
+                            f"{indent}dc_offset = four_step_batch * {2 * prime_n} + tl.zeros_like(dst_idx0)",
+                            f"{indent}is_dc = lane_mask & (dst_idx0 == 0)",
+                            f"{indent}x0r = tl.load(user_ptr + dc_offset, mask=is_dc, other=0.0)",
+                            f"{indent}x0i = tl.load(user_ptr + dc_offset + 1, mask=is_dc, other=0.0)",
+                            f"{indent}tl.store(zero_ptr + zero_offset, x0r, mask=is_dc)",
+                            f"{indent}tl.store(zero_ptr + zero_offset + 1, x0i, mask=is_dc)",
+                            f"{indent}tl.store(dc_ptr + dc_offset, x0r + r0, mask=is_dc)",
+                            f"{indent}tl.store(dc_ptr + dc_offset + 1, x0i + i0, mask=is_dc)",
+                        ])
+                else:
+                    lines.extend([
+                        f"{indent}dst_idx{j} = tl.load(idx_ptr + dst_idx{j}, lane_mask, 0)",
+                        f"{indent}rader_r{j} = x0r + r{j} / {prime_n - 1}",
+                        f"{indent}rader_i{j} = x0i - i{j} / {prime_n - 1}",
+                    ])
+                    batch_base = f"four_step_batch * {prime_n}"
+                ptr = f"out_ptr + ({batch_base} + dst_idx{j}) * 2"
+                if vectorized_complex_io:
+                    lines.extend(_emit_vectorized_complex_store(
+                        indent, ptr, f"rader_r{j}", f"rader_i{j}", "lane_mask", dtype,
+                    ))
+                else:
+                    lines.extend([
+                        f"{indent}tl.store({ptr}, rader_r{j}, mask=lane_mask)",
+                        f"{indent}tl.store({ptr} + 1, rader_i{j}, mask=lane_mask)",
+                    ])
             else:
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -3548,6 +3596,19 @@ def _build_leaf_kernel_source_for_io(
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     kernel_perm_form = perm_form
+    rader_prefix = "maca_rader_four_step_"
+    maca_rader_phase = perm_form.removeprefix(rader_prefix) if perm_form.startswith(rader_prefix) else ""
+    if maca_rader_phase:
+        if not (
+            _maca_backend_active() and current_profile().device_arch == "102"
+            and plan.dtype == "complex64" and plan.direction == "forward"
+            and prime_n in {8191, 16381} and four_step_n1 * four_step_n2 == prime_n - 1
+            and io_mode in {"four_step_row", "four_step_col"}
+            and (maca_rader_phase == "plain"
+                 or (io_mode == "four_step_row" and maca_rader_phase == "gather")
+                 or (io_mode == "four_step_col" and maca_rader_phase in {"product", "scatter"}))
+        ):
+            raise ValueError("the Rader FourStep stages require C550 FP32 and a supported convolution length")
     maca_packed_c2r_row = perm_form == "maca_packed_c2r_row"
     if maca_packed_c2r_row and not (
         _maca_backend_active() and current_profile().device_arch == "102"
@@ -3822,7 +3883,7 @@ def _build_leaf_kernel_source_for_io(
         plan,
         io_mode=io_mode,
         batched_permutation=batched_permutation,
-        include_four_step_twiddle=(
+        include_four_step_twiddle=not maca_rader_phase and (
             io_mode
             in {
                 "four_step_row",
@@ -3842,6 +3903,12 @@ def _build_leaf_kernel_source_for_io(
             }
         ),
     )
+    if maca_rader_phase == "gather":
+        params.insert(0, "idx_ptr")
+    elif maca_rader_phase == "product":
+        params[:0] = ["b_fft_ptr", "user_ptr", "dc_ptr", "zero_ptr"]
+    elif maca_rader_phase == "scatter":
+        params[:0] = ["idx_ptr", "zero_ptr"]
     if maca_packed_c2r_row:
         params.insert(params.index("out_ptr") + 1, "packed_twiddle_ptr")
 
@@ -3904,6 +3971,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_smstore"
     if maca_packed_c2r_row:
         kernel_name = f"maca_packed_c2r_row_{kernel_name}"
+    if maca_rader_phase:
+        kernel_name = f"{kernel_perm_form}_{prime_n}_{kernel_name}"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
@@ -4136,6 +4205,11 @@ def _build_leaf_kernel_source_for_io(
             body.append(
                 f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
             )
+        if maca_rader_phase == "scatter":
+            body.extend([
+                "    x0 = zero_ptr + four_step_batch * 2",
+                "    x0r, x0i = tl.load(x0), tl.load(x0 + 1)",
+            ])
 
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
@@ -4203,6 +4277,7 @@ def _build_leaf_kernel_source_for_io(
                 bluestein_real_kind=bluestein_real_kind,
                 permuted_smem_store=permuted_smem_store,
                 maca_packed_c2r_row=maca_packed_c2r_row,
+                maca_rader_phase=maca_rader_phase,
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,

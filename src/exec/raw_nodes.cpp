@@ -1666,6 +1666,62 @@ flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input
   }
 }
 
+CompiledRawMacaRaderFourStepNode::CompiledRawMacaRaderFourStepNode(
+    int64_t n1, int64_t n2, int64_t batch, Kernels kernels,
+    std::vector<DeviceAllocation> row_tables, std::vector<DeviceAllocation> col_tables,
+    DeviceAllocation gather_indices, DeviceAllocation scatter_indices,
+    DeviceAllocation convolution_input)
+    : n1(n1), n2(n2), kernels(std::move(kernels)),
+      row_tables(std::move(row_tables)), col_tables(std::move(col_tables)),
+      gather_indices(std::move(gather_indices)), scatter_indices(std::move(scatter_indices)),
+      stage1(static_cast<std::size_t>(batch * n1 * n2 * 2 * sizeof(float))),
+      stage2(stage1.size()),
+      spectrum(static_cast<std::size_t>(n1 * n2 * 2 * sizeof(float))),
+      input_zero(static_cast<std::size_t>(batch * 2 * sizeof(float))) {
+  // Finish the convolution spectrum on a plan-owned stream before returning.
+  // All later execution streams can then consume it, including during capture.
+  adaptor::Stream stream;
+  auto& row = *this->kernels.spectrum_row;
+  auto row_args = raw_kernel_args({convolution_input.get(), stage1.get()}, this->row_tables, 1);
+  row.launch(stream.get(), row_args, ceil_div(n2, row.inner_pack), 1, 1);
+  auto& col = *this->kernels.spectrum_col;
+  auto col_args = raw_kernel_args({stage1.get(), spectrum.get()}, this->col_tables, 1);
+  col.launch(stream.get(), col_args, ceil_div(n1, col.inner_pack), 1, 1);
+  stream.sync();
+}
+
+flagfftResult CompiledRawMacaRaderFourStepNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                                       const RawExecutionContext &context) const {
+  try {
+    const auto batch = context.batch;
+    const auto launch = [&](JitKernel& kernel, int64_t transforms,
+                            std::initializer_list<adaptor::DevicePtr> ptrs,
+                            const std::vector<DeviceAllocation>& tables) {
+      kernel.launch(context.stream, raw_kernel_args(ptrs, tables, batch),
+                    ceil_div(transforms, kernel.inner_pack), batch, 1);
+    };
+    launch(*kernels.gather, n2, {gather_indices.get(), input, stage1.get()}, row_tables);
+    launch(*kernels.product, n1,
+           {spectrum.get(), input, output, input_zero.get(), stage1.get(), stage2.get()}, col_tables);
+    launch(*kernels.inverse_row, n1, {stage2.get(), stage1.get()}, col_tables);
+    launch(*kernels.scatter, n2, {scatter_indices.get(), input_zero.get(), stage1.get(), output}, row_tables);
+    return FLAGFFT_SUCCESS;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[flagfft] C550 FourStep Rader execute failed: %s\n", error.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
+}
+
+std::string CompiledRawMacaRaderFourStepNode::describe() const {
+  std::ostringstream oss;
+  oss << "CompiledRawMacaRaderFourStep(n1=" << n1 << ", n2=" << n2
+      << ", gather=" << kernels.gather->execution_description()
+      << ", product=" << kernels.product->execution_description()
+      << ", inverse_row=" << kernels.inverse_row->execution_description()
+      << ", scatter=" << kernels.scatter->execution_description() << ")";
+  return oss.str();
+}
+
 CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            int64_t conv_length,
                                            std::shared_ptr<CompiledRawNode> fft,
