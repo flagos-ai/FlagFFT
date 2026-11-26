@@ -223,6 +223,15 @@ struct CompiledRawMacaFp64FFT16Node final : CompiledRawNode {
   int direction;
 };
 
+struct CompiledRawMacaFp64FFT23Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp64FFT23Node(DeviceAllocation roots) : roots(std::move(roots)) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+};
+
 struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
   CompiledRawMacaFp32R2C2048Node(DeviceAllocation roots, bool use_residues)
       : roots(std::move(roots)), use_residues(use_residues) {}

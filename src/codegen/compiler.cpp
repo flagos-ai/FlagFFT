@@ -3669,6 +3669,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    if (direct->length == 23 && batch == request.batch && maca_fp64_fft23_native_enabled(request)) {
+      auto roots = make_maca_sdk_roots<double>(direct->length, request.direction == "inverse");
+      return std::make_shared<CompiledRawMacaFp64FFT23Node>(DeviceAllocation::from_doubles(roots));
+    }
+#endif
 #if defined(FLAGFFT_BACKEND_NPU)
     if (use_npu_2d_aiv1024 && direct->length == 1024) {
       return make_npu_aiv1024_child();

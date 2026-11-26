@@ -37,6 +37,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_185640_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16_FP64_BATCH_PACK16",
                              "FLAGFFT_MACA_16_FP64_NATIVE",
+                             "FLAGFFT_MACA_23_FP64_NATIVE",
                              "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
@@ -710,6 +711,24 @@ TEST_F(TailPolicy, C550Fp64Fft16NativeStaysWithinDenseRootRequests) {
   r.origin_rank = 1;
   r.input_dtype = r.output_dtype = "complex64";
   EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp64Fft23NativeStaysWithinSingleComplexRequests) {
+  auto r = request(23, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {23, 1};
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+  setenv("FLAGFFT_MACA_23_FP64_NATIVE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_fp64_fft23_native_enabled(r));
+  r.batch = 64;
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+  r.batch = 1;
+  r.real_transform = true;
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+  r.real_transform = false;
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
 }
 
 TEST_F(TailPolicy, C550Fp64_524288Pack4IsScopedToDenseSingleComplex) {
