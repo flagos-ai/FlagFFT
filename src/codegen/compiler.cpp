@@ -7314,7 +7314,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   if (maca_fused_real32) {
     const std::string complex_dtype = complex_dtype_for(request.input_dtype);
     const bool plane_dif = request.device_arch == "102" && complex_dtype == "complex128" &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_REAL32_PLANE_DIF", false);
+        maca_flag_or_default("FLAGFFT_MACA_3D_REAL32_PLANE_DIF", true);
     const int64_t twiddle_count = plane_dif ? 32 : 16;
     std::vector<double> tw_r_d(twiddle_count);
     std::vector<double> tw_i_d(twiddle_count);
