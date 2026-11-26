@@ -8514,7 +8514,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const bool maca_fused_row = request.device_type == "maca" && request.device_arch == "102" &&
         request.input_dtype == "complex128" && n0 == 46189 && n1 == 48 &&
         (batch == 1 || batch == 4) && row_leaf &&
-        maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_R2C_ROW", false);
+        maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_R2C_ROW", true);
     std::shared_ptr<CompiledRawNode> row_r2c;
     if (maca_fused_row) {
       auto key = KernelKey::leaf(triton_target_for_request(row_request), row_request.direction,
