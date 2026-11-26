@@ -182,8 +182,10 @@ inline bool maca_16384_packed_real_split_enabled(const FFTRequest& request) {
 }
 
 inline bool maca_524288_packed_real_split_enabled(const FFTRequest& request) {
+  const char* row_pack = std::getenv("FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4");
   return request.input_dtype == "complex64" &&
-      maca_batch_packed_real_option_enabled(request, 262144, "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
+      maca_batch_packed_real_option_enabled(request, 262144, "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
+                                           !row_pack || std::string(row_pack) != "1");
 }
 
 inline bool maca_185640_packed_real_split_enabled(const FFTRequest& request) {

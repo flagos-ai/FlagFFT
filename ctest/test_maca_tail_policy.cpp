@@ -449,7 +449,7 @@ TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {
   EXPECT_FALSE(flagfft::maca_16384_fp64_batch_split_enabled(r));
 }
 
-TEST_F(TailPolicy, C550BatchedPackedReal524288AlternativesAreScoped) {
+TEST_F(TailPolicy, C550BatchedPackedReal524288UsesMeasuredSplit) {
   using flagfft::KernelKind;
   auto r = request(262144, "complex64");
   r.device_arch = "102";
@@ -459,8 +459,11 @@ TEST_F(TailPolicy, C550BatchedPackedReal524288AlternativesAreScoped) {
   r.real_transform = r.packed_real_child = true;
   r.direction = "forward";
   r.real_transform_kind = "r2c";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-real524288-split");
+  setenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
 
+  unsetenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
   setenv("FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4", "1", 1);
   const auto mode = flagfft::maca_tail_codegen_root(r);
   EXPECT_EQ(mode, "batch-real524288-row4");
@@ -479,8 +482,13 @@ TEST_F(TailPolicy, C550BatchedPackedReal524288AlternativesAreScoped) {
   EXPECT_EQ(split_mode, "batch-real524288-split");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(split_mode, KernelKind::FourStepCol,
                                          "complex64", 1024, 256, 1024), split_mode);
+  unsetenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
+  unsetenv("FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4");
+  r.direction = "inverse";
+  r.real_transform_kind = "c2r";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-real524288-split");
   r.input_dtype = r.output_dtype = "complex128";
-  r.real_transform_kind = "d2z";
+  r.real_transform_kind = "z2d";
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
 }
 
