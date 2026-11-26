@@ -568,6 +568,58 @@ def _ix_boundary_pair_io(source: str, pairs: tuple, real: str, imag: str) -> str
     return source.replace(old,new,1)
 
 
+def _build_maca_paired_real_boundary(n: int, dtype: str, inverse: bool):
+    packed = n // 2
+    center = packed // 2
+    block = 256
+    mode = "c2r" if inverse else "r2c"
+    name = f"maca_{mode}_paired_boundary_{n}_{_dtype_suffix(dtype)}"
+    distance = "input_distance" if inverse else "output_distance"
+    source = dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, twiddle_ptr, out_ptr, {distance}, nbatch):
+            batch = tl.program_id(1).to(tl.int64)
+            if batch >= nbatch:
+                return
+            k = tl.program_id(0) * {block} + tl.arange(0, {block})
+            valid = k <= {center}
+            q = {packed} - k
+            pair = tl.arange(0, 2)[None, :]
+            if {inverse}:
+                input_base = batch * input_distance * 2
+                output_base = batch * {n}
+                twin = q
+            else:
+                input_base = batch * {n}
+                output_base = batch * output_distance * 2
+                twin = tl.where(k == 0, 0, q)
+            ar, ai = tl.split(tl.load(in_ptr + input_base + k[:, None] * 2 + pair, valid[:, None], 0.0))
+            br, bi = tl.split(tl.load(in_ptr + input_base + twin[:, None] * 2 + pair, valid[:, None], 0.0))
+            if {inverse}:
+                ai = tl.where(k == 0, 0.0, ai)
+                bi = tl.where(k == 0, 0.0, bi)
+            co, si = tl.split(tl.load(twiddle_ptr + k[:, None] * 2 + pair, valid[:, None], 0.0))
+            sr, sum_i = ar + br, ai - bi
+            dr, di = ar - br, ai + bi
+            # Both mirrored points share one input pair and one phase.
+            if {inverse}:
+                rot_r, rot_i = dr * co + di * si, di * co - dr * si
+                out_r, out_i = sr - rot_i, sum_i + rot_r
+                other_r, other_i = sr + rot_i, -sum_i + rot_r
+                mirror_valid = (k > 0) & (k < {center})
+            else:
+                rot_r, rot_i = dr * co - di * si, di * co + dr * si
+                out_r, out_i = (sr + rot_i) * 0.5, (sum_i - rot_r) * 0.5
+                other_r, other_i = (sr - rot_i) * 0.5, (-sum_i - rot_r) * 0.5
+                mirror_valid = k < {center}
+            tl.store(out_ptr + output_base + k[:, None] * 2 + pair, tl.join(out_r, out_i), valid[:, None])
+            tl.store(out_ptr + output_base + q[:, None] * 2 + pair,
+                     tl.join(other_r, other_i), mirror_valid[:, None])
+    """)
+    args = ["in_ptr", "twiddle_ptr", "out_ptr", distance, "nbatch"]
+    return name, source, args, block
+
+
 def _build_r2c_packed_postprocess_kernel_source(
     n: int, dtype: str
 ) -> tuple[str, list[str], list[str]]:

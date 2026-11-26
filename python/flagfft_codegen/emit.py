@@ -550,6 +550,7 @@ def _emit_r2c_pointwise_jit_kernel(
     dtype: str,
     out_dir: Path,
     target: str = "",
+    perm_form: str = "outer",
 ) -> dict[str, Any]:
     elements_per_program = 256
     if target.startswith("npu:") and dtype == "complex64" and n >= 512:
@@ -574,7 +575,20 @@ def _emit_r2c_pointwise_jit_kernel(
         if num_warps not in {4, 8, 16, 32}:
             raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
         elements_per_program *= rows_per_program
-    if kernel in {"r2c_pair_pack", "r2c_pair_unpack", "c2r_pair_pack", "c2r_pair_unpack"}:
+    maca_paired = perm_form in {"maca_paired_real_boundary_w2", "maca_paired_real_boundary_w4"}
+    if maca_paired:
+        if not (_maca_backend_active() and current_profile().device_arch == "102" and n == 663000
+                and dtype in {"complex64", "complex128"}
+                and kernel in {"r2c_packed_postprocess", "c2r_packed_preprocess"}):
+            raise ValueError("the paired real boundary requires a packed 663000-point C550 FFT")
+        from .kernels_real import _build_maca_paired_real_boundary
+
+        kernel_name, kernel_source, arg_names, elements_per_program = _build_maca_paired_real_boundary(
+            n, dtype, inverse=kernel == "c2r_packed_preprocess",
+        )
+        rows_per_block = 1
+        num_warps = int(perm_form[-1])
+    elif kernel in {"r2c_pair_pack", "r2c_pair_unpack", "c2r_pair_pack", "c2r_pair_unpack"}:
         kernel_name, kernel_source, arg_names, rows_per_block = _build_real_pair_kernel_source(n, dtype, kernel)
     elif kernel == "real_to_complex":
         (
@@ -623,6 +637,8 @@ def _emit_r2c_pointwise_jit_kernel(
 
     dtype_tag = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_{kernel}_n{n}_{dtype_tag}"
+    if maca_paired:
+        module_name += f"_paired_w{num_warps}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -641,8 +657,11 @@ def _emit_r2c_pointwise_jit_kernel(
             and os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "0") == "1"):
         grid_columns = n // 4 + 1 - int(_npu_packed_boundary_direct_midpoint(n, True, elements_per_program))
         elements_per_program *= _npu_packed_boundary_groups(n, True)
-    column_block=256
-    if kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
+    column_block = 256
+    if maca_paired:
+        grid_columns = n // 4 + 1
+        column_block = elements_per_program
+    elif kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
         from .kernels_real import packed_real_boundary_block, _packed_layout
         width=n//2 + (1 if kernel=="r2c_packed_postprocess" else 0)
         column_block,_=_packed_layout(width,packed_real_boundary_block(n,dtype))
@@ -662,7 +681,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "block": column_block,
         "grid_x_override": (
             (grid_columns + elements_per_program - 1) // elements_per_program
-            if kernel in {"real_to_complex", "r2c_half_pack",
+            if maca_paired or kernel in {"real_to_complex", "r2c_half_pack",
                           "compact_to_hermitian_full", "complex_to_real"}
             or (target.startswith("npu:") and dtype == "complex64" and n >= 512)
             else 0

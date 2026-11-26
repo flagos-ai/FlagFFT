@@ -859,7 +859,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   const bool maca_split_column = key.kind == KernelKind::FourStepCol &&
       key.perm_form.rfind("maca_split_column1768_", 0) == 0;
-  if (maca_split_column || key.kind == KernelKind::LeafPermutedStore ||
+  const bool maca_paired_boundary =
+      (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) &&
+      key.perm_form.rfind("maca_paired_real_boundary_", 0) == 0;
+  if (maca_split_column || maca_paired_boundary || key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::Leaf && key.perm_form.rfind("maca_fp64_", 0) == 0) ||

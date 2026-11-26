@@ -2708,6 +2708,31 @@ def test_npu_real_boundary_launch_extent(jit_source, tmp_path, monkeypatch, tile
 
 
 @pytest.mark.parametrize("kernel", ["r2c_packed_postprocess", "c2r_packed_preprocess"])
+@pytest.mark.parametrize("warps,dtype", [(2, "complex128"), (4, "complex64")])
+def test_maca_paired_boundary_launch_extent(jit_source, tmp_path, kernel, warps, dtype):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+            kernel=kernel, n=663000, dtype=dtype, out_dir=tmp_path,
+            target="maca:102", perm_form=f"maca_paired_real_boundary_w{warps}",
+        )
+        assert metadata["grid_x_override"] == 648
+        assert metadata["block"] == 256
+        assert metadata["rows_per_block"] == 1
+        assert metadata["num_warps"] == warps
+        assert metadata["arg_names"] == [
+            "in_ptr", "twiddle_ptr", "out_ptr",
+            "input_distance" if kernel == "c2r_packed_preprocess" else "output_distance", "nbatch",
+        ]
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize("kernel", ["r2c_packed_postprocess", "c2r_packed_preprocess"])
 @pytest.mark.parametrize("n,setting,groups", [(65534, None, 1), (65536, None, 2),
                                            (65536, "1", 1), (65536, "2", 2)])
 def test_npu_paired_boundary_group_grid(jit_source, tmp_path, monkeypatch, kernel, n, setting, groups):

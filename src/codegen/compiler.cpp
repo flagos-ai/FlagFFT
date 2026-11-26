@@ -3112,6 +3112,17 @@ namespace {
     return std::string(value) == "1";
   }
 
+  const char* maca_paired_real_boundary_form(const FFTRequest &request, int64_t n,
+                                             int64_t batch, bool inverse) {
+    if (request.device_type != "maca" || request.device_arch != "102" ||
+        request.origin_rank > 1 || request.raw_dim != 1 || n != 663000 ||
+        request.fft_length != n || request.requested_n != n || batch != request.batch ||
+        (batch != 1 && batch != 64) || request.requires_contiguous_copy ||
+        !maca_flag_or_default("FLAGFFT_MACA_663000_PAIRED_REAL", false)) return nullptr;
+    const bool use_two_warps = batch == 1 && (inverse || request.input_dtype == "complex128");
+    return use_two_warps ? "maca_paired_real_boundary_w2" : "maca_paired_real_boundary_w4";
+  }
+
   bool real_direct_dft_enabled(const PlanNodePtr &node,
                                const FFTRequest &request,
                                int64_t batch) {
@@ -5887,6 +5898,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::r2c_packed_postprocess(target, complex_dtype_for(request.input_dtype), n);
+  if (const char* form = maca_paired_real_boundary_form(request, n, batch, false)) {
+    key.perm_form = form;
+  }
   if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
       complex_dtype_for(request.input_dtype)=="complex64" && batch>=16 && n>=65536 &&
       flag_or_default("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY",false) &&
@@ -5900,6 +5914,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::c2r_packed_preprocess(target, complex_dtype_for(request.input_dtype), n);
+  if (const char* form = maca_paired_real_boundary_form(request, n, batch, true)) {
+    key.perm_form = form;
+  }
   // Record this batch-only schedule in the key so short and single-row
   // boundaries keep their existing launch and cannot share its cached binary.
   if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&

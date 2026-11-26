@@ -221,6 +221,8 @@ def main() -> None:
             "maca_prime_dif_c2r",
             "maca_split_column1768_prepare",
             "maca_split_column1768_finish",
+            "maca_paired_real_boundary_w2",
+            "maca_paired_real_boundary_w4",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",
@@ -747,6 +749,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
             target=args.target,
+            perm_form=args.perm_form,
         )
     elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:
