@@ -70,10 +70,11 @@ def test_paired_batch_real_boundary_keeps_distance_and_grid(tmp_path, monkeypatc
     assert metadata["grid_x_override"] == (length // 4 + 256) // 256
 
 
-def test_fused_c2r_row_binds_the_phase_after_output(tmp_path):
-    config = dict(kernel="four_step_row", length=64, factors=(4, 4, 4), lanes=16,
-                  num_warps=2, generic_radices=(), smem_size=64, direction="inverse",
-                  dtype="complex64", prime_n=0, four_step_n1=64, four_step_n2=128, out_dir=tmp_path)
+@pytest.mark.parametrize("n1,n2,factors", [(64, 128, (4, 4, 4)), (128, 64, (8, 4, 4))])
+def test_fused_c2r_row_binds_the_phase_after_output(tmp_path, n1, n2, factors):
+    config = dict(kernel="four_step_row", length=n1, factors=factors, lanes=16,
+                  num_warps=2, generic_radices=(), smem_size=n1, direction="inverse",
+                  dtype="complex64", prime_n=0, four_step_n1=n1, four_step_n2=n2, out_dir=tmp_path)
     base = emit_jit_kernel(**config)
     fused = emit_jit_kernel(**config, perm_form="maca_packed_c2r_row")
     assert fused["arg_names"] == [*base["arg_names"][:2], "packed_twiddle_ptr", *base["arg_names"][2:]]

@@ -5242,12 +5242,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{packed + 1, 1} &&
         maca_flag_or_default("FLAGFFT_MACA_16384_FUSED_PACKED_C2R", false)) {
       const auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan);
-      if (pair && pair->n1 == 64 && pair->n2 == 128) {
+      if (pair) {
         const auto row = std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan);
         const auto col = std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan);
-        if (row && col && row->factors == std::vector<int64_t>{4, 4, 4} &&
-            col->factors == std::vector<int64_t>{4, 4, 4, 2}) {
-          const auto& child = packed_child->request;
+        const auto& child = packed_child->request;
+        const bool original_split = row && col && pair->n1 == 64 && pair->n2 == 128 &&
+            row->factors == std::vector<int64_t>{4, 4, 4} && col->factors == std::vector<int64_t>{4, 4, 4, 2};
+        const bool alternate_split = row && col && pair->n1 == 128 && pair->n2 == 64 &&
+            maca_16384_packed_real_split_enabled(child) &&
+            row->factors == std::vector<int64_t>{8, 4, 4} && col->factors == std::vector<int64_t>{4, 4, 4};
+        if (original_split || alternate_split) {
+          if (alternate_split) configure_single_transform_policies(child);
           auto key = KernelKey::four_step_row(triton_target_for_request(child), child.direction,
               child.input_dtype, pair->n1, pair->n2, row->length, row->factors, row->lanes,
               row->num_warps, row->generic_radices, row->smem_size);

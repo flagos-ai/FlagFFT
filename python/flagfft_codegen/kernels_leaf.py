@@ -3552,9 +3552,9 @@ def _build_leaf_kernel_source_for_io(
     if maca_packed_c2r_row and not (
         _maca_backend_active() and current_profile().device_arch == "102"
         and io_mode == "four_step_row" and plan.dtype == "complex64" and plan.direction == "inverse"
-        and (four_step_n1, four_step_n2) == (64, 128)
+        and (four_step_n1, four_step_n2) in {(64, 128), (128, 64)}
     ):
-        raise ValueError("the packed C2R row requires inverse FP32 FourStep 64 × 128 on C550")
+        raise ValueError("the packed C2R row requires inverse FP32 FourStep 64 × 128 or 128 × 64 on C550")
     batched_permutation = perm_form.endswith("_batched")
     if batched_permutation:
         perm_form = perm_form.removesuffix("_batched")
