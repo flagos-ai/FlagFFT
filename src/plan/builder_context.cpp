@@ -527,7 +527,7 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                           return build_auto_node(length, heuristic);
                                         });
   }
-  if (n == 340200 && maca_340200_fp32_single_split_enabled(request)) {
+  if (n == 340200 && maca_340200_single_split_enabled(request)) {
     return std::make_shared<FourStepPlanNode>(n, 900, 378,
         make_leaf_plan(900, {10, 9, 10}), make_leaf_plan(378, {7, 6, 9}));
   }

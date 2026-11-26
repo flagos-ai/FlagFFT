@@ -265,19 +265,22 @@ def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n
     ("row", 900, (10, 9, 10), 10, 2),
     ("col", 378, (7, 6, 9), 3, 4),
 ])
-def test_340200_single_split_matches_the_screened_axes(tmp_path, monkeypatch, axis, length, factors, lanes, pack):
+@pytest.mark.parametrize("dtype,mode", [("complex64", "c2c340200-single"), ("complex128", "z2z340200-single")])
+def test_340200_single_split_matches_the_screened_axes(tmp_path, monkeypatch, axis, length, factors, lanes,
+                                                      pack, dtype, mode):
     kernel = f"four_step_{axis}"
     request = dict(kernel=kernel, length=length, factors=factors, lanes=lanes,
                    num_warps=2, generic_radices=(),
                    smem_size=1 << (length - 1).bit_length(), direction="inverse",
-                   dtype="complex64", prime_n=0, four_step_n1=900, four_step_n2=378)
-    set_maca_tail_mode("c2c340200-single")
+                   dtype=dtype, prime_n=0, four_step_n1=900, four_step_n2=378)
+    set_maca_tail_mode(mode)
     candidate = emit_jit_kernel(**request, out_dir=tmp_path / "scoped")
     assert (candidate["num_warps"], candidate["inner_pack"]) == (4, pack)
-    assert eligible_kernel_mode(kernel, length, "complex128", 900, 378) == "off"
-    assert eligible_kernel_mode(kernel, length, "complex64", 378, 900) == "off"
+    other_dtype = "complex64" if dtype == "complex128" else "complex128"
+    assert eligible_kernel_mode(kernel, length, other_dtype, 900, 378) == "off"
+    assert eligible_kernel_mode(kernel, length, dtype, 378, 900) == "off"
     other_length = 378 if axis == "row" else 900
-    assert eligible_kernel_mode(kernel, other_length, "complex64", 900, 378) == "off"
+    assert eligible_kernel_mode(kernel, other_length, dtype, 900, 378) == "off"
     set_maca_tail_mode("off")
     monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "packed")
     monkeypatch.setenv("FLAGFFT_MACA_MAX_WARPS", "8")

@@ -176,16 +176,19 @@ inline bool maca_340200_fp32_batch_900x378_enabled() {
   return setting && std::string_view(setting) == "1";
 }
 
-inline bool maca_340200_fp32_single_split_enabled(const FFTRequest& request) {
+inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
   constexpr int64_t length = 340200;
+  const bool fp64 = request.input_dtype == "complex128";
   if (request.device_arch != "102" || request.requested_n != length || request.fft_length != length ||
       request.real_transform || request.convolution_child || request.packed_real_child ||
-      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      (!fp64 && request.input_dtype != "complex64") || request.output_dtype != request.input_dtype ||
       request.input_layout != "contiguous" || request.requires_contiguous_copy ||
       request.input_strides != std::vector<int64_t>{length, 1}) return false;
-  const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
+  const char* setting = std::getenv(fp64 ? "FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT"
+                                         : "FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return (!setting || std::string_view(setting) == "1") && (!plan || !*plan) && maca_tail_policy_enabled(request);
+  return (setting ? std::string_view(setting) == "1" : !fp64) && (!plan || !*plan) &&
+      maca_tail_policy_enabled(request);
 }
 
 inline bool maca_batch_packed_real_option_enabled(const FFTRequest& request, int64_t length,
@@ -357,7 +360,9 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
-  if (maca_340200_fp32_single_split_enabled(request)) return "c2c340200-single";
+  if (maca_340200_single_split_enabled(request)) {
+    return request.input_dtype == "complex128" ? "z2z340200-single" : "c2c340200-single";
+  }
   if (maca_340200_batch_split_enabled(request)) {
     if (request.input_dtype == "complex128") return "z2z340200-split";
     return maca_340200_fp32_batch_900x378_enabled() ? "c2c340200-batch-900x378" : "c2c340200-split";
@@ -461,8 +466,8 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "batch-prime-vecio" &&
       (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
-  if ((root == "c2c340200-single" || root == "c2c340200-batch-900x378") &&
-      dtype == "complex64" && n1 == 900 && n2 == 378 &&
+  if (((dtype == "complex64" && (root == "c2c340200-single" || root == "c2c340200-batch-900x378")) ||
+       (dtype == "complex128" && root == "z2z340200-single")) && n1 == 900 && n2 == 378 &&
       ((kind == KernelKind::FourStepRow && length == n1) ||
        (kind == KernelKind::FourStepCol && length == n2))) return root;
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&

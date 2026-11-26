@@ -23,6 +23,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_PACKED_COLUMN_PFA",
                              "FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER",
                              "FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT",
+                             "FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT",
                              "FLAGFFT_MACA_340200_BATCH_SPLIT",
                              "FLAGFFT_MACA_340200_FP32_BATCH_900X378",
                              "FLAGFFT_MACA_340200_FP32_RADIX_ORDER",
@@ -287,7 +288,7 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   flagfft::PlanBuilder builder;
   setenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT", "0", 1);
   const auto baseline = flagfft::PlanKey::from_node(builder.build(340200, r)).repr();
-  EXPECT_FALSE(flagfft::maca_340200_fp32_single_split_enabled(r));
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(r));
 
   unsetenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
@@ -307,16 +308,25 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 900, 900, 378), "off");
   auto other = r;
   other.batch = 64;
-  EXPECT_FALSE(flagfft::maca_340200_fp32_single_split_enabled(other));
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
   other = r;
   other.origin_rank = 2;
-  EXPECT_FALSE(flagfft::maca_340200_fp32_single_split_enabled(other));
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
   other = r;
   other.input_dtype = other.output_dtype = "complex128";
-  EXPECT_FALSE(flagfft::maca_340200_fp32_single_split_enabled(other));
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "1", 1);
+  EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
+            flagfft::PlanKey::from_node(plan).repr());
+  const auto fp64_mode = flagfft::maca_tail_codegen_root(other);
+  EXPECT_EQ(fp64_mode, "z2z340200-single");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepRow, "complex128", 900, 900, 378),
+            fp64_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), "off");
   other = r;
   other.input_strides.front() += 1;
-  EXPECT_FALSE(flagfft::maca_340200_fp32_single_split_enabled(other));
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
   setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, r)).repr(), baseline);
 }
