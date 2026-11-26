@@ -7169,7 +7169,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       request.input_strides == std::vector<int64_t>{
           prime_input_distance, n1 * n2, n2, 1} &&
       (packed_real_setting == nullptr || std::string(packed_real_setting) != "0") &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_FUSED_AXES", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_FUSED_AXES", !inverse);
   if (maca_fused_prime_axes) {
     auto real_axis = compile_raw_leaf(*n2_leaf, n2_request,
         inverse ? MacaLeafLayout::RealPrimeInverse64 : MacaLeafLayout::RealPrimeForward64);
