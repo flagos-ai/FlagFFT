@@ -4509,7 +4509,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                        fused_leaf.num_warps,
                                                        fused_leaf.generic_radices,
                                                        fused_leaf.smem_size);
-      if (!real_kind.empty()) {
+      if (real_kind == "r2c" && ix_short_prime && batch == 64) {
+        fused_key.perm_form = "ix_bluestein_recurrence_r2c";
+      } else if (!real_kind.empty()) {
         fused_key.perm_form = real_kind;
       } else if (ix_short_prime && batch == 1 && request.real_transform_kind.empty() &&
                  request.origin_real_transform_kind.empty()) {

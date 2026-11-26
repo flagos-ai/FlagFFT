@@ -277,7 +277,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   const bool ix_bluestein_cta = key.perm_form == "ix_bluestein_cta";
-  const bool ix_bluestein_recurrence = key.perm_form == "ix_bluestein_recurrence";
+  const bool ix_bluestein_packed_r2c = key.perm_form == "ix_bluestein_recurrence_r2c";
+  const bool ix_bluestein_recurrence =
+      ix_bluestein_packed_r2c || key.perm_form == "ix_bluestein_recurrence";
+  const char *ix_bluestein_vector_io = ix_bluestein_packed_r2c
+      ? performance_env("FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO") : nullptr;
+  if (ix_bluestein_packed_r2c)
+    cache_key += ";ix-bluestein-vector-io=" + std::string(ix_bluestein_vector_io ? ix_bluestein_vector_io : "1");
   const bool ix_packed_real_tle = key.perm_form == "ix_r2c_tle" || key.perm_form == "ix_c2r_tle";
   const char *ix_packed_smem_shift = key.perm_form == "ix_c2r_tle" && key.length == 1024 ? "4" : "5";
   if (ix_bluestein_cta) {
@@ -622,8 +628,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_packed_c2r";
       break;
     case KernelKind::LeafBluestein:
-      kernel_kind = key.perm_form == "outer" || ix_bluestein_recurrence
-          ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
+      kernel_kind = ix_bluestein_packed_r2c ? "leaf_bluestein_r2c" :
+          (key.perm_form == "outer" || ix_bluestein_recurrence
+               ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form);
       break;
     case KernelKind::LeafRaderFull:
       kernel_kind = "leaf_rader_full";
@@ -819,6 +826,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (ix_bluestein_packed_r2c && !ix_bluestein_vector_io)
+    jit_command << "FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO=1 ";
   if (ix_bluestein_cta) {
     for (const auto &[name, value] : kIxBluesteinCtaDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";

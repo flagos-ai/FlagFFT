@@ -1740,6 +1740,12 @@ def _emit_stage_block(
     ) and vector_io_allowed and (
         not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io(dtype)
     )
+    ix_prime_vector_io = (
+        io_mode == "bluestein_full_leaf" and bluestein_real_kind == "r2c"
+        and prime_n == 1009 and _ix_backend_active() and dtype == "complex64"
+        and _packed_maca_fp32_complex_io(dtype)
+        and _maca_knob("BLUESTEIN_LEAF_VEC_IO", "0") == "1"
+    )
     ix_column_twiddle_recurrence = (
         _ix_backend_active() and dtype == "complex64"
         and stage == 0 and io_mode == "four_step_col" and not fuse_twiddle_into_row
@@ -2137,15 +2143,11 @@ def _emit_stage_block(
                         lines.append(f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2")
                         lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
                         lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
-                    lines.append(
-                        f"{indent}chirp_r{j} = tl.load(chirp_ptr + in{j} * 2, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}chirp_i{j} = tl.load(chirp_ptr + in{j} * 2 + 1, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"chirp_ptr + in{j} * 2", f"prime_mask{j}",
+                        f"chirp_r{j}", f"chirp_i{j}", dtype, ix_prime_vector_io,
+                    ))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})")
                 else:
                     intermediate_index = f"in{j}"
                     if smem_pack > 1:
@@ -2754,12 +2756,10 @@ def _emit_stage_block(
                 )
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
-                    lines.append(
-                        f"{indent}br{j} = tl.load(b_fft_ptr + out_idx{j} * 2, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}bi{j} = tl.load(b_fft_ptr + out_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"b_fft_ptr + out_idx{j} * 2", "lane_mask",
+                        f"br{j}", f"bi{j}", dtype, ix_prime_vector_io,
+                    ))
                     lines.append(
                         f"{indent}point_r{j}, point_i{j} = _cmul(r{j}, i{j}, br{j}, bi{j})"
                     )
@@ -2785,12 +2785,10 @@ def _emit_stage_block(
                     lines.append(f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {output_length})")
                     lines.append(f"{indent}scaled_r{j} = r{j} / {n}")
                     lines.append(f"{indent}scaled_i{j} = -i{j} / {n}")
-                    lines.append(
-                        f"{indent}chirp_r{j} = tl.load(chirp_ptr + out_idx{j} * 2, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}chirp_i{j} = tl.load(chirp_ptr + out_idx{j} * 2 +1, mask=prime_mask{j}, other={zero})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"chirp_ptr + out_idx{j} * 2", f"prime_mask{j}",
+                        f"chirp_r{j}", f"chirp_i{j}", dtype, ix_prime_vector_io,
+                    ))
                     lines.append(
                         f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                     )
@@ -2800,8 +2798,16 @@ def _emit_stage_block(
                     else:
                         output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
                         lines.append(f"{indent}dst_ptr{j} = out_ptr + (current_batch * {output_distance} + out_idx{j}) * 2")
-                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
-                        lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+                        if ix_prime_vector_io:
+                            lines.extend(_emit_vectorized_complex_store(
+                                indent, f"dst_ptr{j}", f"final_r{j}", f"final_i{j}",
+                                f"prime_mask{j}", dtype,
+                            ))
+                        else:
+                            lines += [
+                                f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})",
+                                f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})",
+                            ]
             elif io_mode == "rader_full_leaf":
                 if bluestein_pass == 0:
                     lines.append(
