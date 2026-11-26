@@ -758,11 +758,27 @@ def emit_jit_kernel(
         "maca_3d_prime_outer16": (16, 4, 64),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
-    maca_split_column = perm_form in {
+    maca_packed_column = perm_form in {
+        "maca_split_column1105_prepare_t16", "maca_split_column1105_finish_t16",
+        "maca_split_column1105_prepare_t32", "maca_split_column1105_finish_t32",
+    }
+    maca_split_column = maca_packed_column or perm_form in {
         "maca_split_column1768_prepare", "maca_split_column1768_finish",
         "maca_split_column1768_prepare_pfa", "maca_split_column1768_finish_pfa",
     }
-    if maca_split_column:
+    if maca_packed_column:
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and dtype in {"complex64", "complex128"}
+                and num_warps == 2 and (length, four_step_n1, four_step_n2) == (1105, 300, 1105)):
+            raise ValueError("the packed split column requires FourStep 300 × 1105 on C550")
+        from .kernels_maca_column import build_maca_split_column1105
+
+        prepare_column = perm_form.startswith("maca_split_column1105_prepare")
+        kernel_name, kernel_source, column_grid = build_maca_split_column1105(
+            direction, prepare_column, int(perm_form[-2:]), fp64=dtype == "complex128",
+        )
+        n1, n2 = four_step_n1, four_step_n2
+    elif maca_split_column:
         pfa_column = perm_form.endswith("_pfa")
         fp64_column = dtype == "complex128"
         allowed_warps = (2,) if fp64_column else ((4,) if pfa_column else (2, 4))
@@ -925,7 +941,8 @@ def emit_jit_kernel(
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     if maca_split_column:
-        radices = () if prepare_column else (8,)
+        last_radix = 5 if maca_packed_column else 8
+        radices = () if prepare_column else (last_radix,)
     elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(

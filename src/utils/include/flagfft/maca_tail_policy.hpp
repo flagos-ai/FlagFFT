@@ -72,12 +72,40 @@ inline bool maca_663000_real_enabled(const FFTRequest& request) {
       (batch_policy == nullptr || std::string(batch_policy) != "0");
 }
 
+inline bool maca_663000_packed_column_pfa_enabled(const FFTRequest& request) {
+  constexpr int64_t length = 331500;
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || !request.packed_real_child ||
+      !request.real_transform || request.convolution_child || request.requested_n != length ||
+      request.fft_length != length || request.input_dtype != request.output_dtype ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      (request.direction != "forward" && request.direction != "inverse") ||
+      request.input_strides != std::vector<int64_t>{length, 1}) return false;
+
+  const auto& kind = request.real_transform_kind;
+  const bool forward = request.direction == "forward";
+  if (request.input_dtype == "complex64") {
+    if ((request.batch != 1 && request.batch != 64) || kind != (forward ? "r2c" : "c2r")) return false;
+  } else if (request.input_dtype != "complex128" || request.batch != 64 ||
+             kind != (forward ? "d2z" : "z2d")) {
+    return false;
+  }
+  const char* setting = std::getenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA");
+  const char* real = std::getenv("FLAGFFT_MACA_663000_REAL");
+  const char* batch = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  return setting && std::string(setting) == "1" && (!real || std::string(real) == "1") &&
+      (!plan || !*plan) && (request.batch == 1 ? maca_tail_policy_enabled(request) :
+                           (!batch || std::string(batch) != "0"));
+}
+
 inline bool maca_663000_packed_c2r_split_enabled(const FFTRequest& request) {
   const char* setting = std::getenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT");
   return (!setting || std::string(setting) == "1") && request.packed_real_child &&
       request.batch == 64 && request.input_dtype == "complex64" &&
       request.real_transform_kind == "c2r" &&
       request.input_strides == std::vector<int64_t>{331500, 1} &&
+      !maca_663000_packed_column_pfa_enabled(request) &&
       maca_663000_real_enabled(request);
 }
 

@@ -4312,22 +4312,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const bool split_fp64 = request.input_dtype == "complex128" && (batch == 1 || batch == 64) &&
           maca_663000_c2c_scope(request) && maca_flag_or_default("FLAGFFT_MACA_663000_C2C", true) &&
           maca_flag_or_default("FLAGFFT_MACA_663000_FP64_SPLIT_COLUMN", true);
-      if (n1 == 375 && n2 == 1768 && (split_fp32 || split_fp64) && batch == request.batch &&
+      const bool packed_column = n1 == 300 && n2 == 1105 && maca_663000_packed_column_pfa_enabled(request);
+      const bool complex_column = n1 == 375 && n2 == 1768 && (split_fp32 || split_fp64);
+      if ((packed_column || complex_column) && batch == request.batch &&
           request.input_layout == "contiguous" &&
           !request.requires_contiguous_copy && !row_kernel->tle_fused_twiddle) {
         auto key = KernelKey::four_step_col(triton_target_for_request(request), request.direction,
             request.input_dtype, n1, n2, col_leaf->length, col_leaf->factors, col_leaf->lanes,
-            batch == 64 && !split_fp64 ? 4 : 2, col_leaf->generic_radices, col_leaf->smem_size);
+            batch == 64 && !split_fp64 && !packed_column ? 4 : 2, col_leaf->generic_radices, col_leaf->smem_size);
         const bool inverse = request.direction == "inverse";
         const char* batch_column = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
-        const bool column_pfa = split_fp64 ? batch == 1
-            : (batch == 64 && (!batch_column || std::string(batch_column) == "pfa"));
-        key.perm_form = column_pfa ? "maca_split_column1768_prepare_pfa" : "maca_split_column1768_prepare";
+        const bool column_pfa = packed_column || (split_fp64 ? batch == 1
+            : (batch == 64 && (!batch_column || std::string(batch_column) == "pfa")));
+        const std::string prefix = packed_column ? "maca_split_column1105_" : "maca_split_column1768_";
+        const char* suffix = packed_column ? (batch == 64 && request.input_dtype == "complex64" ? "_t16" : "_t32")
+                                           : (column_pfa ? "_pfa" : "");
+        key.perm_form = prefix + "prepare" + suffix;
         auto column_preparation = CompiledRawFourStepFusedNode::ColumnPreparation{
             compile_kernel(key),
             column_pfa ? std::vector<DeviceAllocation>{} : make_maca_dif_roots(n2, split_fp64, inverse),
             adaptor::Memory(workspace_bytes)};
-        key.perm_form = column_pfa ? "maca_split_column1768_finish_pfa" : "maca_split_column1768_finish";
+        key.perm_form = prefix + "finish" + suffix;
         auto column_tables = column_pfa
             ? std::vector<DeviceAllocation>{} : make_maca_dif_roots(n2 / 13, split_fp64, inverse);
         return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,

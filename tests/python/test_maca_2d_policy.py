@@ -251,6 +251,35 @@ def test_c550_1d_fp64_packed_dif_distances(tmp_path, direction):
         reset_profile(profile)
 
 
+@pytest.mark.parametrize("dtype,tile", (("complex64", 16), ("complex64", 32), ("complex128", 32)))
+@pytest.mark.parametrize("stage", ("prepare", "finish"))
+def test_c550_packed_split_column_launch_abi(tmp_path, dtype, tile, stage):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        form = f"maca_split_column1105_{stage}_t{tile}"
+        metadata = emit_jit_kernel(
+            kernel="four_step_col", length=1105, factors=(17, 13, 5), lanes=1, num_warps=2,
+            generic_radices=(), smem_size=2048, direction="inverse", dtype=dtype, prime_n=0,
+            four_step_n1=300, four_step_n2=1105, perm_form=form, out_dir=tmp_path,
+        )
+        precision = "_fp64" if dtype == "complex128" else ""
+        assert metadata["kernel_name"] == f"{form}{precision}_inverse"
+        assert metadata["num_warps"] == 2
+        grid = (399 if tile == 16 else 200) if stage == "prepare" else (244 if tile == 16 else 122)
+        assert metadata["grid_x_override"] == grid
+        args = ["in_ptr", "out_ptr", "nbatch"]
+        if stage == "prepare":
+            args.insert(1, "twiddle_ptr")
+        assert metadata["arg_names"] == args
+    finally:
+        reset_profile(profile)
+
+
 @pytest.mark.parametrize("direction", ("forward", "inverse"))
 @pytest.mark.parametrize("dtype,warps,pfa", (
     ("complex64", 2, False), ("complex64", 4, False), ("complex64", 4, True),

@@ -1,7 +1,7 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Split the C550 FourStep column for 663000 = 375 × 1768."""
+"""Split C550 FourStep columns for the complex and packed-real 663000 plans."""
 
 from textwrap import dedent
 
@@ -146,3 +146,100 @@ def build_maca_split_column1768(
                 "    tl.store(out_ptr + base + dst[:, :, None] + pair, tl.join(r, i), valid[None, :, None])",
             )
     return name, helpers + "\n".join(lines) + "\n", (work + tile - 1) // tile
+
+
+def build_maca_split_column1105(
+    direction: str, prepare: bool, finish_tile: int, *, fp64: bool,
+) -> tuple[str, str, int]:
+    """Use Good–Thomas for 1105 = 13 × 17 × 5 and return natural frequencies."""
+    phase = "prepare" if prepare else "finish"
+    precision = "_fp64" if fp64 else ""
+    name = f"maca_split_column1105_{phase}_t{finish_tile}{precision}_{direction}"
+    tile = 4 * finish_tile if prepare else finish_tile
+    columns, radix13, radix17, radix5 = 300, 13, 17, 5
+    inner = radix17 * radix5
+    length = radix13 * inner
+    work = columns * (inner if prepare else radix13)
+    args = "in_ptr, twiddle_ptr, out_ptr, nbatch" if prepare else "in_ptr, out_ptr, nbatch"
+    body = [
+        "@triton.jit",
+        f"def {name}({args}):",
+        "    batch = tl.program_id(1).to(tl.int64)",
+        "    if batch >= nbatch:",
+        "        return",
+        f"    lane = tl.program_id(0) * {tile} + tl.arange(0, {tile})",
+        f"    valid = lane < {work}",
+        f"    column = lane % {columns}",
+        f"    base = batch * {2 * length * columns}",
+    ]
+    if prepare:
+        body += [f"    b = lane // {columns}", "    pair = tl.arange(0, 2)[None, :]"]
+        for j in range(radix13):
+            body += [
+                f"    row = (b * {radix13} + {inner * j}) % {length}",
+                f"    src = (row * {columns} + column)[:, None] * 2 + pair",
+                "    r, i = tl.split(tl.load(in_ptr + base + src, valid[:, None], 0.0))",
+                "    co, si = tl.split(tl.load(twiddle_ptr + src, valid[:, None], 0.0))",
+                f"    r{j}, i{j} = _cmul(r, i, co, si)",
+            ]
+        body += emit_prime_codelet("    ", radix13, direction)
+        for k in range(radix13):
+            body += [
+                f"    dst = (b * {radix13 * columns} + column + {k * columns})[:, None] * 2 + pair",
+                f"    tl.store(out_ptr + base + dst, tl.join(r{k}, i{k}), valid[:, None])",
+            ]
+        return name, "\n".join(body) + "\n", (work + tile - 1) // tile
+
+    conjugate = -1 if direction == "inverse" else 1
+    last_radix = dedent(f"""
+        @triton.jit
+        def _split5(value):
+            e, o = tl.split(tl.reshape(tl.permute(value, (1, 0)), ({tile}, 2, 2, 2)))
+            e0, e1 = tl.split(e)
+            o0, o1 = tl.split(o)
+            x0, x4 = tl.split(e0)
+            x2, _ = tl.split(e1)
+            x1, _ = tl.split(o0)
+            x3, _ = tl.split(o1)
+            return x0, x1, x2, x3, x4
+
+        @triton.jit
+        def _join5(a, b, c, d, e):
+            even = tl.join(tl.join(a, e), tl.join(c, a))
+            odd = tl.join(tl.join(b, a), tl.join(d, a))
+            return tl.permute(tl.reshape(tl.join(even, odd), ({tile}, 8)), (1, 0))
+
+        @triton.jit
+        def _last5(real, imag):
+            r0, r1, r2, r3, r4 = _split5(real)
+            i0, i1, i2, i3, i4 = _split5(imag)
+            a, b, c, d, e, u, v, w, x, y = _fwd_rad5_b1(
+                r0, r1, r2, r3, r4, i0 * {conjugate}, i1 * {conjugate},
+                i2 * {conjugate}, i3 * {conjugate}, i4 * {conjugate})
+            return _join5(a, b, c, d, e), _join5(u, v, w, x, y) * {conjugate}
+    """)
+    weight13, weight17, weight5 = (
+        (length // r) * pow(length // r, -1, r) for r in (radix13, radix17, radix5)
+    )
+    body += [
+        "    b = tl.arange(0, 8)",
+        f"    valid_rows = (b[:, None] < {radix5}) & valid[None, :]",
+        "    pair = tl.arange(0, 2)[None, None, :]",
+        f"    k13 = lane // {columns}",
+        f"    output_base = k13[None, :] * {weight13} + b[:, None] * {weight5}",
+    ]
+    for j in range(radix17):
+        body += [
+            f"    row = (b * {radix17} + {j * radix5}) % {inner}",
+            f"    src = (row[:, None] * {work} + lane[None, :])[:, :, None] * 2 + pair",
+            f"    r{j}, i{j} = tl.split(tl.load(in_ptr + base + src, valid_rows[:, :, None], 0.0))",
+        ]
+    body += emit_prime_codelet("    ", radix17, direction)
+    for k in range(radix17):
+        body += [
+            f"    r, i = _last5(r{k}, i{k})",
+            f"    freq = (output_base + {k * weight17}) % {length}",
+            f"    dst = (freq * {columns} + column[None, :])[:, :, None] * 2 + pair",
+            "    tl.store(out_ptr + base + dst, tl.join(r, i), valid_rows[:, :, None])",
+        ]
+    return name, last_radix + "\n".join(body) + "\n", (work + tile - 1) // tile
