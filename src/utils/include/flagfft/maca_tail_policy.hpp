@@ -151,6 +151,18 @@ inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
   return maca_batch_c2c_option_enabled(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT", true);
 }
 
+inline bool maca_340200_fp32_single_split_enabled(const FFTRequest& request) {
+  constexpr int64_t length = 340200;
+  if (request.device_arch != "102" || request.requested_n != length || request.fft_length != length ||
+      request.real_transform || request.convolution_child || request.packed_real_child ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.input_strides != std::vector<int64_t>{length, 1}) return false;
+  const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  return setting && std::string(setting) == "1" && (!plan || !*plan) && maca_tail_policy_enabled(request);
+}
+
 inline bool maca_batch_packed_real_option_enabled(const FFTRequest& request, int64_t length,
                                                   const char* option, bool default_value = false) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
@@ -306,6 +318,7 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
+  if (maca_340200_fp32_single_split_enabled(request)) return "c2c340200-single";
   if (maca_340200_batch_split_enabled(request)) {
     return request.input_dtype == "complex128" ? "z2z340200-split" : "c2c340200-split";
   }
@@ -407,6 +420,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "batch-prime-vecio" &&
       (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
+  if (root == "c2c340200-single" && dtype == "complex64" && n1 == 900 && n2 == 378 &&
+      ((kind == KernelKind::FourStepRow && length == n1) ||
+       (kind == KernelKind::FourStepCol && length == n2))) return root;
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
       (length == n1 || length == n2)) {
     if (dtype == "complex64" &&

@@ -243,6 +243,30 @@ def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n
     assert resource_default("VEC_IO") is None
 
 
+@pytest.mark.parametrize("axis,length,factors,lanes,pack", [
+    ("row", 900, (10, 9, 10), 10, 2),
+    ("col", 378, (7, 6, 9), 3, 4),
+])
+def test_340200_single_split_matches_the_screened_axes(tmp_path, monkeypatch, axis, length, factors, lanes, pack):
+    kernel = f"four_step_{axis}"
+    request = dict(kernel=kernel, length=length, factors=factors, lanes=lanes,
+                   num_warps=2, generic_radices=(),
+                   smem_size=1 << (length - 1).bit_length(), direction="inverse",
+                   dtype="complex64", prime_n=0, four_step_n1=900, four_step_n2=378)
+    set_maca_tail_mode("c2c340200-single")
+    candidate = emit_jit_kernel(**request, out_dir=tmp_path / "scoped")
+    assert (candidate["num_warps"], candidate["inner_pack"]) == (4, pack)
+    assert eligible_kernel_mode(kernel, length, "complex128", 900, 378) == "off"
+    assert eligible_kernel_mode(kernel, length, "complex64", 378, 900) == "off"
+    other_length = 378 if axis == "row" else 900
+    assert eligible_kernel_mode(kernel, other_length, "complex64", 900, 378) == "off"
+    set_maca_tail_mode("off")
+    monkeypatch.setenv("FLAGFFT_MACA_VEC_IO", "packed")
+    monkeypatch.setenv("FLAGFFT_MACA_MAX_WARPS", "8")
+    manual = emit_jit_kernel(**request, out_dir=tmp_path / "manual")
+    assert Path(candidate["module_path"]).read_text() == Path(manual["module_path"]).read_text()
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_16384_packed_real_resources_match_the_measured_axes(tmp_path, dtype):
     set_maca_tail_mode("batch-real16384-split")
