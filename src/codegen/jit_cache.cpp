@@ -693,13 +693,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "four_step_c2r_col";
       break;
     case KernelKind::BluesteinPrepare:
-      kernel_kind = "bluestein_prepare";
+      kernel_kind = key.perm_form == "r2c" ? "bluestein_prepare_r2c" : "bluestein_prepare";
       break;
     case KernelKind::BluesteinPointwise:
       kernel_kind = "bluestein_pointwise";
       break;
     case KernelKind::BluesteinFinalize:
-      kernel_kind = "bluestein_finalize";
+      kernel_kind = key.perm_form == "r2c" ? "bluestein_finalize_r2c" : "bluestein_finalize";
       break;
     case KernelKind::RaderPrepare:
       kernel_kind = "rader_prepare";

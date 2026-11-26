@@ -98,6 +98,25 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
     zero = _zero_other(dtype)
     npu = current_profile().backend == "npu" and dtype == "complex64"
     div_cast = "tl.cast(m, tl.float64)" if dtype == "complex128" else "m"
+    if kind == "bluestein_prepare_r2c":
+        return (
+            "_bluestein_prepare_r2c_kernel",
+            dedent(
+                """
+                @triton.jit
+                def _bluestein_prepare_r2c_kernel(in_ptr, chirp_ptr, out_ptr, n, m, nbatch):
+                    batch = tl.program_id(1)
+                    k = tl.program_id(0) * 256 + tl.arange(0, 256)
+                    pair = tl.arange(0, 2)
+                    x = tl.load(in_ptr + batch * n + k, k < n, other=0.0)
+                    coeff = tl.load(chirp_ptr + 2 * k[:, None] + pair[None, :],
+                                    (k < n)[:, None], other=0.0)
+                    dst = out_ptr + 2 * (batch * m + k[:, None]) + pair[None, :]
+                    tl.store(dst, x[:, None] * coeff, (k < m)[:, None])
+                """
+            ),
+            ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
+        )
     if kind == "bluestein_prepare":
         if npu:
             return (
@@ -225,6 +244,30 @@ def _bluestein_kernel_source(kind: str, dtype: str) -> tuple[str, str, list[str]
                 """
             ),
             ["a_ptr", "b_ptr", "out_ptr", "m", "nbatch"],
+        )
+    if kind == "bluestein_finalize_r2c":
+        return (
+            "_bluestein_finalize_r2c_kernel",
+            dedent(
+                f"""
+                @triton.jit
+                def _bluestein_finalize_r2c_kernel(in_ptr, chirp_ptr, out_ptr, n, m, nbatch):
+                    batch = tl.program_id(1)
+                    k = tl.program_id(0) * 256 + tl.arange(0, 256)
+                    half = n // 2 + 1
+                    pair = tl.arange(0, 2)
+                    mask = (k < half)[:, None]
+                    src = in_ptr + 2 * (batch * m + k[:, None]) + pair[None, :]
+                    xr, xi = tl.split(tl.load(src, mask, other=0.0))
+                    coeff = chirp_ptr + 2 * k[:, None] + pair[None, :]
+                    cr, ci = tl.split(tl.load(coeff, mask, other=0.0))
+                    yr, yi = _cmul(xr / {div_cast}, -xi / {div_cast}, cr, ci)
+                    yi = tl.where((k == 0) | ((n % 2 == 0) & (k == half - 1)), 0.0, yi)
+                    dst = out_ptr + 2 * (batch * half + k[:, None]) + pair[None, :]
+                    tl.store(dst, tl.join(yr, yi), mask)
+                """
+            ),
+            ["in_ptr", "chirp_ptr", "out_ptr", "n", "m", "nbatch"],
         )
     if kind == "bluestein_finalize":
         if npu:

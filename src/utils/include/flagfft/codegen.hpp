@@ -493,7 +493,8 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
                            DeviceAllocation a_buf,
                            DeviceAllocation work_buf,
                            DeviceAllocation b_fft_buf,
-                           int64_t batch_chunk);
+                           int64_t batch_chunk,
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -514,6 +515,9 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
   mutable DeviceAllocation b_fft_buf;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawBluesteinLeafNode final : CompiledRawNode {
@@ -1978,13 +1982,15 @@ class TritonCompiler {
                                                               int64_t n2);
   std::shared_ptr<JitKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                               int64_t n,
-                                                              int64_t m);
+                                                              int64_t m,
+                                                              bool real_boundaries = false);
   std::shared_ptr<JitKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                 int64_t n,
                                                                 int64_t m);
   std::shared_ptr<JitKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                int64_t n,
-                                                               int64_t m);
+                                                               int64_t m,
+                                                               bool real_boundaries = false);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_kernel(const LeafPlanNode &leaf,
                                                            const FFTRequest &request,
                                                            int64_t n);

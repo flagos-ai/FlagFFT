@@ -1186,7 +1186,8 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
                                                    DeviceAllocation a_buf,
                                                    DeviceAllocation work_buf,
                                                    DeviceAllocation b_fft_buf,
-                                                   int64_t batch_chunk)
+                                                   int64_t batch_chunk,
+                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       batch_chunk(batch_chunk),
@@ -1198,7 +1199,8 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
       b_time(std::move(b_time)),
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawBluesteinNode::describe() const {
@@ -1228,15 +1230,33 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    ensure_b_fft(context);
     const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
-    const int64_t stride_bytes = length * element_bytes;
+    const bool real_boundaries = static_cast<bool>(make_layout_fallback);
+    const int64_t output_length = real_boundaries ? length / 2 + 1 : length;
+    const int64_t input_stride_bytes = length * (real_boundaries ? element_bytes / 2 : element_bytes);
+    const int64_t output_stride_bytes = output_length * element_bytes;
+    if (real_boundaries) {
+      const auto input_bytes = static_cast<std::uintptr_t>(input_stride_bytes * context.batch);
+      const auto output_bytes = static_cast<std::uintptr_t>(output_stride_bytes * context.batch);
+      const bool overlap = input <= output ? output - input < input_bytes : input - output < output_bytes;
+      if (overlap || (context.input_distance > 0 && context.input_distance != length) ||
+          (context.output_distance > 0 && context.output_distance != output_length)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback->execute(input, output, context);
+      }
+    }
+    ensure_b_fft(context);
     const int64_t boundary_block = context.request.device_type == "npu" &&
                                    context.request.input_dtype == "complex64" ? 512 : 256;
     for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
       const int64_t chunk = std::min(batch_chunk, context.batch - batch_offset);
-      const int64_t input_offset = batch_offset * stride_bytes;
-      const int64_t output_offset = batch_offset * stride_bytes;
+      const int64_t input_offset = batch_offset * input_stride_bytes;
+      const int64_t output_offset = batch_offset * output_stride_bytes;
 
       std::vector<JitKernelArg> prepare_args = {
           JitKernelArg::device(input + input_offset),
@@ -1276,7 +1296,7 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
           JitKernelArg::i64(conv_length),
           JitKernelArg::i32(static_cast<int32_t>(chunk)),
       };
-      finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, boundary_block), chunk, 1);
+      finalize_kernel->launch(context.stream, finalize_args, ceil_div(output_length, boundary_block), chunk, 1);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {

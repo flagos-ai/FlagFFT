@@ -2755,10 +2755,17 @@ namespace {
         request.raw_dim != 1 || request.origin_rank > 1 ||
         request.packed_real_child || request.fft_length != request.requested_n ||
         request.requested_n != bluestein->length ||
-        (bluestein->length != 1009 && bluestein->length != 8191 && bluestein->length != 16381) ||
         request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
         (request.real_transform_kind != "r2c" && request.real_transform_kind != "c2r") ||
         request.input_strides.empty() || request.input_strides.back() != 1) {
+      return false;
+    }
+    if (bluestein->length == 524287) {
+      return batch == 64 && batch == request.batch && request.real_transform_kind == "r2c" &&
+             request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+             flag_or_default("FLAGFFT_IX_LARGE_PRIME_R2C_IO", false);
+    }
+    if (bluestein->length != 1009 && bluestein->length != 8191 && bluestein->length != 16381) {
       return false;
     }
     if (batch != 64) {
@@ -4592,19 +4599,22 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
     DeviceAllocation a_buf =
         adaptor::Memory(static_cast<std::size_t>(chunk_batch * bluestein->conv_length * element_bytes));
+    const bool real_boundaries = real_kind == "r2c" && bluestein->length == 524287;
     return std::make_shared<CompiledRawBluesteinNode>(
         bluestein->length,
         bluestein->conv_length,
         std::move(fft),
-        compile_bluestein_prepare_kernel(request, bluestein->length, bluestein->conv_length),
+        compile_bluestein_prepare_kernel(request, bluestein->length, bluestein->conv_length, real_boundaries),
         compile_bluestein_pointwise_kernel(request, bluestein->length, bluestein->conv_length),
-        compile_bluestein_finalize_kernel(request, bluestein->length, bluestein->conv_length),
+        compile_bluestein_finalize_kernel(request, bluestein->length, bluestein->conv_length, real_boundaries),
         std::move(chirp),
         std::move(b_time),
         std::move(a_buf),
         std::move(work_buf),
         std::move(b_fft_buf),
-        chunk_batch);
+        chunk_batch,
+        real_boundaries ? make_real_layout_fallback
+                        : std::function<std::shared_ptr<CompiledRawNode>()>{});
   }
   if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
     FFTRequest child_request = forward_child_request(request);
@@ -5735,10 +5745,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_c2r_col_kernel(cons
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                                             int64_t n,
-                                                                            int64_t m) {
+                                                                            int64_t m,
+                                                                            bool real_boundaries) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_prepare(target, request.input_dtype, n, m);
+  if (real_boundaries) key.perm_form = "r2c";
   return compile_kernel(key);
 }
 
@@ -5753,10 +5765,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_pointwise_kernel(co
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                              int64_t n,
-                                                                             int64_t m) {
+                                                                             int64_t m,
+                                                                             bool real_boundaries) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::bluestein_finalize(target, request.input_dtype, n, m);
+  if (real_boundaries) key.perm_form = "r2c";
   return compile_kernel(key);
 }
 
