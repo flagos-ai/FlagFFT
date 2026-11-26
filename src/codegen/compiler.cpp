@@ -4739,9 +4739,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     FFTRequest child_request = forward_child_request(request);
     child_request.convolution_child = true;
     const int64_t prime = rader->prime;
-    if ((prime == 8191 || prime == 16381) && request.input_dtype == "complex64" &&
-        batch == request.batch &&
-        (maca_batch_c2c_option_enabled(request, prime, "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", false) ||
+    if (batch == request.batch &&
+        (maca_batch_prime_c2c_four_step_enabled(request, prime) ||
          maca_batch_prime_real_four_step_enabled(request, prime))) {
       // The surrounding real node expands and compacts the public real
       // boundary. This convolution still consumes dense complex buffers.

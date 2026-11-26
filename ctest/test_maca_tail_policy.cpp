@@ -42,6 +42,8 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_16_D2Z_NATIVE",
                              "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
+                             "FLAGFFT_MACA_BATCH_RADER_SPLIT",
+                             "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP",
                              "FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
@@ -690,6 +692,41 @@ TEST_F(TailPolicy, C550ShortBatchedComplexOptionsStayLocal) {
   EXPECT_EQ(leaf->factors, (std::vector<int64_t>{7, 6, 5}));
   r.real_transform = true;
   EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp32PrimeRaderDefaultsToDenseBatchedComplexRequests) {
+  for (const int64_t n : {8191, 16381}) {
+    auto r = request(n, "complex64");
+    r.device_arch = "102";
+    r.batch = 64;
+    r.input_layout = "contiguous";
+    r.input_strides = {n, 1};
+    EXPECT_TRUE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", "0", 1);
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP");
+    setenv("FLAGFFT_MACA_BATCH_RADER_SPLIT", "0", 1);
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    unsetenv("FLAGFFT_MACA_BATCH_RADER_SPLIT");
+    setenv("FLAGFFT_MACA_RADER_CODELET", "1", 1);
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", "1", 1);
+    EXPECT_TRUE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    unsetenv("FLAGFFT_MACA_RADER_CODELET");
+    unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP");
+
+    r.input_strides = {n + 1, 1};
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    r.input_strides = {n, 1};
+    r.batch = 1;
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    r.batch = 64;
+    r.origin_rank = 2;
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    r.origin_rank = 1;
+    r.input_dtype = r.output_dtype = "complex128";
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+  }
 }
 
 TEST_F(TailPolicy, C550Fp32PrimeRaderAllowsPublicRealBoundaries) {

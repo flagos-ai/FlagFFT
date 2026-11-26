@@ -153,6 +153,14 @@ inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
   return maca_batch_c2c_option_enabled(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT", true);
 }
 
+inline bool maca_batch_prime_c2c_four_step_enabled(const FFTRequest& request, int64_t length) {
+  if ((length != 8191 && length != 16381) || request.input_dtype != "complex64") return false;
+  const bool use_default = !std::getenv("FLAGFFT_MACA_BATCH_RADER_SPLIT") &&
+                           !std::getenv("FLAGFFT_MACA_RADER_CODELET");
+  return maca_batch_c2c_option_enabled(request, length,
+                                       "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", use_default);
+}
+
 inline bool maca_batch_prime_real_four_step_enabled(const FFTRequest& request, int64_t length) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
