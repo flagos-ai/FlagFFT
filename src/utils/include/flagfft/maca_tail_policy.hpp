@@ -178,7 +178,7 @@ inline bool maca_340200_packed_real_split_enabled(const FFTRequest& request) {
 }
 
 inline bool maca_16384_packed_real_split_enabled(const FFTRequest& request) {
-  return maca_batch_packed_real_option_enabled(request, 8192, "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT");
+  return maca_batch_packed_real_option_enabled(request, 8192, "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT", true);
 }
 
 inline bool maca_524288_packed_real_split_enabled(const FFTRequest& request) {
