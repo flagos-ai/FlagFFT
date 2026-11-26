@@ -160,10 +160,14 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
     from flagfft_codegen.target import set_codegen_target
 
     for name in ("FLAGFFT_MACA_TRANSPOSE3D", "FLAGFFT_MACA_TRANSPOSE3D_FP64",
-                 "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
+                 "FLAGFFT_MACA_TRANSPOSE3D_WARPS", "FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL",
                  "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP"):
         monkeypatch.delenv(name, raising=False)
     set_codegen_target("maca:102:64")
+    profile = set_profile(BackendProfile.from_device(
+        {"backend": "maca", "device_arch": "102", "warp_size": 64, "max_threads_per_block": 1024},
+        "legacy",
+    ))
     try:
         fp32 = emit._emit_tiled_transpose3d_jit_kernel(
             n0=256, n1=256, n2=256, order="021", dtype="complex64", out_dir=tmp_path
@@ -171,10 +175,9 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         fp64 = emit._emit_tiled_transpose3d_jit_kernel(
             n0=256, n1=256, n2=256, order="021", dtype="complex128", out_dir=tmp_path
         )
-        assert fp32["kernel_name"].endswith(
-            "_t16_tile_pair_sliceg2seq_rowg2seq_rmajor"
-        )
-        assert fp32["num_warps"] == 8
+        assert fp32["kernel_name"].endswith("_warp8_g4")
+        assert fp32["num_warps"] == 4
+        assert fp32["grid_x_override"] == 256 ** 3 // (4 * 64)
         assert fp64["kernel_name"].endswith("_t16_tile_vec")
         assert fp64["num_warps"] == 4
 
@@ -189,6 +192,13 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         )
         assert long_fp64["kernel_name"].endswith("_t16_tile_vec")
 
+        with monkeypatch.context() as explicit:
+            explicit.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8")
+            explicit_warps = emit._emit_tiled_transpose3d_jit_kernel(
+                n0=256, n1=256, n2=256, order="021", dtype="complex64", out_dir=tmp_path
+            )
+            assert explicit_warps["kernel_name"].endswith("_t16_tile_pair_sliceg2seq_rowg2seq_rmajor")
+
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16")
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP", "1")
         rollback = emit._emit_tiled_transpose3d_jit_kernel(
@@ -200,6 +210,7 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         )
         assert long_rollback["kernel_name"].endswith("_t16_tile_pair_rmajor")
     finally:
+        reset_profile(profile)
         set_codegen_target("")
 
 
@@ -220,6 +231,7 @@ def test_maca_warp_transpose_uses_scoped_tile_groups(tmp_path, monkeypatch):
         )
 
     try:
+        monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "pair16sg2rg2")
         base = emit((256, 256, 256), "120")
         monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "warp8")
         for shape, order, warps in (

@@ -1185,12 +1185,21 @@ def _emit_tiled_transpose3d_jit_kernel(
             transpose_warps = int(raw_warps)
 
     if _declared_backend() == "maca":
+        fp32_cube = dtype == "complex64" and (n0, n1, n2) == (256, 256, 256)
         maca_mode_default = (
-            "pair16sg2rg2"
-            if dtype == "complex64" and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
-            else "pair16"
+            "pair16sg2rg2" if fp32_cube else "pair16"
         )
-        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", maca_mode_default)
+        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D")
+        if maca_mode is None:
+            use_cube_warp = (
+                fp32_cube and current_profile().device_arch == "102"
+                and not any(name in os.environ for name in (
+                    "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
+                    "FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL",
+                    "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP",
+                ))
+            )
+            maca_mode = "warp8" if use_cube_warp else maca_mode_default
     else:
         maca_mode = "tile32"
     if maca_mode not in {
