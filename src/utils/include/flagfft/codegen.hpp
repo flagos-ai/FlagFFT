@@ -1951,7 +1951,8 @@ class TritonCompiler {
     RealPrimeForward64, RealPrimeInverse64, RealPrimeOuter16, RealPrimeOuter16Wide
   };
   std::shared_ptr<CompiledRawNode> compile_maca_1d_fp64_packed_dif(const LeafPlanNode &leaf,
-                                                                 const FFTRequest &request);
+                                                                 const FFTRequest &request,
+                                                                 bool gather_reflection = false);
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    MacaLeafLayout maca_layout = MacaLeafLayout::Auto);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

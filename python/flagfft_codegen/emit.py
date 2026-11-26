@@ -750,6 +750,7 @@ def emit_jit_kernel(
         "maca_fp64_dif": (2048, 2, 1),
         "maca_fp64_dif_w4": (2048, 4, 1),
         "maca_fp64_packed_dif1024": (1024, 4, 1),
+        "maca_fp64_packed_dif1024_gather": (1024, 4, 1),
         "maca_fp64_dif_first64": (64, 8, 32),
         "maca_fp64_ct128_prepare": (128, 4, 4),
         "maca_fp64_ct128_finish": (128, 4, 8),
@@ -839,10 +840,12 @@ def emit_jit_kernel(
                 raise ValueError(f"{perm_form} requires the {expected_direction} direction")
             kernel_name, kernel_source = build_maca_3d_real_boundary(
                 direction, fp64=dtype == "complex128", middle_length=997 if prime_axes else 2048)
-        elif perm_form == "maca_fp64_packed_dif1024":
+        elif perm_form in {"maca_fp64_packed_dif1024", "maca_fp64_packed_dif1024_gather"}:
             from .kernels_maca_dif import build_maca_fp64_packed_dif
 
-            kernel_name, kernel_source = build_maca_fp64_packed_dif(direction)
+            kernel_name, kernel_source = build_maca_fp64_packed_dif(
+                direction, gather_reflection=perm_form.endswith("_gather"),
+            )
         else:
             from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
 

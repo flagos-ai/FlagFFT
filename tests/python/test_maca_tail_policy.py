@@ -85,6 +85,21 @@ def test_fused_c2r_row_binds_the_phase_after_output(tmp_path):
     assert "tl.where(src_idx0 == 0, 0.0, ai0)" in source
 
 
+def test_2048_fp64_d2z_gather_keeps_the_packed_leaf_signature(tmp_path):
+    config = dict(kernel="leaf", length=1024, factors=(16, 8, 8), lanes=64,
+                  num_warps=4, generic_radices=(), smem_size=1024, direction="forward",
+                  dtype="complex128", prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
+    base = emit_jit_kernel(**config, perm_form="maca_fp64_packed_dif1024")
+    gather = emit_jit_kernel(**config, perm_form="maca_fp64_packed_dif1024_gather")
+    assert gather["arg_names"] == base["arg_names"]
+    assert gather["signature"] == base["signature"]
+    assert gather["num_warps"] == 4
+    assert gather["module_path"] != base["module_path"]
+    source = Path(gather["module_path"]).read_text()
+    assert "tl.gather(real, q, 0)" in source
+    assert "if indices.shape[0] == 1:" in source
+
+
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
 def test_32_real_plane_dif_keeps_the_boundary_arguments(tmp_path, direction):
     from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel

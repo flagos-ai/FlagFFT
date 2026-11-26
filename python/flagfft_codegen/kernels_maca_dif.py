@@ -6,9 +6,10 @@
 from textwrap import dedent
 
 
-def _dif2048_helpers(direction: str | None, *, length: int = 2048) -> str:
+def _dif2048_helpers(direction: str | None, *, length: int = 2048, skip_unit_rotation: bool = False) -> str:
     sign = "SIGN" if direction is None else (1 if direction == "inverse" else -1)
     sign_arg = ", SIGN: tl.constexpr" if direction is None else ""
+    unit_rotation = "            if indices.shape[0] == 1:\n                return real, imag\n" if skip_unit_rotation else ""
     return dedent(
         f"""
         @triton.jit
@@ -28,7 +29,7 @@ def _dif2048_helpers(direction: str | None, *, length: int = 2048) -> str:
 
         @triton.jit
         def _dif_rotate(real, imag, roots_r, roots_i, indices):
-            co = tl.load(roots_r + indices)[None, :]
+{unit_rotation}            co = tl.load(roots_r + indices)[None, :]
             si = tl.load(roots_i + indices)[None, :]
             return real * co - imag * si, real * si + imag * co
 
@@ -104,11 +105,17 @@ def build_maca_fp64_dif_leaf(direction: str, *, four_warps: bool = False) -> tup
     return name, source
 
 
-def build_maca_fp64_packed_dif(direction: str) -> tuple[str, str]:
+def build_maca_fp64_packed_dif(direction: str, *, gather_reflection: bool = False) -> tuple[str, str]:
     inverse = direction == "inverse"
+    if gather_reflection and direction != "forward":
+        raise ValueError("gather reflection requires the forward packed DIF kernel")
     kind = "c2r" if inverse else "r2c"
     name = f"maca_fp64_packed_dif1024_{kind}"
-    source = _dif2048_helpers(direction, length=1024) + dedent(f"""
+    reflection = "br, bi = _reflect(real), _reflect(imag)"
+    if gather_reflection:
+        name += "_gather"
+        reflection = "q = (-k) & 1023\n                br, bi = tl.gather(real, q, 0), tl.gather(imag, q, 0)"
+    source = _dif2048_helpers(direction, length=1024, skip_unit_rotation=gather_reflection) + dedent(f"""
         @triton.jit
         def _reflect_bit(values, BIT: tl.constexpr):
             LOWER: tl.constexpr = 1 << BIT
@@ -152,7 +159,7 @@ def build_maca_fp64_packed_dif(direction: str) -> tuple[str, str]:
             if {inverse}:
                 tl.store(out_ptr + row * output_distance + index, tl.join(real, imag))
             else:
-                br, bi = _reflect(real), _reflect(imag)
+                {reflection}
                 dr, di = real - br, imag + bi
                 out_r = (real + br + dr * si + di * co) * 0.5
                 out_i = (imag - bi - dr * co + di * si) * 0.5

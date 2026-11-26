@@ -4984,10 +4984,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
   }
-  const bool maca_1d_dif = allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch);
-  const bool maca_fused_packed = allow_packed &&
-      (maca_1d_dif || maca_1d_fp64_2048_enabled(request, batch) ||
-       maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_));
+  const bool maca_1d_packed = allow_packed && maca_1d_fp64_2048_enabled(request, batch);
+  const bool maca_d2z_gather = maca_1d_packed && request.real_transform_kind == "d2z" &&
+      request.direction == "forward" && flag_or_default("FLAGFFT_MACA_1D_FP64_2048_DIF", true) &&
+      maca_flag_or_default("FLAGFFT_MACA_1D_FP64_2048_D2Z_GATHER", false);
+  const bool maca_1d_dif = maca_d2z_gather || (allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch));
+  const bool maca_fused_packed = maca_1d_dif || maca_1d_packed ||
+      (allow_packed && maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_));
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
               ? select_packed_real_child(node, request, batch, false, maca_fused_packed)
@@ -5000,7 +5003,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
         if (maca_1d_dif && leaf->length == 1024) {
-          return compile_maca_1d_fp64_packed_dif(*leaf, request);
+          return compile_maca_1d_fp64_packed_dif(*leaf, request, maca_d2z_gather);
         }
         leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
@@ -5325,11 +5328,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_maca_1d_fp64_packed_dif(
-    const LeafPlanNode &leaf, const FFTRequest &request) {
+    const LeafPlanNode &leaf, const FFTRequest &request, bool gather_reflection) {
   const bool inverse = request.direction == "inverse";
   auto key = KernelKey::leaf(triton_target_for_request(request), request.direction, request.input_dtype,
       leaf.length, leaf.factors, leaf.lanes, leaf.num_warps, leaf.generic_radices, leaf.smem_size);
-  key.perm_form = "maca_fp64_packed_dif1024";
+  key.perm_form = gather_reflection ? "maca_fp64_packed_dif1024_gather" : "maca_fp64_packed_dif1024";
   auto kernel = compile_kernel(key);
   auto tables = make_maca_dif_roots(1024, true, inverse);
   auto phase = make_maca_dif_roots(2048, true, inverse);
