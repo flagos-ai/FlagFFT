@@ -25,8 +25,13 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
     if (automatic == "ct1024x1024") return {{automatic, 1024, 1024}};
     if (automatic == "ct405x810") return {{automatic, 405, 810}};
   }
+  const bool c550_large_batch = request.device_arch == "102" && request.origin_rank <= 1 &&
+      request.batch == 64 && n == 663000 && !request.real_transform &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      !request.input_strides.empty() && request.input_strides.back() == 1;
   if (value == nullptr || *value == '\0' || request.device_type != "maca" ||
-      request.raw_dim != 1 || request.batch != 1 || n != request.requested_n) {
+      request.raw_dim != 1 || (request.batch != 1 && !c550_large_batch) ||
+      n != request.requested_n) {
     return {};
   }
   const std::string setting(value);
@@ -53,7 +58,9 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
   } else if (n == 1048576 && fp64) {
     plans = {{"ct512x2048", 512, 2048}, {"ct1024x1024", 1024, 1024}};
   } else if (n == 663000 && (fp32 || fp64)) {
-    plans = {{"ct375x1768", 375, 1768}, {"ct650x1020", 650, 1020}, {"ct780x850", 780, 850}};
+    plans = {{"ct375x1768", 375, 1768}, {"ct650x1020", 650, 1020}, {"ct780x850", 780, 850},
+             {"ct680x975", 680, 975}, {"ct975x680", 975, 680}, {"ct884x750", 884, 750},
+             {"ct750x884", 750, 884}, {"ct663x1000", 663, 1000}, {"ct1000x663", 1000, 663}};
   } else if (n == 328050 && (fp32 || fp64)) {
     plans = {{"ct450x729", 450, 729}, {"ct486x675", 486, 675}, {"ct405x810", 405, 810}};
   }

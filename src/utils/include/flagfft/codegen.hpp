@@ -1927,7 +1927,8 @@ class TritonCompiler {
   // does not support yet; keep it on the native/JIT path.
   bool npu_stockham_tle_allowed_ = true;
 
-  std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request,
+                                                   bool maca_3d_fp64_dif = false);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                     const FFTRequest &request,
                                                                     int64_t perm_span,

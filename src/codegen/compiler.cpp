@@ -5145,7 +5145,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
-                                                                  const FFTRequest &request) {
+                                                                  const FFTRequest &request,
+                                                                  bool maca_3d_fp64_dif) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   int64_t num_warps = leaf.num_warps;
@@ -5161,8 +5162,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
-  const bool maca_dif = maca_2d_dense_policy_ && request.input_dtype == "complex128" &&
-      leaf.length == 2048 && flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", false);
+  const bool maca_dif = request.input_dtype == "complex128" && leaf.length == 2048 &&
+      (maca_3d_fp64_dif || (maca_2d_dense_policy_ &&
+                          flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", false)));
   if (maca_dif) key.perm_form = "maca_fp64_dif";
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   std::vector<DeviceAllocation> tables;
@@ -6349,7 +6351,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
     auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
-    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    const bool maca_middle_dif = maca_first_store_fp64_enabled && request.device_arch == "102" &&
+        n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4) &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF", false);
+    auto n1_fft = maca_middle_dif
+        ? compile_raw_leaf(*n1_leaf, n1_request, true)
+        : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
     auto n0_fft = maca_long_axis
