@@ -5001,7 +5001,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       request.real_transform_kind == "r2c" && request.direction == "forward" &&
       request.input_strides == std::vector<int64_t>{2048, 1} &&
       flag_or_default("FLAGFFT_MACA_1D_BATCH", true) &&
-      maca_flag_or_default("FLAGFFT_MACA_1D_FP32_2048_R2C_GATHER", false);
+      maca_flag_or_default("FLAGFFT_MACA_1D_FP32_2048_R2C_GATHER", true);
   const bool maca_gather = maca_d2z_gather || maca_r2c_gather;
   const bool maca_1d_dif = maca_gather || (allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch));
   const bool maca_fused_packed = maca_1d_dif || maca_1d_packed ||
