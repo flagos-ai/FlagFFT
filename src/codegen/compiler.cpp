@@ -2962,25 +2962,30 @@ namespace {
         (n == 16384 || n == 185640 || n == 340200 || n == 524288 || n == 663000) &&
         (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
         (maca_batch_setting == nullptr || std::string(maca_batch_setting) != "0");
-    // On C550, the compact-input four-step C2R pass still runs a full-length
-    // complex FFT. The measured half-length route wins for these single
-    // transforms in both precisions; keep short and batched paths unchanged.
-    const bool is_maca_single_c2r_target =
-        request.device_type == "maca" && request.raw_dim == 1 && batch == 1 && inverse &&
+    // Single large C2R and the measured C550 D2Z lengths benefit from
+    // reinterpreting adjacent real values as one half-length complex FFT.
+    const bool maca_single_d2z = !inverse && request.device_arch == "102" &&
+        request.origin_rank <= 1 && batch == request.batch &&
+        request.input_dtype == "complex128" && request.real_transform_kind == "d2z" &&
+        request.fft_length == n && request.input_layout == "contiguous" &&
+        !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{n, 1};
+    const bool is_maca_single_real_target =
+        request.device_type == "maca" && request.raw_dim == 1 && batch == 1 &&
+        (inverse || maca_single_d2z) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
-        (n == 185640 || n == 340200 || n == 524288 || n == 663000);
+        (n == 185640 || n == 340200 || n == 524288 || (inverse && n == 663000));
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target &&
         !is_musa_s5000_batch_fp32_c2r_target && !is_musa_s5000_batch_fp32_r2c_target &&
         !is_npu_fp32_target &&
         !is_ix_single_fp32_target && !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
-        !is_maca_batch_real_target && !is_maca_single_c2r_target) {
+        !is_maca_batch_real_target && !is_maca_single_real_target) {
       return std::nullopt;
     }
     if (!force && !is_musa_s5000_batch_fp32_c2r_target &&
         !is_musa_s5000_batch_fp32_r2c_target && !is_npu_fp32_target &&
         !is_ix_single_fp32_target &&
         !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
-        !is_maca_batch_real_target && !is_maca_single_c2r_target &&
+        !is_maca_batch_real_target && !is_maca_single_real_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
          (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
@@ -3064,7 +3069,7 @@ namespace {
       if (!child_is_leaf_pair) return std::nullopt;
       return PackedRealChild {std::move(child_request), std::move(child_plan)};
     }
-    if (!force && is_maca_single_c2r_target) {
+    if (!force && is_maca_single_real_target) {
       // A tuned child may choose a different factor pair. Use the route only
       // for the exact half-length decompositions measured on C550.
       const bool measured_child = child_is_leaf_pair &&
