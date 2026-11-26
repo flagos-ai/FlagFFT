@@ -45,6 +45,7 @@ from .kernels_common import (
 )
 from .kernels_layout import (
     _build_complex_pair_transpose_kernel_source,
+    _build_flat_fp64_transpose3d_kernel_source,
     _build_packed_transpose_kernel_source,
     _build_paired_fp64_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
@@ -1110,8 +1111,15 @@ def _emit_tiled_transpose3d_jit_kernel(
         if _declared_backend() == "maca"
         else "v1"
     )
-    if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
-        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
+    if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "flat", "v1"}:
+        raise ValueError(
+            "FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec, flat or v1"
+        )
+    if fp64_mode == "flat" and not (
+        current_profile().device_arch == "102" and maca_warps == "4"
+        and (n0, n1, n2, order) in {(128, 64, 2048, "210"), (2048, 64, 128, "201")}
+    ):
+        fp64_mode = "tile16vec"
     if maca_mode == "pair64x16" and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
             raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")
@@ -1211,6 +1219,10 @@ def _emit_tiled_transpose3d_jit_kernel(
         (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=int(maca_mode[4:]), pair=maca_mode.startswith("pair"),
             tile_traversal=maca_traversal
+        )
+    elif dtype == "complex128" and fp64_mode == "flat":
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_flat_fp64_transpose3d_kernel_source(
+            n0, n1, n2, order,
         )
     elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
         (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(

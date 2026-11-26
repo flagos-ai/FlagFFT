@@ -1338,6 +1338,57 @@ def _build_paired_fp64_transpose_kernel_source(
     return kernel_name, source, ["in_ptr", "out_ptr", "nbatch"]
 
 
+def _build_flat_fp64_transpose3d_kernel_source(
+    n0: int, n1: int, n2: int, order: str,
+) -> tuple[str, str, list[str], int]:
+    """Transpose interleaved FP64 pairs in contiguous rows of each plane."""
+    if order == "201":
+        rows, cols, layers = n0 * n1, n2, 1
+    elif order == "210":
+        rows, cols, layers = n0, n2, n1
+    else:
+        raise ValueError(f"unsupported flat FP64 3D transpose order: {order}")
+    tile = 16
+    row_tiles = (rows + tile - 1) // tile
+    col_tiles = (cols + tile - 1) // tile
+    plane_tiles = row_tiles * col_tiles
+    batch_stride = 2 * rows * cols * layers
+    wide_index = ".to(tl.int64)" if batch_stride >= 2**31 else ""
+    name = f"_tiled_transpose3d_kernel_{order}_n{n0}_{n1}_{n2}_f64_flat_t{tile}"
+    source = dedent(
+        f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, nbatch):
+            block = tl.program_id(0)
+            layer = block // {plane_tiles}
+            tile_in_plane = block % {plane_tiles}
+            tile_row = tile_in_plane // {col_tiles} * {tile}
+            tile_col = tile_in_plane % {col_tiles} * {tile}
+            batch = tl.program_id(2)
+            batch_base = batch.to(tl.int64) * {batch_stride}
+            src_base = in_ptr + batch_base + layer{wide_index} * {2 * cols}
+            dst_base = out_ptr + batch_base + layer{wide_index} * {2 * rows}
+            row = tile_row + tl.arange(0, {tile})
+            col = tile_col + tl.arange(0, {tile})
+            src_pair = tile_col * 2 + tl.arange(0, {2 * tile})
+            dst_pair = tile_row * 2 + tl.arange(0, {2 * tile})
+            values = tl.load(
+                src_base + row{wide_index}[:, None] * {2 * layers * cols} + src_pair[None, :],
+                (row[:, None] < {rows}) & (src_pair[None, :] < {2 * cols}) & (batch < nbatch),
+                other=0.0,
+            )
+            values = tl.reshape(values, ({tile}, {tile}, 2))
+            values = tl.reshape(tl.permute(values, (1, 0, 2)), ({tile}, {2 * tile}))
+            tl.store(
+                dst_base + col{wide_index}[:, None] * {2 * layers * rows} + dst_pair[None, :],
+                values,
+                (col[:, None] < {cols}) & (dst_pair[None, :] < {2 * rows}) & (batch < nbatch),
+            )
+        """
+    )
+    return name, source, ["in_ptr", "out_ptr", "nbatch"], plane_tiles * layers
+
+
 def _build_tiled_transpose3d_kernel_source(
     s0: int, s1: int, s2: int, order: str, dtype: str, block: int = 1024
 ) -> tuple[str, list[str], list[str]]:

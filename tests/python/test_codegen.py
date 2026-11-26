@@ -2195,6 +2195,35 @@ def _maca_profile():
     )
 
 
+@pytest.mark.parametrize(
+    "shape,order,flat",
+    [
+        ((128, 64, 2048), "210", True),
+        ((2048, 64, 128), "201", True),
+        ((128, 33, 2048), "210", False),
+        ((2048, 64, 128), "021", False),
+    ],
+)
+def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, flat):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", "flat")
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+    token = set_profile(_maca_profile())
+    try:
+        n0, n1, n2 = shape
+        meta = _emit_tiled_transpose3d_jit_kernel(
+            n0=n0, n1=n1, n2=n2, order=order, dtype="complex128", out_dir=tmp_path,
+        )
+        assert meta["kernel_name"].endswith("_flat_t16" if flat else "_t16_tile_vec")
+        assert meta["num_warps"] == 4
+        if flat:
+            assert meta["grid_x_override"] == 65536
+    finally:
+        reset_profile(token)
+
+
 def test_maca_compact_four_step_stages_retain_gather_width(monkeypatch):
     from flagfft_codegen.backend_profile import reset_profile, set_profile
     from flagfft_codegen.kernels_common import LeafPlan
