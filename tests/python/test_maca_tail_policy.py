@@ -71,6 +71,34 @@ def test_maca_rader_compact_indices_preserve_launch_order(tmp_path, axis, phase,
     ) == wide_source
 
 
+@pytest.mark.parametrize("real_kind", ["r2c", "c2r"])
+@pytest.mark.parametrize("prime,row,col", [(8191, (7, 10), (13, 9)), (16381, (5, 4, 3, 3), (13, 7))])
+def test_maca_rader_direct_real_passes_accept_public_distances(tmp_path, real_kind, prime, row, col):
+    from math import lcm, prod
+
+    n1, n2 = prod(row), prod(col)
+    for phase, kernel, factors, rows, columns, front, distance in (
+        ("gather", "row", row, n1, n2, ["idx_ptr"], "input_distance"),
+        ("product", "col", col, n1, n2, ["b_fft_ptr", "user_ptr", "zero_ptr"], "input_distance"),
+        ("scatter", "col", row, n2, n1, ["idx_ptr", "zero_ptr"], "output_distance"),
+    ):
+        length = prod(factors)
+        meta = emit_jit_kernel(kernel=f"four_step_{kernel}", length=length, factors=factors,
+            lanes=length // lcm(*factors), num_warps=2, generic_radices=(),
+            smem_size=1 << (length - 1).bit_length(), direction="forward", dtype="complex64",
+            prime_n=prime, four_step_n1=rows, four_step_n2=columns,
+            perm_form=f"maca_rader_four_step_{phase}_{real_kind}", out_dir=tmp_path)
+        twiddles = [f"tw{s}_{part}_ptr" for s in range(1, len(factors)) for part in ("r", "i")]
+        assert meta["arg_names"] == [*front, "in_ptr", "out_ptr", *twiddles, distance, "nbatch"]
+        assert meta["signature"].split(",")[-2:] == ["i64", "i32"]
+        source = Path(meta["module_path"]).read_text()
+        if phase == "product":
+            assert "tl.store(zero_ptr + zero_offset + 1, x0r + r0, mask=is_dc)" in source
+            assert "dc_ptr" not in source
+        if phase == "scatter":
+            assert "dc = tl.load(x0 + 1)" in source
+
+
 @pytest.mark.parametrize("length,dtype", [(185640, "complex128"), (340200, "complex64"), (524288, "complex64")])
 @pytest.mark.parametrize("inverse", [False, True])
 def test_paired_batch_real_boundary_keeps_distance_and_grid(tmp_path, monkeypatch, length, dtype, inverse):

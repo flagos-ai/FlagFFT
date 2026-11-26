@@ -25,6 +25,7 @@
 #include <initializer_list>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -1714,11 +1715,11 @@ flagfftResult CompiledRawBluesteinFourStepNode::execute(adaptor::DevicePtr input
 }
 
 CompiledRawMacaRaderFourStepNode::CompiledRawMacaRaderFourStepNode(
-    int64_t n1, int64_t n2, int64_t batch, Kernels kernels,
+    int64_t n1, int64_t n2, int64_t batch, Boundary boundary, Kernels kernels,
     std::vector<DeviceAllocation> row_tables, std::vector<DeviceAllocation> col_tables,
     DeviceAllocation gather_indices, DeviceAllocation scatter_indices,
     DeviceAllocation convolution_input)
-    : n1(n1), n2(n2), kernels(std::move(kernels)),
+    : n1(n1), n2(n2), boundary(boundary), kernels(std::move(kernels)),
       row_tables(std::move(row_tables)), col_tables(std::move(col_tables)),
       gather_indices(std::move(gather_indices)), scatter_indices(std::move(scatter_indices)),
       stage1(static_cast<std::size_t>(batch * n1 * n2 * 2 * sizeof(float))),
@@ -1743,15 +1744,35 @@ flagfftResult CompiledRawMacaRaderFourStepNode::execute(adaptor::DevicePtr input
     const auto batch = context.batch;
     const auto launch = [&](JitKernel& kernel, int64_t transforms,
                             std::initializer_list<adaptor::DevicePtr> ptrs,
-                            const std::vector<DeviceAllocation>& tables) {
-      kernel.launch(context.stream, raw_kernel_args(ptrs, tables, batch),
-                    ceil_div(transforms, kernel.inner_pack), batch, 1);
+                            const std::vector<DeviceAllocation>& tables,
+                            std::optional<int64_t> distance = std::nullopt) {
+      const auto args = distance ? raw_distance_col_kernel_args(ptrs, tables, *distance, batch)
+                                 : raw_kernel_args(ptrs, tables, batch);
+      kernel.launch(context.stream, args, ceil_div(transforms, kernel.inner_pack), batch, 1);
     };
-    launch(*kernels.gather, n2, {gather_indices.get(), input, stage1.get()}, row_tables);
-    launch(*kernels.product, n1,
-           {spectrum.get(), input, output, input_zero.get(), stage1.get(), stage2.get()}, col_tables);
+    std::optional<int64_t> input_distance, output_distance;
+    if (boundary != Boundary::Complex) {
+      const int64_t length = n1 * n2 + 1;
+      const int64_t half = length / 2 + 1;
+      const bool forward = boundary == Boundary::RealForward;
+      input_distance = context.input_distance > 0 ? context.input_distance : (forward ? length : half);
+      output_distance = context.output_distance > 0 ? context.output_distance : (forward ? half : length);
+      if (input == output) {
+        auto& real_distance = forward ? input_distance : output_distance;
+        real_distance = std::max(*real_distance, 2 * half);
+      }
+    }
+    launch(*kernels.gather, n2, {gather_indices.get(), input, stage1.get()}, row_tables, input_distance);
+    if (boundary == Boundary::Complex) {
+      launch(*kernels.product, n1,
+             {spectrum.get(), input, output, input_zero.get(), stage1.get(), stage2.get()}, col_tables);
+    } else {
+      launch(*kernels.product, n1,
+             {spectrum.get(), input, input_zero.get(), stage1.get(), stage2.get()}, col_tables, input_distance);
+    }
     launch(*kernels.inverse_row, n1, {stage2.get(), stage1.get()}, col_tables);
-    launch(*kernels.scatter, n2, {scatter_indices.get(), input_zero.get(), stage1.get(), output}, row_tables);
+    launch(*kernels.scatter, n2, {scatter_indices.get(), input_zero.get(), stage1.get(), output},
+           row_tables, output_distance);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "[flagfft] C550 FourStep Rader execute failed: %s\n", error.what());

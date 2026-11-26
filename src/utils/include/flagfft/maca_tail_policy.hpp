@@ -161,7 +161,8 @@ inline bool maca_batch_prime_c2c_four_step_enabled(const FFTRequest& request, in
                                        "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", use_default);
 }
 
-inline bool maca_batch_prime_real_four_step_enabled(const FFTRequest& request, int64_t length) {
+inline bool maca_batch_prime_real_four_step_enabled(const FFTRequest& request, int64_t length,
+                                                  bool require_direct_boundary = false) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
       (length != 8191 && length != 16381) || request.requested_n != length || request.fft_length != length ||
@@ -176,9 +177,12 @@ inline bool maca_batch_prime_real_four_step_enabled(const FFTRequest& request, i
   const bool inverse = request.real_transform_kind == "c2r" && request.direction == "inverse" &&
       distance == length / 2 + 1;
   const char* setting = std::getenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP");
+  const char* direct = std::getenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT");
+  const bool direct_enabled = direct && std::string_view(direct) == "1";
   const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return (forward || inverse) && setting && std::string_view(setting) == "1" &&
+  return (forward || inverse) && (setting ? std::string_view(setting) == "1" : direct_enabled) &&
+      (!require_direct_boundary || direct_enabled) &&
       (!batch_policy || std::string_view(batch_policy) != "0") && (!plan || !*plan);
 }
 

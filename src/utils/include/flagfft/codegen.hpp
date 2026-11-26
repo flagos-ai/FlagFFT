@@ -737,6 +737,8 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
 };
 
 struct CompiledRawMacaRaderFourStepNode final : CompiledRawNode {
+  enum class Boundary { Complex, RealForward, RealInverse };
+
   struct Kernels {
     std::shared_ptr<JitKernel> gather;
     std::shared_ptr<JitKernel> product;
@@ -746,7 +748,7 @@ struct CompiledRawMacaRaderFourStepNode final : CompiledRawNode {
     std::shared_ptr<JitKernel> spectrum_col;
   };
 
-  CompiledRawMacaRaderFourStepNode(int64_t n1, int64_t n2, int64_t batch,
+  CompiledRawMacaRaderFourStepNode(int64_t n1, int64_t n2, int64_t batch, Boundary boundary,
                                  Kernels kernels, std::vector<DeviceAllocation> row_tables,
                                  std::vector<DeviceAllocation> col_tables, DeviceAllocation gather_indices,
                                  DeviceAllocation scatter_indices,
@@ -756,6 +758,7 @@ struct CompiledRawMacaRaderFourStepNode final : CompiledRawNode {
   std::string describe() const override;
 
   int64_t n1, n2;
+  Boundary boundary;
   Kernels kernels;
   std::vector<DeviceAllocation> row_tables, col_tables;
   DeviceAllocation gather_indices, scatter_indices;
@@ -2134,6 +2137,11 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_leaf_rader_finish_kernel(const LeafPlanNode &leaf,
                                                                const FFTRequest &request,
                                                                int64_t n);
+  std::shared_ptr<CompiledRawNode> compile_raw_maca_rader_four_step(
+      const RaderPlanNode &plan, const FFTRequest &request, int64_t batch,
+      CompiledRawMacaRaderFourStepNode::Boundary boundary);
+  std::shared_ptr<CompiledRawNode> compile_maca_rader_real_boundary(
+      const PlanNodePtr &node, const FFTRequest &request, int64_t batch);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request,
                                                                    int64_t n);

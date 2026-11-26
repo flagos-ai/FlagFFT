@@ -46,6 +46,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_RADER_SPLIT",
                              "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP",
                              "FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP",
+                             "FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
@@ -763,8 +764,15 @@ TEST_F(TailPolicy, C550Fp32PrimeRaderAllowsPublicRealBoundaries) {
   r.real_transform_kind = "r2c";
   r.input_strides = {8191, 1};
   EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT", "1", 1);
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "0", 1);
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT");
   setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "1", 1);
   EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
   flagfft::PlanBuilder builder;
   EXPECT_EQ(builder.build(8191, r)->kind, flagfft::PlanNodeKind::Rader);
   r.input_strides = {8192, 1};
