@@ -329,10 +329,11 @@ TEST_F(TailPolicy, C550SinglePackedReal663000Fp64UsesTheMeasuredColumnOrder) {
   r.real_transform_kind = "d2z";
   r.direction = "forward";
   flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER", "0", 1);
   const auto baseline = flagfft::PlanKey::from_node(builder.build(331500, r)).repr();
   EXPECT_FALSE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
 
-  setenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER", "1", 1);
+  unsetenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER");
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
   ASSERT_NE(plan, nullptr);
   EXPECT_EQ(plan->n1, 300);

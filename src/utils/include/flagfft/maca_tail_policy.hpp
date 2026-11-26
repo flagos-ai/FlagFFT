@@ -125,7 +125,7 @@ inline bool maca_663000_fp64_packed_column_order_enabled(const FFTRequest& reque
   const char* setting = std::getenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER");
   const char* real = std::getenv("FLAGFFT_MACA_663000_REAL");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return setting && std::string(setting) == "1" && (!real || std::string(real) == "1") &&
+  return (!setting || std::string(setting) == "1") && (!real || std::string(real) == "1") &&
       (!plan || !*plan) && maca_tail_policy_enabled(request);
 }
 
