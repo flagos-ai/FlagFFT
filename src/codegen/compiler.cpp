@@ -4299,10 +4299,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       const auto workspace_bytes = static_cast<std::size_t>(batch * four_step->length * element_bytes);
       DeviceAllocation stage1 = adaptor::Memory(workspace_bytes);
       auto row_kernel = compile_four_step_row_kernel(*row_leaf, request, n1, n2);
-      const bool split_column = batch == 1
-          ? maca_flag_or_default("FLAGFFT_MACA_663000_SPLIT_COLUMN", false)
-          : maca_663000_batch_split_column_enabled(request);
-      if (split_column && batch == request.batch && n1 == 375 && n2 == 1768 &&
+      const bool split_column = n1 == 375 && n2 == 1768 &&
+          (batch == 1 ? maca_flag_or_default("FLAGFFT_MACA_663000_SPLIT_COLUMN",
+                                            maca_flag_or_default("FLAGFFT_MACA_RADER_CODELET", true))
+                      : maca_663000_batch_split_column_enabled(request));
+      if (split_column && batch == request.batch &&
           maca_663000_c2c_enabled(request) && request.input_layout == "contiguous" &&
           !request.requires_contiguous_copy && !row_kernel->tle_fused_twiddle) {
         auto key = KernelKey::four_step_col(triton_target_for_request(request), request.direction,
