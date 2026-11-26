@@ -26,16 +26,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -n "${PYTHON_VERSION}" ]; then
-    case "${BASE_IMAGE}:${PYTHON_VERSION}" in
-        *ubuntu22.04*:3.10|*ubuntu24.04*:3.12) ;;
-        *ubuntu22.04*:*|*ubuntu24.04*:*)
-            log_error "PYTHON_VERSION=${PYTHON_VERSION} conflicts with native system Python of ${BASE_IMAGE}"
-            exit 1
-            ;;
-    esac
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
