@@ -1392,7 +1392,10 @@ def _emit_stage_block(
         raise ValueError("FLAGFFT_CUDA_SMEM_SWIZZLE must be 0, 3, 4 or 5")
     cuda_smem_swizzle = (current_profile().backend == "cuda" and cuda_swizzle != "0" and
                         not portable_exchange and n & (n - 1) == 0)
-    maca_row_twiddle = fuse_twiddle_into_row and _maca_backend_active()
+    maca_row_twiddle = (
+        fuse_twiddle_into_row and _maca_backend_active()
+        and use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, dtype)
+    )
     smem_swizzle = (fuse_twiddle_into_row and not maca_row_twiddle) or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
