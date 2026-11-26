@@ -153,6 +153,24 @@ inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
   return maca_batch_c2c_option_enabled(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT", true);
 }
 
+inline bool maca_fp64_fft16_native_enabled(const FFTRequest& request) {
+  constexpr int64_t length = 16;
+  if (request.device_type != "maca" || request.device_arch != "102" || request.raw_dim != 1 ||
+      request.origin_rank > 1 || (request.batch != 1 && request.batch != 64) ||
+      request.requested_n != length || request.fft_length != length || request.real_transform ||
+      request.convolution_child || request.packed_real_child || request.input_dtype != "complex128" ||
+      request.output_dtype != "complex128" || request.input_layout != "contiguous" ||
+      request.requires_contiguous_copy || request.input_strides != std::vector<int64_t>{length, 1}) {
+    return false;
+  }
+  const char* setting = std::getenv("FLAGFFT_MACA_16_FP64_NATIVE");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  if (!setting || std::string_view(setting) != "1" || (plan && *plan)) return false;
+  if (request.batch == 1) return maca_tail_policy_enabled(request);
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  return !batch_policy || std::string_view(batch_policy) != "0";
+}
+
 inline bool maca_340200_fp32_batch_900x378_enabled() {
   const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_BATCH_900X378");
   return setting && std::string_view(setting) == "1";

@@ -45,6 +45,25 @@ elseif(BACKEND STREQUAL "MACA")
         ${CMAKE_CURRENT_LIST_DIR}/backend/maca/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE MACA::mcruntime)
+    find_program(FLAGFFT_MACA_MXCC mxcc PATHS "${MACA_PATH}/mxgpu_llvm/bin" NO_DEFAULT_PATH)
+    find_library(FLAGFFT_MACA_COMPILER_RUNTIME mccompiler PATHS "${MACA_PATH}/lib" NO_DEFAULT_PATH)
+    if(FLAGFFT_MACA_MXCC AND FLAGFFT_MACA_COMPILER_RUNTIME)
+        set(maca_fft16_source "${CMAKE_CURRENT_LIST_DIR}/backend/maca/fft16.cpp")
+        set(maca_fft16_object "${CMAKE_CURRENT_BINARY_DIR}/fft16_maca.o")
+        add_custom_command(OUTPUT "${maca_fft16_object}"
+            COMMAND "${FLAGFFT_MACA_MXCC}" -x maca "--maca-path=${MACA_PATH}"
+                    -offload-arch=xcore1000 -std=c++17 -O3 -fPIC
+                    -c "${maca_fft16_source}" -o "${maca_fft16_object}"
+            DEPENDS "${maca_fft16_source}"
+            VERBATIM)
+        add_custom_target(flagfft_maca_fft16 DEPENDS "${maca_fft16_object}")
+        add_dependencies(flagfft flagfft_maca_fft16)
+        set_source_files_properties("${maca_fft16_object}" TARGET_DIRECTORY flagfft
+            PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+        target_sources(flagfft PRIVATE "${maca_fft16_object}")
+        target_link_libraries(flagfft PRIVATE "${FLAGFFT_MACA_COMPILER_RUNTIME}")
+        target_compile_definitions(flagfft PRIVATE FLAGFFT_MACA_NATIVE_FFT16=1)
+    endif()
 elseif(BACKEND STREQUAL "HCU")
     target_sources(flagfft PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/backend/hcu/adaptor.cpp

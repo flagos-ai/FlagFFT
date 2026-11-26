@@ -31,6 +31,23 @@
 
 namespace flagfft {
 
+#if defined(FLAGFFT_MACA_NATIVE_FFT16)
+extern "C" int flagfft_maca_launch_fp64_fft16(const double* input, double* output,
+                                             unsigned batch, int direction, void* stream);
+
+flagfftResult CompiledRawMacaFp64FFT16Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                                   const RawExecutionContext &context) const {
+  const int status = flagfft_maca_launch_fp64_fft16(
+      reinterpret_cast<const double*>(input), reinterpret_cast<double*>(output),
+      static_cast<unsigned>(context.batch), direction, context.stream);
+  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+}
+
+std::string CompiledRawMacaFp64FFT16Node::describe() const {
+  return "CompiledRawMacaFp64FFT16(kernel=maca_fp64_fft16_shuffle, block_threads=64)";
+}
+#endif
+
 namespace {
 // Library-owned captures flatten nested graph wrappers into their kernel
 // launches. Replaying a child executable during capture is unsupported on

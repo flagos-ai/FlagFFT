@@ -35,6 +35,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_185640_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16_FP64_BATCH_PACK16",
+                             "FLAGFFT_MACA_16_FP64_NATIVE",
                              "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
@@ -655,6 +656,34 @@ TEST_F(TailPolicy, C550ShortBatchedComplexOptionsStayLocal) {
   EXPECT_EQ(leaf->factors, (std::vector<int64_t>{7, 6, 5}));
   r.real_transform = true;
   EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp64Fft16NativeStaysWithinDenseRootRequests) {
+  auto r = request(16, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16, 1};
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_FP64_NATIVE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_fp64_fft16_native_enabled(r));
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  r.batch = 64;
+  EXPECT_TRUE(flagfft::maca_fp64_fft16_native_enabled(r));
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_1D_BATCH");
+  setenv("FLAGFFT_MACA_TAIL_PLAN", "default", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_TAIL_PLAN");
+  r.input_strides = {32, 2};
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  r.input_strides = {16, 1};
+  r.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  r.origin_rank = 1;
+  r.input_dtype = r.output_dtype = "complex64";
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
 }
 
 TEST_F(TailPolicy, C550Fp64_524288Pack4IsScopedToDenseSingleComplex) {

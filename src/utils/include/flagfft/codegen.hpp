@@ -213,6 +213,17 @@ struct CompiledRawNode {
   virtual bool is_single_kernel() const { return false; }
 };
 
+#if defined(FLAGFFT_MACA_NATIVE_FFT16)
+struct CompiledRawMacaFp64FFT16Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp64FFT16Node(int direction) : direction(direction) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  int direction;
+};
+#endif
+
 // A fused axis permutation is defined within one ND transform. Reuse its
 // scratch and kernels serially rather than folding independent transforms
 // into the permutation's row index.

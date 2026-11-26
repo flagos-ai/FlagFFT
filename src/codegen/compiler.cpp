@@ -3630,6 +3630,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
+#if defined(FLAGFFT_MACA_NATIVE_FFT16)
+    if (leaf->length == 16 && batch == request.batch && maca_fp64_fft16_native_enabled(request)) {
+      return std::make_shared<CompiledRawMacaFp64FFT16Node>(
+          request.direction == "inverse" ? FLAGFFT_INVERSE : FLAGFFT_FORWARD);
+    }
+#endif
     if (leaf->length == 2048 && !request.real_transform &&
         maca_1d_fp64_2048_dif_enabled(request, batch)) {
       return compile_raw_leaf(*leaf, request, MacaLeafLayout::ContiguousFourWarps);
