@@ -791,6 +791,7 @@ def main() -> None:
             direction=args.direction,
             dtype=args.dtype,
             prime_n=(args.rader_n if args.kernel in {"leaf_rader_full",
+                                                    "leaf_rader_full_c2r",
                                                     "leaf_rader_prepare",
                                                     "leaf_rader_finish"}
                      else args.bluestein_n) or 0,

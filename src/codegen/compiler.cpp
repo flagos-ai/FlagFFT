@@ -2814,6 +2814,13 @@ namespace {
     return row && col && row->length < 512 && col->length < 512;
   }
 
+  bool use_ix_compact_rader_c2r(const PlanNodePtr &node, const FFTRequest &request, int64_t batch) {
+    if (batch != request.batch || request.real_transform_kind != "c2r" ||
+        !ix_rader1009_policy_enabled(request)) return false;
+    const auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node);
+    return rader && rader->prime == 1009 && std::dynamic_pointer_cast<LeafPlanNode>(rader->conv_plan);
+  }
+
   bool ix_packed_c2r_tle_enabled(const FFTRequest &request, int64_t batch) {
     const int64_t n = request.requested_n;
     const bool qualified_shape = (n == 2048 && request.ix_fourstep_preset == 9) ||
@@ -4657,6 +4664,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                         : std::function<std::shared_ptr<CompiledRawNode>()>{});
   }
   if (auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node)) {
+    const bool compact_inverse = use_ix_compact_rader_c2r(node, request, batch);
+    std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+    if (compact_inverse) {
+      make_layout_fallback = [node, request, batch]() {
+        FFTRequest fallback_request = request;
+        fallback_request.real_transform_kind.clear();
+        TritonCompiler compiler;
+        return compiler.compile_raw_c2r_node(node, fallback_request, batch, false);
+      };
+    }
     FFTRequest child_request = forward_child_request(request);
     child_request.convolution_child = true;
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
@@ -4671,8 +4688,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_arch == "102" && request.raw_dim == 1 &&
         request.origin_rank <= 1 && batch == 64 && rader->prime == 1009 &&
         request.input_dtype == "complex64" && leaf != nullptr;
+    const bool ix_batch1009_leaf = batch == request.batch && rader->prime == 1009 && leaf &&
+        ix_rader1009_policy_enabled(request);
     const char* fusion = std::getenv("FLAGFFT_MACA_RADER_FULL_LEAF");
-    if (fusion && std::string(fusion) == "1" && maca_batch1009_leaf) {
+    if (ix_batch1009_leaf || (fusion && std::string(fusion) == "1" && maca_batch1009_leaf)) {
       std::vector<int64_t> fused_factors = leaf->factors;
       if (fused_factors.size() >= 3) {
         std::reverse(fused_factors.begin() + 1, fused_factors.end());
@@ -4680,7 +4699,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       LeafPlanNode fused_leaf(leaf->length, std::move(fused_factors), leaf->remainder,
                               leaf->lanes, leaf->num_warps, leaf->generic_radices,
                               leaf->smem_size);
-      fused_leaf_kernel = compile_leaf_rader_full_kernel(fused_leaf, child_request, rader->prime);
+      fused_leaf_kernel = compile_leaf_rader_full_kernel(
+          fused_leaf, child_request, rader->prime, compact_inverse);
       fused_leaf_tables = build_raw_leaf_tables(fused_leaf, child_request);
     }
     const char* boundary = std::getenv("FLAGFFT_MACA_RADER_BOUNDARY_LEAF");
@@ -4718,7 +4738,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         std::move(fused_leaf_tables),
         std::move(boundary_prepare_kernel),
         std::move(boundary_finish_kernel),
-        std::move(boundary_tables));
+        std::move(boundary_tables),
+        std::move(make_layout_fallback));
   }
   if (auto two_dim = std::dynamic_pointer_cast<TwoDimPlanNode>(node)) {
     return compile_raw_2d_node(two_dim, request, batch);
@@ -5136,7 +5157,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     return compile_raw_real_direct_dft(request, true);
   }
   if (auto pair = compile_raw_real_batch_pair(node, request, batch, true)) return pair;
-  if (use_fused_prime_real_bluestein(node, request, batch)) {
+  if (use_fused_prime_real_bluestein(node, request, batch) ||
+      use_ix_compact_rader_c2r(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
   if (auto packed_child =
@@ -5836,12 +5858,16 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_kernel(const L
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_full_kernel(const LeafPlanNode &leaf,
                                                                            const FFTRequest &request,
-                                                                           int64_t n) {
+                                                                           int64_t n,
+                                                                           bool compact_inverse) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_rader_full(target, request.direction, request.input_dtype,
                                              n, leaf.length, leaf.factors, leaf.lanes,
                                              leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+  if (request.device_type == "ix") {
+    key.perm_form = compact_inverse ? "ix_rader_packed_c2r" : "ix_rader_packed";
+  }
   return compile_kernel(key);
 }
 

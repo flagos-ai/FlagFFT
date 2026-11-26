@@ -1746,6 +1746,10 @@ def _emit_stage_block(
         and _packed_maca_fp32_complex_io(dtype)
         and _maca_knob("BLUESTEIN_LEAF_VEC_IO", "0") == "1"
     )
+    ix_rader_vector_io = (
+        io_mode == "rader_full_leaf" and _ix_backend_active()
+        and _packed_maca_fp32_complex_io(dtype)
+    )
     ix_column_twiddle_recurrence = (
         _ix_backend_active() and dtype == "complex64"
         and stage == 0 and io_mode == "four_step_col" and not fuse_twiddle_into_row
@@ -2172,15 +2176,23 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}src_idx{j} = tl.load(idx_ptr + inv_idx{j}, mask=lane_mask, other=0)"
                     )
-                    lines.append(
-                        f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
-                    )
-                    lines.append(
-                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
-                    )
+                    if bluestein_real_kind == "c2r":
+                        half = prime_n // 2 + 1
+                        lines.extend([
+                            f"{indent}reflected{j} = src_idx{j} >= {half}",
+                            f"{indent}compact_idx{j} = tl.where(reflected{j}, {prime_n} - src_idx{j}, src_idx{j})",
+                            f"{indent}src_ptr{j} = in_ptr + (current_batch * {half} + compact_idx{j}) * 2",
+                        ])
+                    else:
+                        lines.append(
+                            f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
+                        )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"src_ptr{j}", "lane_mask", f"r{j}", f"i{j}", dtype,
+                        ix_rader_vector_io,
+                    ))
+                    if bluestein_real_kind == "c2r":
+                        lines.append(f"{indent}i{j} = tl.where(reflected{j}, -i{j}, i{j})")
                 else:
                     intermediate_index = f"in{j}"
                     if smem_pack > 1:
@@ -2811,13 +2823,13 @@ def _emit_stage_block(
                                 f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})",
                             ]
             elif io_mode == "rader_full_leaf":
+                compact_inverse = bluestein_real_kind == "c2r"
+                input_distance = prime_n // 2 + 1 if compact_inverse else prime_n
                 if bluestein_pass == 0:
-                    lines.append(
-                        f"{indent}br{j} = tl.load(b_fft_ptr + out_idx{j} * 2, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}bi{j} = tl.load(b_fft_ptr + out_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"b_fft_ptr + out_idx{j} * 2", "lane_mask",
+                        f"br{j}", f"bi{j}", dtype, ix_rader_vector_io,
+                    ))
                     lines.append(
                         f"{indent}point_r{j}, point_i{j} = _cmul(r{j}, i{j}, br{j}, bi{j})"
                     )
@@ -2833,34 +2845,32 @@ def _emit_stage_block(
                         )
                     )
                     lines.append(f"{indent}dc_mask{j} = lane_mask & (out_idx{j} == 0)")
-                    lines.append(
-                        f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
-                    )
-                    lines.append(
-                        f"{indent}dc_ptr{j} = out_ptr + current_batch * {prime_n} * 2"
-                    )
+                    lines.append(f"{indent}x0_ptr{j} = in_ptr + current_batch * {input_distance} * 2")
+                    output_scalars = prime_n if compact_inverse else 2 * prime_n
+                    lines.append(f"{indent}dc_ptr{j} = out_ptr + current_batch * {output_scalars}")
                     lines.append(
                         f"{indent}tl.store(dc_ptr{j} + out_idx{j}, r{j} + tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
                     )
-                    lines.append(
-                        f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
-                    )
+                    if not compact_inverse:
+                        lines.append(
+                            f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
+                        )
                 else:
                     lines.append(
                         f"{indent}dst_idx{j} = tl.load(idx_ptr + out_idx{j}, mask=lane_mask, other=0)"
                     )
+                    output_stride = 1 if compact_inverse else 2
                     lines.append(
-                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * 2"
+                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * {output_stride}"
                     )
-                    lines.append(
-                        f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
-                    )
+                    lines.append(f"{indent}x0_ptr{j} = in_ptr + current_batch * {input_distance} * 2")
                     lines.append(
                         f"{indent}tl.store(dst_ptr{j}, tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}) + r{j} / {n}, mask=lane_mask)"
                     )
-                    lines.append(
-                        f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}) - i{j} / {n}, mask=lane_mask)"
-                    )
+                    if not compact_inverse:
+                        lines.append(
+                            f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}) - i{j} / {n}, mask=lane_mask)"
+                        )
             elif io_mode == "bluestein_four_step_finish_col":
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -3817,7 +3827,8 @@ def _build_leaf_kernel_source_for_io(
             hcu_warp_pack, permutation_span, permutation_batch, io_mode,
         )
     bluestein_real_kind = ""
-    if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
+    if (io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r"))
+            or io_mode == "rader_full_leaf_c2r"):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]
         io_mode = io_mode.rsplit("_", 1)[0]
     from .target import ix_warp_fft_pack
@@ -4103,7 +4114,8 @@ def _build_leaf_kernel_source_for_io(
     elif io_mode == "bluestein_full_leaf":
         kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}{'_' + bluestein_real_kind if bluestein_real_kind else ''}"
     elif io_mode == "rader_full_leaf":
-        kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+        real_tag = "_c2r" if bluestein_real_kind == "c2r" else ""
+        kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}{real_tag}"
     elif io_mode == "rader_prepare_leaf":
         kernel_name = f"rader_prepare_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "rader_finish_leaf":

@@ -1629,7 +1629,8 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            std::vector<DeviceAllocation> fused_leaf_tables,
                                            std::shared_ptr<JitKernel> boundary_prepare_kernel,
                                            std::shared_ptr<JitKernel> boundary_finish_kernel,
-                                           std::vector<DeviceAllocation> boundary_tables)
+                                           std::vector<DeviceAllocation> boundary_tables,
+                                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -1646,7 +1647,8 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
       b_fft_buf(std::move(b_fft_buf)),
-      input_copy(std::move(input_copy)) {
+      input_copy(std::move(input_copy)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawRaderNode::describe() const {
@@ -1679,6 +1681,17 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
                                             adaptor::DevicePtr output,
                                             const RawExecutionContext &context) const {
   try {
+    if (make_layout_fallback &&
+        (input == output || (context.input_distance > 0 && context.input_distance != length / 2 + 1) ||
+         (context.output_distance > 0 && context.output_distance != length))) {
+      std::shared_ptr<CompiledRawNode> fallback;
+      {
+        std::lock_guard<std::mutex> lock(layout_mutex);
+        if (!layout_fallback) layout_fallback = make_layout_fallback();
+        fallback = layout_fallback;
+      }
+      return fallback->execute(input, output, context);
+    }
     ensure_b_fft(context);
     adaptor::DevicePtr effective_input = input;
     if (input == output) {

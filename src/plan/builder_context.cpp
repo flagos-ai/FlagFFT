@@ -46,6 +46,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
          ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
+         ix_rader1009 == other.ix_rader1009 &&
          ix_fourstep_preset == other.ix_fourstep_preset &&
          hcu_fourstep_radix_cap == other.hcu_fourstep_radix_cap &&
          hcu_fp64_convolution_radix_cap == other.hcu_fp64_convolution_radix_cap &&
@@ -128,6 +129,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.maca_3d_c2c32_single_cube = request.maca_3d_c2c32_single_cube;
   context.ix_short_single = request.requested_n == 1024 && ix_ct_single_policy_enabled(request);
   context.ix_ct_batch = ix_ct_batch_policy_enabled(request);
+  context.ix_rader1009 = ix_rader1009_policy_enabled(request);
   context.ix_fourstep_preset = request.ix_fourstep_preset;
   if (request.device_type == adaptor::backend_name()) {
     context.max_dynamic_smem_bytes = adaptor::max_dynamic_smem_bytes(request.device_index);

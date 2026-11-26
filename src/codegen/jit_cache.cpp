@@ -37,7 +37,7 @@ namespace {
       {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
   };
 
-  constexpr std::pair<const char *, const char *> kIxBluesteinRecurrenceDefaults[] = {
+  constexpr std::pair<const char *, const char *> kIxPackedRecurrenceDefaults[] = {
       {"FLAGFFT_IX_RECURRENCE", "1"},
       {"FLAGFFT_IX_VEC_IO", "packed"},
   };
@@ -290,6 +290,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const bool ix_bluestein_packed_r2c = key.perm_form == "ix_bluestein_recurrence_r2c";
   const bool ix_bluestein_recurrence =
       ix_bluestein_packed_r2c || key.perm_form == "ix_bluestein_recurrence";
+  const bool ix_rader_packed_c2r = key.perm_form == "ix_rader_packed_c2r";
+  const bool ix_packed_recurrence = ix_bluestein_recurrence || ix_rader_packed_c2r ||
+      key.perm_form == "ix_rader_packed";
   const char *ix_bluestein_vector_io = ix_bluestein_packed_r2c
       ? performance_env("FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO") : nullptr;
   if (ix_bluestein_packed_r2c)
@@ -311,8 +314,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
   }
-  if (ix_bluestein_recurrence) {
-    for (const auto &[name, default_value] : kIxBluesteinRecurrenceDefaults) {
+  if (ix_packed_recurrence) {
+    for (const auto &[name, default_value] : kIxPackedRecurrenceDefaults) {
       const char *value = performance_env(name);
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
@@ -653,7 +656,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form);
       break;
     case KernelKind::LeafRaderFull:
-      kernel_kind = "leaf_rader_full";
+      kernel_kind = ix_rader_packed_c2r ? "leaf_rader_full_c2r" : "leaf_rader_full";
       break;
     case KernelKind::LeafRaderPrepare:
       kernel_kind = "leaf_rader_prepare";
@@ -860,8 +863,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
   }
-  if (ix_bluestein_recurrence) {
-    for (const auto &[name, value] : kIxBluesteinRecurrenceDefaults) {
+  if (ix_packed_recurrence) {
+    for (const auto &[name, value] : kIxPackedRecurrenceDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
   }

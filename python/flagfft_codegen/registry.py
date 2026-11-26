@@ -131,6 +131,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         requires=_BASE_LEAF_FLAGS + ("rader_n",),
     ),
     KernelSpec(
+        "leaf_rader_full_c2r",
+        CT_LEAF,
+        io_mode="rader_full_leaf_c2r",
+        requires=_BASE_LEAF_FLAGS + ("rader_n",),
+    ),
+    KernelSpec(
         "leaf_rader_prepare",
         CT_LEAF,
         io_mode="rader_prepare_leaf",
@@ -314,6 +320,7 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf_bluestein_r2c",
         "leaf_bluestein_c2r",
         "leaf_rader_full",
+        "leaf_rader_full_c2r",
         "leaf_rader_prepare",
         "leaf_rader_finish",
         "leaf_bluestein_prepare",
@@ -374,7 +381,7 @@ def module_name_for(
         return (
             f"flagfft_jit_stockham_{direction_tag}_n{length}_r{factor_tag}_{dtype_tag}"
         )
-    if spec.family == BLUESTEIN_LEAF:
+    if spec.family == BLUESTEIN_LEAF or spec.name == "leaf_rader_full_c2r":
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"
             f"_n{prime_n}_m{length}_l{lanes}_b{lane_block}_{dtype_tag}"

@@ -170,6 +170,7 @@ class PlanBuilder {
     bool maca_3d_c2c32_single_cube = false;
     bool ix_short_single = false;
     bool ix_ct_batch = false;
+    bool ix_rader1009 = false;
     int ix_fourstep_preset = 0;
     int hcu_fourstep_radix_cap = 0;
     int hcu_fp64_convolution_radix_cap = 0;

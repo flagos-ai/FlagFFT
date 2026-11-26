@@ -257,6 +257,10 @@ std::vector<PlanCandidate> PlanBuilder::build_auto_candidates(int64_t n) {
   if (n <= 0) {
     throw std::runtime_error("FFT length must be positive");
   }
+  if (n == 1009 && request_context().ix_rader1009) {
+    auto node = make_rader_plan(n);
+    return {{node, rader_cost(n), priority(node)}};
+  }
   // Reuse the radix codelets through the GM Stockham mapping on Ascend.
   // CUDA shared-memory leaf layouts are not used on this path.
   if (request_context().device_type == "npu") {

@@ -654,7 +654,8 @@ struct CompiledRawRaderNode final : CompiledRawNode {
                        std::vector<DeviceAllocation> fused_leaf_tables = {},
                        std::shared_ptr<JitKernel> boundary_prepare_kernel = nullptr,
                        std::shared_ptr<JitKernel> boundary_finish_kernel = nullptr,
-                       std::vector<DeviceAllocation> boundary_tables = {});
+                       std::vector<DeviceAllocation> boundary_tables = {},
+                       std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -680,6 +681,9 @@ struct CompiledRawRaderNode final : CompiledRawNode {
   DeviceAllocation input_copy;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  const std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawFourStepGenericNode final : CompiledRawNode {
@@ -1996,7 +2000,8 @@ class TritonCompiler {
                                                            int64_t n);
   std::shared_ptr<JitKernel> compile_leaf_rader_full_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
-                                                            int64_t n);
+                                                            int64_t n,
+                                                            bool compact_inverse);
   std::shared_ptr<JitKernel> compile_leaf_rader_prepare_kernel(const LeafPlanNode &leaf,
                                                                 const FFTRequest &request,
                                                                 int64_t n);
@@ -2064,6 +2069,7 @@ int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
 bool ix_real_single_pack_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);
+bool ix_rader1009_policy_enabled(const FFTRequest &request);
 int ix_fourstep_default_preset(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);

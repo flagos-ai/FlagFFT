@@ -310,6 +310,25 @@ bool ix_ct_batch_policy_enabled(const FFTRequest &request) {
   throw std::runtime_error("FLAGFFT_IX_CT_BATCH must be 0 or 1");
 }
 
+bool ix_rader1009_policy_enabled(const FFTRequest &request) {
+  if (request.device_type != "ix" || request.device_arch != "71" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
+      request.requested_n != 1009 || request.fft_length != 1009 || request.packed_real_child ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.input_strides.empty() || request.input_strides.back() != 1 ||
+      (!request.real_transform_kind.empty() && request.real_transform_kind != "c2r") ||
+      (!request.origin_real_transform_kind.empty() && request.origin_real_transform_kind != "c2r")) {
+    return false;
+  }
+  const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy) != "balanced") return false;
+  const char *setting = std::getenv("FLAGFFT_IX_RADER1009");
+  if (!setting || std::string(setting) == "1") return true;
+  if (std::string(setting) == "0") return false;
+  throw std::runtime_error("FLAGFFT_IX_RADER1009 must be 0 or 1");
+}
+
 bool ix_packed_real_policy_enabled(const FFTRequest &request) {
   if (request.device_type != "ix" || request.device_arch != "71" || request.raw_dim != 1 ||
       request.batch != 1 || request.fft_length != request.requested_n ||
