@@ -263,10 +263,11 @@ TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
   r.input_strides = {340200, 1};
   r.batch = 64;
   flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_340200_BATCH_SPLIT", "0", 1);
   const auto baseline = flagfft::PlanKey::from_node(builder.build(340200, r)).repr();
   EXPECT_FALSE(flagfft::maca_340200_batch_split_enabled(r));
 
-  setenv("FLAGFFT_MACA_340200_BATCH_SPLIT", "1", 1);
+  unsetenv("FLAGFFT_MACA_340200_BATCH_SPLIT");
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
   ASSERT_NE(plan, nullptr);
   EXPECT_EQ(plan->n1, 567);
