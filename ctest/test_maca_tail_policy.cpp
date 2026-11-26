@@ -23,6 +23,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_PACKED_COLUMN_PFA",
                              "FLAGFFT_MACA_340200_BATCH_SPLIT",
                              "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
                              "FLAGFFT_MACA_RADER_CODELET",
@@ -354,6 +355,36 @@ TEST_F(TailPolicy, C550BatchedPackedReal340200UsesTheMeasuredSplit) {
   r.packed_real_child = true;
   r.input_dtype = r.output_dtype = "complex128";
   EXPECT_FALSE(flagfft::maca_340200_packed_real_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550BatchedPackedReal16384UsesTheMeasuredSplit) {
+  using flagfft::KernelKind;
+  auto r = request(8192, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {8192, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.direction = "inverse";
+  r.real_transform_kind = "z2d";
+  flagfft::PlanBuilder builder;
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(8192, r)).repr();
+  setenv("FLAGFFT_MACA_16384_PACKED_REAL_SPLIT", "1", 1);
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(8192, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 128);
+  EXPECT_EQ(plan->n2, 64);
+  EXPECT_NE(flagfft::PlanKey::from_node(plan).repr(), baseline);
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-real16384-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex128", 128, 128, 64), mode);
+  r.input_dtype = r.output_dtype = "complex64";
+  r.direction = "forward";
+  r.real_transform_kind = "r2c";
+  EXPECT_TRUE(flagfft::maca_16384_packed_real_split_enabled(r));
+  r.input_strides.front() += 5;
+  EXPECT_FALSE(flagfft::maca_16384_packed_real_split_enabled(r));
 }
 
 TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {

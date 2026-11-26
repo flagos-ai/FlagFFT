@@ -161,6 +161,20 @@ def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n
     assert resource_default("VEC_IO") is None
 
 
+@pytest.mark.parametrize("dtype", ["complex64", "complex128"])
+def test_16384_packed_real_resources_match_the_measured_axes(tmp_path, dtype):
+    set_maca_tail_mode("batch-real16384-split")
+    for axis, length, factors, inner_pack in (("row", 128, (8, 4, 4), 4), ("col", 64, (4, 4, 4), 8)):
+        metadata = emit_jit_kernel(
+            kernel=f"four_step_{axis}", length=length, factors=factors,
+            lanes=16, num_warps=2, generic_radices=(), smem_size=length,
+            direction="inverse", dtype=dtype, prime_n=0,
+            four_step_n1=128, four_step_n2=64, out_dir=tmp_path,
+        )
+        assert (metadata["num_warps"], metadata["inner_pack"]) == (2, inner_pack)
+    assert eligible_kernel_mode("four_step_row", 64, dtype, 64, 128) == "off"
+
+
 @pytest.mark.parametrize("kernel", ["leaf", "four_step_row_strided", "four_step_real_row",
     "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col",
     "bluestein_four_step_prepare_row", "bluestein_four_step_pointwise_row",

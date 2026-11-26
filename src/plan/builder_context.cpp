@@ -539,6 +539,10 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     return std::make_shared<FourStepPlanNode>(n, 405, 420,
         make_leaf_plan(405, {5, 9, 9}), make_leaf_plan(420, {7, 6, 10}));
   }
+  if (n == 8192 && maca_16384_packed_real_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 128, 64,
+        make_leaf_plan(128, {8, 4, 4}), make_leaf_plan(64, {4, 4, 4}));
+  }
   if (n == 16384 && maca_16384_fp64_batch_split_enabled(request)) {
     return std::make_shared<FourStepPlanNode>(n, 256, 64,
         make_leaf_plan(256, {4, 4, 4, 4}), make_leaf_plan(64, {4, 4, 4}));
