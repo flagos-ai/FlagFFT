@@ -2762,9 +2762,11 @@ namespace {
       return false;
     }
     if (bluestein->length == 524287) {
+      const char *policy = performance_env("FLAGFFT_EXECUTION_POLICY");
       return batch == 64 && batch == request.batch && request.real_transform_kind == "r2c" &&
              request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
-             flag_or_default("FLAGFFT_IX_LARGE_PRIME_R2C_IO", false);
+             (!policy || std::string(policy) == "balanced") &&
+             flag_or_default("FLAGFFT_IX_LARGE_PRIME_R2C_IO", true);
     }
     if (bluestein->length != 1009 && bluestein->length != 8191 && bluestein->length != 16381) {
       return false;
