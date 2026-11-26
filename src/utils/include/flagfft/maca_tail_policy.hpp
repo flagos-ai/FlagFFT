@@ -112,6 +112,23 @@ inline bool maca_663000_packed_c2r_split_enabled(const FFTRequest& request) {
       maca_663000_real_enabled(request);
 }
 
+inline bool maca_663000_fp64_packed_column_order_enabled(const FFTRequest& request) {
+  constexpr int64_t length = 331500;
+  if (request.device_arch != "102" || request.requested_n != length || request.fft_length != length ||
+      !request.real_transform || !request.packed_real_child || request.convolution_child ||
+      request.input_dtype != "complex128" || request.output_dtype != "complex128" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.input_strides != std::vector<int64_t>{length, 1}) return false;
+  if (!((request.direction == "forward" && request.real_transform_kind == "d2z") ||
+        (request.direction == "inverse" && request.real_transform_kind == "z2d"))) return false;
+
+  const char* setting = std::getenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER");
+  const char* real = std::getenv("FLAGFFT_MACA_663000_REAL");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  return setting && std::string(setting) == "1" && (!real || std::string(real) == "1") &&
+      (!plan || !*plan) && maca_tail_policy_enabled(request);
+}
+
 inline bool maca_batch_c2c_split_requested(const FFTRequest& request, int64_t length,
                                           const char* option) {
   if (request.device_type != "maca" || request.device_arch != "102" ||

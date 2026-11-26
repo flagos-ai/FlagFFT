@@ -21,6 +21,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
                              "FLAGFFT_MACA_663000_PACKED_C2R_SPLIT",
                              "FLAGFFT_MACA_663000_PACKED_COLUMN_PFA",
+                             "FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER",
                              "FLAGFFT_MACA_340200_BATCH_SPLIT",
                              "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
@@ -314,6 +315,36 @@ TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(wide_row->factors, (std::vector<int64_t>{7, 8, 9}));
   EXPECT_EQ(wide_col->factors, (std::vector<int64_t>{5, 15, 9}));
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "z2z340200-split");
+}
+
+TEST_F(TailPolicy, C550SinglePackedReal663000Fp64UsesTheMeasuredColumnOrder) {
+  auto r = request(331500, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {331500, 1};
+  r.real_transform = r.packed_real_child = true;
+  r.real_transform_kind = "d2z";
+  r.direction = "forward";
+  flagfft::PlanBuilder builder;
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(331500, r)).repr();
+  EXPECT_FALSE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
+
+  setenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER", "1", 1);
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 300);
+  EXPECT_EQ(plan->n2, 1105);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{13, 5, 17}));
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(331500, r)).repr(), baseline);
+  unsetenv("FLAGFFT_MACA_TAIL_POLICY");
+  r.direction = "inverse";
+  r.real_transform_kind = "z2d";
+  EXPECT_TRUE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
+  r.batch = 64;
+  EXPECT_FALSE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
 }
 
 TEST_F(TailPolicy, C550BatchedPackedReal340200UsesTheMeasuredSplit) {
