@@ -60,6 +60,10 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
     plans = {{"bs2000", 2000}, {"bs2048", 2048}};
   } else if (n == 1009 && fp32) {
     plans = {{"rader1008", 1008}, {"bs2048", 2048}};
+  } else if (n == 524287 && request.device_arch == "102" && request.origin_rank <= 1 &&
+             request.batch == 1 && !request.real_transform &&
+             request.input_dtype == "complex128" && request.output_dtype == "complex128") {
+    plans = {{"bs1048576", 1048576}};
   } else if (n == 1048576 && fp64) {
     plans = {{"ct512x2048", 512, 2048}, {"ct1024x1024", 1024, 1024}};
   } else if (n == 663000 && (fp32 || fp64)) {
@@ -106,8 +110,8 @@ PlanNodePtr build_maca_tail_plan(int64_t n, const MacaTailPlan& plan, BuildAuto 
     return std::make_shared<RaderPlanNode>(n, root, build_rader_index_table(n, root),
                                           build_auto(n - 1, false));
   }
-  if (plan.name == "bs16384" || plan.name == "bs32768") {
-    const int64_t n1 = 128;
+  if (plan.name == "bs16384" || plan.name == "bs32768" || plan.name == "bs1048576") {
+    const int64_t n1 = plan.first == 1048576 ? 1024 : 128;
     const int64_t n2 = plan.first / n1;
     auto conv = std::make_shared<FourStepPlanNode>(
         plan.first, n1, n2, build_auto(n1, false), build_auto(n2, false));

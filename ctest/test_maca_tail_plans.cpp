@@ -101,6 +101,23 @@ void expect_legal(const PlanNodePtr& node) {
   }
 }
 
+TEST_F(MacaTailPlans, C550SingleFp64Prime524287UsesBalancedBluestein) {
+  auto request = request_for(524287, true);
+  request.device_arch = "102";
+  setting.set("bs1048576");
+  PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<BluesteinPlanNode>(builder.build(524287, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->conv_length, 1048576);
+  expect_legal(plan);
+  const auto convolution = std::dynamic_pointer_cast<FourStepPlanNode>(plan->fft_plan);
+  ASSERT_NE(convolution, nullptr);
+  EXPECT_EQ(convolution->n1, 1024);
+  EXPECT_EQ(convolution->n2, 1024);
+  EXPECT_NE(std::dynamic_pointer_cast<LeafPlanNode>(convolution->row_plan), nullptr);
+  EXPECT_NE(std::dynamic_pointer_cast<LeafPlanNode>(convolution->col_plan), nullptr);
+}
+
 struct Experiment {
   int64_t n;
   bool fp64;
