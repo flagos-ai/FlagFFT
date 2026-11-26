@@ -167,7 +167,7 @@ inline bool maca_340200_fp32_single_split_enabled(const FFTRequest& request) {
       request.input_strides != std::vector<int64_t>{length, 1}) return false;
   const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return setting && std::string(setting) == "1" && (!plan || !*plan) && maca_tail_policy_enabled(request);
+  return (!setting || std::string_view(setting) == "1") && (!plan || !*plan) && maca_tail_policy_enabled(request);
 }
 
 inline bool maca_batch_packed_real_option_enabled(const FFTRequest& request, int64_t length,
