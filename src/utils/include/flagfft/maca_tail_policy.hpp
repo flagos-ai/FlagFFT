@@ -74,7 +74,7 @@ inline bool maca_663000_real_enabled(const FFTRequest& request) {
 
 inline bool maca_663000_packed_c2r_split_enabled(const FFTRequest& request) {
   const char* setting = std::getenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT");
-  return setting && std::string(setting) == "1" && request.packed_real_child &&
+  return (!setting || std::string(setting) == "1") && request.packed_real_child &&
       request.batch == 64 && request.input_dtype == "complex64" &&
       request.real_transform_kind == "c2r" &&
       request.input_strides == std::vector<int64_t>{331500, 1} &&

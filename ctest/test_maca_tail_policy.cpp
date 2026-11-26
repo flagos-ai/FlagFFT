@@ -200,12 +200,13 @@ TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
   r.real_transform_kind = "c2r";
   r.direction = "inverse";
   flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "0", 1);
   EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
   const auto baseline = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
   ASSERT_NE(baseline, nullptr);
   EXPECT_EQ(baseline->n1, 300);
   EXPECT_EQ(baseline->n2, 1105);
-  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "1", 1);
+  unsetenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT");
   EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct340x975");
   const auto mode = flagfft::maca_tail_codegen_root(r);
   EXPECT_EQ(mode, "batch-c2r663000-split");
