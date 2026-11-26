@@ -51,9 +51,10 @@ def build_ix_prime_r2c_last_source(params):
         "@triton.jit",
         f"def {name}({', '.join(params)}):",
         "    tile_id = tl.program_id(0)",
+        f"    batch_offset = tl.program_id(1) * {16 * stride}",
         f"    half_row = (tile_id // {_PRIME_R2C_COLUMN_TILES}) * {tile} + tl.arange(0, {tile})",
         f"    frequency = (tile_id % {_PRIME_R2C_COLUMN_TILES}) * {tile} + tl.arange(0, {tile})",
-        f"    source = half_row[:, None] * {columns} + frequency[None, :]",
+        f"    source = batch_offset + half_row[:, None] * {columns} + frequency[None, :]",
         f"    valid = (half_row[:, None] < {half}) & (frequency[None, :] < {columns})",
         "    pairs = tl.cast(in_ptr, tl.pointer_type(tl.uint64))",
     ]
@@ -66,7 +67,7 @@ def build_ix_prime_r2c_last_source(params):
     lines.extend(_emit_radix16_codelet_call("    ", "forward"))
     lines.extend([
         "    result = tl.cast(out_ptr, tl.pointer_type(tl.uint64))",
-        f"    target = frequency[:, None] * {half} + half_row[None, :]",
+        f"    target = batch_offset + frequency[:, None] * {half} + half_row[None, :]",
         "    store_mask = tl.trans(valid)",
     ])
     for axis in range(16):

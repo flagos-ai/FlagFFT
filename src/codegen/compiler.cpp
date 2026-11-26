@@ -7442,8 +7442,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
       n0_request.ix_warp_fft_pack_default=ix_nd_pack;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
+  const bool ix_prime_r2c_batch = batch == 4 && flag_or_default("FLAGFFT_IX_3D_PRIME_R2C_BATCH", false);
   const bool ix_prime_r2c = ix_prime_3d && request.real_transform_kind == "r2c" &&
-      !inverse && batch == 1 && n0 == 16 && n1 == 997 && n2 == 64 && fused_first && fused_n0 &&
+      !inverse && (batch == 1 || ix_prime_r2c_batch) &&
+      n0 == 16 && n1 == 997 && n2 == 64 && fused_first && fused_n0 &&
       flag_or_default("FLAGFFT_IX_3D_PRIME_R2C", true);
   // On the dense 256-cube R2C path, each fused store can apply the lane
   // bit reversal directly in its output coordinates.

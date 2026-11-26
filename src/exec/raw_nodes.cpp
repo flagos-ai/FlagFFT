@@ -633,7 +633,9 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
       blocks = permuted_store_outer_blocks(context.batch, outer_stride, kernel->batch_per_block);
     }
     if (kernel->grid_x_override > 0) blocks = kernel->grid_x_override;
-    kernel->launch(context.stream, args, blocks, 1, 1);
+    const int64_t volumes = kernel->kernel_name == "ix_prime_r2c_last"
+        ? context.batch / outer_stride : 1;
+    kernel->launch(context.stream, args, blocks, volumes, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedLeaf execute failed: %s\n", e.what());
