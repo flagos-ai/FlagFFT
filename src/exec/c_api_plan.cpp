@@ -13,6 +13,7 @@
 // limitations under the License.
 #include <cstdio>
 #include <cstdlib>
+#include <string_view>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -436,8 +437,12 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     }
     const auto &request = plan->executable.forward_request;
     const auto kind = plan->executable.root->kind;
+    const char* maca_340200_graph = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_GRAPH");
+    const bool maca_single_graph = maca_340200_graph && std::string_view(maca_340200_graph) == "1" &&
+        maca_340200_single_split_enabled(request);
     if (kind == PlanNodeKind::FourStep && request.input_dtype == "complex64" &&
-        maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_GRAPH", false) &&
+        (maca_single_graph ||
+         maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_GRAPH", false)) &&
         std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
       const auto wrap = [](std::shared_ptr<CompiledRawNode>& node) {
         if (node && !node->is_single_kernel()) {
