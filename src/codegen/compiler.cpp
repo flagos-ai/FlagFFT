@@ -8588,13 +8588,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
   const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  const bool ix_direct_columns_default = (n0 < 2048 && batch == 1) ||
+      (n0 == 2048 && batch == 4 && ix_nd_pack > 0);
   const bool ix_direct_columns = request.device_type == "ix" && request.device_arch == "71" &&
       request.origin_rank == 2 && request.raw_dim == 2 && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n0 == n1 && (n0 == 64 || n0 == 128 || n0 == 2048) &&
       (batch == 1 || batch == 4) && ix_row_leaf && ix_col_leaf &&
       flag_or_default("FLAGFFT_IX_ND_WARP", true) && flag_or_default("FLAGFFT_IX_WARP_FFT", true) &&
-      flag_or_default("FLAGFFT_IX_2D_C2R_DIRECT_COLS", n0 < 2048 && batch == 1);
+      flag_or_default("FLAGFFT_IX_2D_C2R_DIRECT_COLS", ix_direct_columns_default);
   if (ix_direct_columns) {
     col_request.ix_warp_fft_pack_default = n0 == 2048 ? 4 : 2;
     row_request.ix_warp_fft_pack_default = n1 == 2048 ? 4 : 2;
