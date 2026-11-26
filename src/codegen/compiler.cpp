@@ -5152,9 +5152,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
-  return std::make_shared<CompiledRawLeafNode>(leaf.length,
-                                               std::move(kernel),
-                                               build_raw_leaf_tables(leaf, request));
+  auto original = std::make_shared<CompiledRawLeafNode>(leaf.length, std::move(kernel),
+                                                        build_raw_leaf_tables(leaf, request));
+  if (request.device_type != "ix" || request.device_arch != "71" || leaf.length != 2048 ||
+      request.requested_n != leaf.length || request.convolution_child ||
+      !request.real_transform_kind.empty() || !ix_real_single_pack_policy_enabled(request) ||
+      !flag_or_default("FLAGFFT_IX_CT_SPLIT", true)) return original;
+
+  // One block computes the even frequencies and another the odd frequencies.
+  // Each block needs both input halves, so overlapping layouts use the original leaf.
+  const int64_t half = leaf.length / 2;
+  FFTRequest child = request;
+  child.fft_length = half;
+  child.requested_n = half;
+  child.n = half;
+  child.input_shape = {1, half};
+  child.input_strides = {half, 1};
+  PlanBuilder builder;
+  const auto half_leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(half, child));
+  if (!half_leaf) return original;
+  auto split_key = KernelKey::leaf(target, request.direction, request.input_dtype,
+      half, half_leaf->factors, half_leaf->lanes, half_leaf->num_warps,
+      half_leaf->generic_radices, half_leaf->smem_size);
+  split_key.perm_form = "ix_split_frequency";
+  auto tables = build_raw_leaf_tables(*half_leaf, child);
+  tables.push_back(build_raw_four_step_twiddle(request, half, 2));
+  return std::make_shared<CompiledRawLeafNode>(
+      leaf.length, compile_kernel(split_key), std::move(tables), std::move(original));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

@@ -1300,6 +1300,7 @@ def _emit_stage_block(
     perm_inner: bool = False,
     perm_batched: bool = False,
     packed_smem_alias: bool = False,
+    ix_split_frequency: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1695,7 +1696,21 @@ def _emit_stage_block(
                             f"tw_r{j}", f"tw_i{j}", lane_block, inner_pack, current_lanes, offset, width, "0"))
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
                 continue
-            if io_mode in {"contiguous", "permuted_store"}:
+            if ix_split_frequency:
+                for tag, index in [("a", f"in{j}"), ("b", f"(in{j} + {n})"),
+                                   ("root", f"(in{j} + split_band * {n})")]:
+                    ptr = "split_roots_ptr" if tag == "root" else "in_ptr"
+                    lines.extend([
+                        f"{indent}pair = tl.load(tl.cast({ptr}, tl.pointer_type(tl.uint64)) + {index}, lane_mask, 0)",
+                        f"{indent}{tag}r = tl.cast(tl.cast(pair, tl.uint32), tl.float32, bitcast=True)",
+                        f"{indent}{tag}i = tl.cast(tl.cast(pair >> 32, tl.uint32), tl.float32, bitcast=True)",
+                    ])
+                lines.extend([
+                    f"{indent}sr = ar + tl.where(split_band == 0, br, -br)",
+                    f"{indent}si = ai + tl.where(split_band == 0, bi, -bi)",
+                    f"{indent}r{j}, i{j} = _cmul(sr, si, rootr, rooti)",
+                ])
+            elif io_mode in {"contiguous", "permuted_store"}:
                 if hcu_u64_load:
                     lines.append(
                         f"{indent}packed{j} = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.uint64)) "
@@ -2352,7 +2367,14 @@ def _emit_stage_block(
                     f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes,
                     j * math.prod(factors[:-1]), four_step_n1, io_mode == "four_step_row", four_step_n2))
                 continue
-            if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
+            if ix_split_frequency:
+                lines.extend([
+                    f"{indent}split_lo = tl.cast(tl.cast(r{j}, tl.uint32, bitcast=True), tl.uint64)",
+                    f"{indent}split_hi = tl.cast(tl.cast(i{j}, tl.uint32, bitcast=True), tl.uint64)",
+                    f"{indent}split_dst = tl.cast(out_ptr, tl.pointer_type(tl.uint64)) + 2 * out_idx{j} + split_band",
+                    f"{indent}tl.store(split_dst, split_lo | (split_hi << 32), lane_mask)",
+                ])
+            elif io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
                            "rader_prepare_leaf"}:
                 if io_mode == "strided":
                     lines.append(
@@ -3784,6 +3806,12 @@ def _build_leaf_kernel_source_for_io(
         ),
     )
 
+    ix_split_frequency = perm_form == "ix_split_frequency"
+    if ix_split_frequency:
+        if not (_ix_backend_active() and n == 1024 and plan.dtype == "complex64"
+                and io_mode == "contiguous" and batch_pack == 1):
+            raise ValueError("IX split frequencies require a single 1024-point FP32 half transform")
+        params.insert(-1, "split_roots_ptr")
     suffix = "_".join(str(x) for x in factors)
     if io_mode == "contiguous":
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
@@ -3841,6 +3869,8 @@ def _build_leaf_kernel_source_for_io(
         )
     if permuted_smem_store:
         kernel_name += "_smstore"
+    if ix_split_frequency:
+        kernel_name += "_split_frequency"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
@@ -3901,7 +3931,9 @@ def _build_leaf_kernel_source_for_io(
         and _maca_knob("STATIC_SINGLE", "0") == "1"
     )
     if io_mode in contiguous_modes:
-        if static_single:
+        if ix_split_frequency:
+            body.extend(["    split_band = tl.program_id(0)", "    nbatch = 1", "    pid = 0", "    batch_id = 0"])
+        elif static_single:
             # The native policy identifies a single transform. Keep the runtime
             # ABI while specializing its batch bound and base in this experiment.
             body.extend(["    nbatch = 1", "    pid = 0", "    batch_id = 0"])
@@ -4142,6 +4174,7 @@ def _build_leaf_kernel_source_for_io(
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,
+                ix_split_frequency=ix_split_frequency,
             )
         )
 

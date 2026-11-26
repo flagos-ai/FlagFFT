@@ -757,6 +757,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
+      key.perm_form == "ix_split_frequency";
   if (npu_performance_defaults_active) {
     for (const auto &setting : kNpuPerformanceDefaults) {
       jit_command << setting.name << "=" << shell_quote(performance_env(setting.name)) << " ";
@@ -846,7 +848,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --npu-portable-leaf";
     }
   }
-  if (key.kind == KernelKind::LeafPermutedStore ||
+  if (ix_split_frequency || key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
@@ -1190,6 +1192,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        kernel->kernel_name == "power_cube_finish" ||
        kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (ix_split_frequency) {
+    if (kernel->batch_per_block != 1 ||
+        kernel->kernel_name.find("_split_frequency") == std::string::npos)
+      throw std::runtime_error("invalid IX split-frequency leaf");
+    kernel->grid_x_override = 2;
+  }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
       kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
       kernel->kernel_name.find("_stridedinput") != std::string::npos) {

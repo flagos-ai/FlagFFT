@@ -345,8 +345,10 @@ namespace {
 
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
                                          std::shared_ptr<JitKernel> kernel,
-                                         std::vector<DeviceAllocation> tables)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                         std::vector<DeviceAllocation> tables,
+                                         std::shared_ptr<CompiledRawNode> layout_fallback)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)),
+      layout_fallback(std::move(layout_fallback)) {
 }
 
 std::string CompiledRawLeafNode::describe() const {
@@ -361,6 +363,15 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
                                            adaptor::DevicePtr output,
                                            const RawExecutionContext &context) const {
   try {
+    if (layout_fallback) {
+      const auto separation = input < output ? output - input : input - output;
+      const auto bytes = length * complex_element_bytes(context.request.input_dtype);
+      if (context.batch != 1 || separation < static_cast<adaptor::DevicePtr>(bytes) ||
+          (context.input_distance > 0 && context.input_distance != length) ||
+          (context.output_distance > 0 && context.output_distance != length)) {
+        return layout_fallback->execute(input, output, context);
+      }
+    }
     const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
     if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
                                            context.input_distance, context.output_distance)) {
@@ -376,7 +387,8 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
         std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
         kernel->launch(context.stream,
                        args,
-                       ceil_div(context.batch, kernel->batch_per_block),
+                       layout_fallback ? kernel->grid_x_override :
+                                         ceil_div(context.batch, kernel->batch_per_block),
                        1,
                        1);
         return;

@@ -397,9 +397,10 @@ def module_name_for(
     if spec.name in {"direct_dft_r2c", "direct_dft_c2r"}:
         return f"flagfft_jit_{spec.name}_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "leaf":
+        split_tag = "_ix_split_frequency" if perm_form == "ix_split_frequency" else ""
         return (
             f"flagfft_jit_{direction_tag}_{factor_tag}"
-            f"_l{lanes}_b{lane_block}_{dtype_tag}"
+            f"_l{lanes}_b{lane_block}_{dtype_tag}{split_tag}"
         )
     if spec.name in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
         return (

@@ -209,6 +209,7 @@ def main() -> None:
             "inner_middle",
             "inner_middle_c2r_cube",
             "outer_last",
+            "ix_split_frequency",
         ),
         default="outer",
         help="axis placement for the permuted store's fused permutation",

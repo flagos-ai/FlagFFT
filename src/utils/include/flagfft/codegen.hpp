@@ -220,7 +220,8 @@ struct Raw1DGraphState {
 struct CompiledRawLeafNode final : CompiledRawNode {
   CompiledRawLeafNode(int64_t length,
                       std::shared_ptr<JitKernel> kernel,
-                      std::vector<DeviceAllocation> tables);
+                      std::vector<DeviceAllocation> tables,
+                      std::shared_ptr<CompiledRawNode> layout_fallback = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -230,6 +231,7 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable Raw1DGraphState graph_state;
 };
 
