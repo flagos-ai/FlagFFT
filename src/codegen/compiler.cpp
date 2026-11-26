@@ -3128,7 +3128,7 @@ namespace {
         request.origin_rank > 1 || request.raw_dim != 1 || n != 663000 ||
         request.fft_length != n || request.requested_n != n || batch != request.batch ||
         (batch != 1 && batch != 64) || request.requires_contiguous_copy ||
-        !maca_flag_or_default("FLAGFFT_MACA_663000_PAIRED_REAL", false)) return nullptr;
+        !maca_flag_or_default("FLAGFFT_MACA_663000_PAIRED_REAL", true)) return nullptr;
     const bool use_two_warps = batch == 1 && (inverse || request.input_dtype == "complex128");
     return use_two_warps ? "maca_paired_real_boundary_w2" : "maca_paired_real_boundary_w4";
   }
