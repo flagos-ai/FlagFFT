@@ -1272,6 +1272,15 @@ def _emit_portable_exchange(
     return lines
 
 
+def _ix_full_cta_disjoint(n, factors, io_mode, prime_n):
+    return (
+        n == 16384 and factors == (16, 16, 16, 4)
+        and (io_mode == "contiguous" or
+             (prime_n == 8191 and io_mode in {"bluestein_prepare_leaf", "bluestein_finish_leaf"}))
+        and _maca_knob("TLE_DISJOINT_CTA", "0") == "1"
+    )
+
+
 def _emit_stage_block(
     stage: int,
     factors: tuple[int, ...],
@@ -1564,8 +1573,7 @@ def _emit_stage_block(
                           and _maca_knob("TLE_DISJOINT_STAGE","0") == "1"
                           and ((n in {221,425,780,1500,1560}
                                 and _maca_knob("TLE_DISJOINT_MIXED","0") == "1")
-                               or (n==16384 and factors==(16,16,16,4) and io_mode=="contiguous"
-                                   and _maca_knob("TLE_DISJOINT_CTA","0") == "1")))
+                               or _ix_full_cta_disjoint(n, factors, io_mode, prime_n)))
         loop = "static_range" if mixed_disjoint else "range"
         lines.append(f"    for group_{stage} in tl.{loop}(0, {groups}):")
         indent = "        "
@@ -3894,11 +3902,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
         kernel_name += f"_nb{permutation_batch}"
-    cta_disjoint = (n==16384 and factors==(16,16,16,4) and batch_pack==1
-        and io_mode=="contiguous"
-        and math.prod(factors)==n
-        and all(n % (radix*width)==0 for radix,width in zip(factors,stage_lanes))
-        and _maca_knob("TLE_DISJOINT_CTA","0")=="1")
+    cta_disjoint = (batch_pack == 1 and _ix_full_cta_disjoint(n, factors, io_mode, prime_n)
+        and all(n % (radix * width) == 0 for radix, width in zip(factors, stage_lanes)))
     real_disjoint = (
         io_mode == "contiguous_r2c" and n == 210 and factors == (7,6,5)
         and batch_pack == 16 and _maca_knob("WARPS", "") == "16"

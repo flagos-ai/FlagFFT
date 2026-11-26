@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <sys/file.h>
 #include <unistd.h>
+#include <utility>
 
 #if defined(BACKEND_MACA)
 #include "triton_jit/jit_utils.h"
@@ -27,6 +28,14 @@
 
 namespace flagfft {
 namespace {
+
+  constexpr std::pair<const char *, const char *> kIxBluesteinCtaDefaults[] = {
+      {"FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", "1"},
+      {"FLAGFFT_IX_WARPS", "16"},
+      {"FLAGFFT_IX_SMEM_SWIZZLE", "1"},
+      {"FLAGFFT_IX_SMEM_SWIZZLE_SHIFT", "5"},
+      {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
+  };
 
   bool npu_auto_blockify_for(const KernelKey &key) {
     if (key.perm_form=="npu_paired_real_boundary_auto") return true;
@@ -251,6 +260,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 ";ix-fourstep-preset=" + std::to_string(ix_fourstep_preset_) +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  const bool ix_bluestein_cta = key.perm_form == "ix_bluestein_cta";
+  if (ix_bluestein_cta) {
+    for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+  }
   if (adaptor::backend_name() == "hcu") {
     cache_key += ";" + hcu_performance_identity();
     const char *vector_io = performance_env("FLAGFFT_HCU_VECTOR_IO");
@@ -757,6 +773,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (ix_bluestein_cta) {
+    for (const auto &[name, value] : kIxBluesteinCtaDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+  }
   const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
       (key.perm_form == "ix_split_frequency" || key.perm_form == "ix_split_c2r_frequency");
   if (npu_performance_defaults_active) {

@@ -4326,6 +4326,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         request.device_type == "cuda" && request.device_arch == "sm_80" &&
         leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
         flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
+    const char *ix_batch_pack = performance_env("FLAGFFT_IX_BATCH_PACK");
+    // Pairing a batch of 64 real FFTs leaves 32 complex convolutions.
+    const bool use_ix_batch_boundary_leaf = request.ix_fourstep_preset == 1 &&
+        batch == 32 && !request.origin_real_transform_kind.empty() &&
+        bluestein->length == 8191 && bluestein->conv_length == 16384 && four_step &&
+        real_kind.empty() && batch == chunk_batch &&
+        adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024 &&
+        !flag_or_default("FLAGFFT_IX_PORTABLE_LEAF", false) &&
+        (!ix_batch_pack || std::string(ix_batch_pack) == "1") &&
+        flag_or_default("FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", true) &&
+        flag_or_default("FLAGFFT_IX_BLUESTEIN_CTA", true);
     const char *hcu_boundary = performance_env("FLAGFFT_HCU_BLUESTEIN_BOUNDARY");
     const std::string hcu_boundary_mode = hcu_boundary ? hcu_boundary : "0";
     if (request.device_type == "hcu" && hcu_boundary_mode != "0" &&
@@ -4373,16 +4384,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
-    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf || use_hcu_boundary_leaf) {
+    if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf ||
+        use_hcu_boundary_leaf || use_ix_batch_boundary_leaf) {
+      const auto boundary_leaf = use_ix_batch_boundary_leaf
+          ? std::make_shared<LeafPlanNode>(16384, std::vector<int64_t>{16, 16, 16, 4}, 1, 1024, 16,
+                                          std::vector<int64_t>{}, 16384)
+          : leaf;
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
       return std::make_shared<CompiledRawBluesteinLeafNode>(
           bluestein->length,
           bluestein->conv_length,
           std::move(fft),
-          compile_leaf_bluestein_prepare_kernel(*leaf, child_request, bluestein->length),
-          compile_leaf_bluestein_finish_kernel(*leaf, child_request, bluestein->length),
-          build_raw_leaf_tables(*leaf, child_request),
+          compile_leaf_bluestein_prepare_kernel(
+              *boundary_leaf, child_request, bluestein->length, use_ix_batch_boundary_leaf),
+          compile_leaf_bluestein_finish_kernel(
+              *boundary_leaf, child_request, bluestein->length, use_ix_batch_boundary_leaf),
+          build_raw_leaf_tables(*boundary_leaf, child_request),
           std::move(chirp),
           std::move(b_time),
           std::move(work_buf),
@@ -4639,7 +4657,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
       flag_or_default("FLAGFFT_CUDA_REAL_BATCH_PAIR", false);
   const bool musa_enabled = request.device_type == "musa" && request.device_arch == "31" &&
       flag_or_default("FLAGFFT_MUSA_REAL_BATCH_PAIR", true);
-  if ((!cuda_enabled && !musa_enabled) || request.raw_dim != 1 || request.origin_rank > 1 ||
+  const bool ix_enabled = request.device_type == "ix" && request.device_arch == "71" &&
+      request.ix_fourstep_preset == 1 && n == 8191 && batch == 64 &&
+      flag_or_default("FLAGFFT_IX_REAL_BATCH_PAIR", true);
+  if ((!cuda_enabled && !musa_enabled && !ix_enabled) || request.raw_dim != 1 || request.origin_rank > 1 ||
       batch <= 1 || batch != request.batch || n < 997 || n % 2 == 0 ||
       request.input_strides.empty() || request.input_strides.back() != 1) return nullptr;
   const int64_t pairs = (batch + 1) / 2;
@@ -5701,7 +5722,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_rader_finish_kernel(cons
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                                  const FFTRequest &request,
-                                                                                 int64_t n) {
+                                                                                 int64_t n,
+                                                                                 bool ix_cta) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_prepare(target,
@@ -5714,12 +5736,14 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_prepare_kernel
                                                     leaf.num_warps,
                                                     leaf.generic_radices,
                                                     leaf.smem_size);
+  if (ix_cta) key.perm_form = "ix_bluestein_cta";
   return compile_kernel(key);
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(const LeafPlanNode &leaf,
                                                                                 const FFTRequest &request,
-                                                                                int64_t n) {
+                                                                                int64_t n,
+                                                                                bool ix_cta) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_bluestein_finish(target,
@@ -5732,6 +5756,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_bluestein_finish_kernel(
                                                    leaf.num_warps,
                                                    leaf.generic_radices,
                                                    leaf.smem_size);
+  if (ix_cta) key.perm_form = "ix_bluestein_cta";
   return compile_kernel(key);
 }
 
