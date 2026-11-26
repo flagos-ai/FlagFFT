@@ -160,9 +160,12 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp FourStep geometry")
     if (mode in {"r2c","contiguous_r2c","packed_r2c","four_step_real_row","four_step_r2c_col"} and inverse) or (mode in {"c2r","packed_c2r","four_step_hermitian_row","four_step_c2r_col"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
-    if dif_store and (n != 256 or mode not in {"outer", "inner", "r2c"} or lane_width != 64
-                      or manual_store or strided_input or wide or table_roots or packed_gather):
-        raise ValueError("DIF store requires a dense FP32 256-point wave and a permuted store")
+    if dif_store:
+        supported_layout = (n == 256 and mode in {"outer", "inner", "r2c"}
+                            or n == 2048 and mode == "outer")
+        if (not supported_layout or lane_width != 64 or manual_store or strided_input
+                or wide or table_roots or packed_gather):
+            raise ValueError("DIF store requires a supported FP32 wave with a permuted output")
     if ragged_r2c and (mode != "r2c" or manual_store):
         raise ValueError("ragged tiles require a regular R2C permuted store")
     sign=1 if inverse else -1
@@ -575,7 +578,8 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
                                  pack: int, permutation_span: int = 0) -> tuple[str,str]:
     """Retain the raw-leaf argument list, including unused twiddle pointers."""
     single_output = perm_form.endswith("_dif_chunk1")
-    perm_form = perm_form.removesuffix("_chunk1")
+    four_outputs = perm_form.endswith("_dif_chunk4")
+    perm_form = perm_form.removesuffix("_chunk1").removesuffix("_chunk4")
     dif_store = perm_form.endswith("_dif")
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
@@ -587,6 +591,8 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     chunk=(2 if n==256 else 8 if n>=1024 else 0) if mode in {'outer','inner','r2c'} else 0
     if single_output:
         chunk = 1
+    elif four_outputs:
+        chunk = 4
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
