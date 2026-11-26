@@ -113,7 +113,7 @@ inline bool maca_663000_packed_c2r_split_enabled(const FFTRequest& request) {
 }
 
 inline bool maca_batch_c2c_split_requested(const FFTRequest& request, int64_t length,
-                                          const char* option, bool default_enabled) {
+                                          const char* option) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
       request.requested_n != length || request.fft_length != length || request.real_transform ||
@@ -126,17 +126,17 @@ inline bool maca_batch_c2c_split_requested(const FFTRequest& request, int64_t le
   const char* setting = std::getenv(option);
   const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return (setting ? std::string(setting) == "1" : default_enabled) &&
+  return (!setting || std::string(setting) == "1") &&
       (!batch_policy || std::string(batch_policy) != "0") && (!plan || !*plan);
 }
 
 inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
-  return maca_batch_c2c_split_requested(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT", true);
+  return maca_batch_c2c_split_requested(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT");
 }
 
 inline bool maca_16384_fp64_batch_split_enabled(const FFTRequest& request) {
   return request.input_dtype == "complex128" &&
-      maca_batch_c2c_split_requested(request, 16384, "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT", false);
+      maca_batch_c2c_split_requested(request, 16384, "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT");
 }
 
 inline bool maca_524288_fp64_register_pack_enabled(const FFTRequest& request) {
@@ -148,7 +148,7 @@ inline bool maca_524288_fp64_register_pack_enabled(const FFTRequest& request) {
       request.input_strides != std::vector<int64_t>{length, 1}) return false;
   const char* setting = std::getenv("FLAGFFT_MACA_524288_FP64_REGISTER_PACK");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return setting && std::string(setting) == "1" && (!plan || !*plan) && maca_tail_policy_enabled(request);
+  return (!setting || std::string(setting) == "1") && (!plan || !*plan) && maca_tail_policy_enabled(request);
 }
 
 inline bool maca_prime_dif_requested(const FFTRequest& request) {

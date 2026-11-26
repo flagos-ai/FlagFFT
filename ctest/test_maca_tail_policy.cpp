@@ -319,8 +319,10 @@ TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {
   r.input_strides = {16384, 1};
   r.batch = 64;
   flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_16384_FP64_BATCH_SPLIT", "0", 1);
   const auto baseline = flagfft::PlanKey::from_node(builder.build(16384, r)).repr();
-  setenv("FLAGFFT_MACA_16384_FP64_BATCH_SPLIT", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
+  unsetenv("FLAGFFT_MACA_16384_FP64_BATCH_SPLIT");
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(16384, r));
   ASSERT_NE(plan, nullptr);
   EXPECT_EQ(plan->n1, 256);
@@ -340,8 +342,9 @@ TEST_F(TailPolicy, C550Fp64_524288Pack4IsScopedToDenseSingleComplex) {
   r.device_arch = "102";
   r.input_layout = "contiguous";
   r.input_strides = {524288, 1};
+  setenv("FLAGFFT_MACA_524288_FP64_REGISTER_PACK", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
-  setenv("FLAGFFT_MACA_524288_FP64_REGISTER_PACK", "1", 1);
+  unsetenv("FLAGFFT_MACA_524288_FP64_REGISTER_PACK");
   const auto mode = flagfft::maca_tail_codegen_root(r);
   EXPECT_EQ(mode, "z2z524288-pack4");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
