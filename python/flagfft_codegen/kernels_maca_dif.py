@@ -6,7 +6,7 @@
 from textwrap import dedent
 
 
-def _dif2048_helpers(direction: str | None) -> str:
+def _dif2048_helpers(direction: str | None, *, length: int = 2048) -> str:
     sign = "SIGN" if direction is None else (1 if direction == "inverse" else -1)
     sign_arg = ", SIGN: tl.constexpr" if direction is None else ""
     return dedent(
@@ -24,7 +24,7 @@ def _dif2048_helpers(direction: str | None) -> str:
         def _dif_join_quarters(a, b, c, d, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
             digits = tl.join(tl.join(a, c), tl.join(b, d))
             tile = tl.reshape(digits, (GROUPS, QUARTER, 4))
-            return tl.reshape(tl.permute(tile, (0, 2, 1)), (2048,))
+            return tl.reshape(tl.permute(tile, (0, 2, 1)), ({length},))
 
         @triton.jit
         def _dif_rotate(real, imag, roots_r, roots_i, indices):
@@ -35,7 +35,7 @@ def _dif2048_helpers(direction: str | None) -> str:
         @triton.jit
         def _dif_radix_four(real, imag, roots_r, roots_i, STAGE: tl.constexpr{sign_arg}):
             GROUPS: tl.constexpr = 1 << (2 * STAGE)
-            QUARTER: tl.constexpr = 2048 // (4 * GROUPS)
+            QUARTER: tl.constexpr = {length} // (4 * GROUPS)
             ar, br, cr, dr = _dif_split_quarters(real, GROUPS, QUARTER)
             ai, bi, ci, di = _dif_split_quarters(imag, GROUPS, QUARTER)
             even_r, even_i = ar + cr, ai + ci
@@ -60,6 +60,15 @@ def _dif2048_helpers(direction: str | None) -> str:
                 _dif_join_quarters(out0_i, out1_i, out2_i, out3_i, GROUPS, QUARTER),
             )
 
+        """
+    ) + dedent(
+        """
+        @triton.jit
+        def _dif_natural_output(value):
+            result = tl.reshape(value, (4, 4, 4, 4, 4))
+            result = tl.permute(result, (4, 3, 2, 1, 0))
+            return tl.reshape(result, (1024,))
+        """ if length == 1024 else """
         @triton.jit
         def _dif_natural_output(value):
             low, high = tl.split(tl.reshape(value, (1024, 2)))
@@ -71,8 +80,9 @@ def _dif2048_helpers(direction: str | None) -> str:
     )
 
 
-def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
-    name = f"maca_fp64_dif2048_{direction}"
+def build_maca_fp64_dif_leaf(direction: str, *, four_warps: bool = False) -> tuple[str, str]:
+    suffix = "_w4" if four_warps else ""
+    name = f"maca_fp64_dif2048{suffix}_{direction}"
     source = _dif2048_helpers(direction) + dedent(
         f"""
         @triton.jit
@@ -91,6 +101,66 @@ def build_maca_fp64_dif_leaf(direction: str) -> tuple[str, str]:
             tl.store((out_ptr + base) + offset, value)
         """
     )
+    return name, source
+
+
+def build_maca_fp64_packed_dif(direction: str) -> tuple[str, str]:
+    inverse = direction == "inverse"
+    kind = "c2r" if inverse else "r2c"
+    name = f"maca_fp64_packed_dif1024_{kind}"
+    source = _dif2048_helpers(direction, length=1024) + dedent(f"""
+        @triton.jit
+        def _reflect_bit(values, BIT: tl.constexpr):
+            LOWER: tl.constexpr = 1 << BIT
+            GROUP: tl.constexpr = 1024 // (LOWER * 2)
+            digits = tl.reshape(values, (GROUP, 2, LOWER))
+            a, b = tl.split(tl.permute(digits, (0, 2, 1)))
+            swap = tl.arange(0, LOWER)[None, :] != 0
+            result = tl.join(tl.where(swap, b, a), tl.where(swap, a, b))
+            return tl.reshape(tl.permute(result, (0, 2, 1)), (1024,))
+
+        @triton.jit
+        def _reflect(values):
+            for bit in tl.static_range(1, 10):
+                values = _reflect_bit(values, bit)
+            return values
+
+        @triton.jit
+        def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, phase_r_ptr, phase_i_ptr,
+                   input_distance, output_distance, nbatch):
+            row = tl.program_id(0).to(tl.int64)
+            if row >= nbatch:
+                return
+            k = tl.arange(0, 1024)
+            pair = tl.arange(0, 2)[None, :]
+            index = k[:, None] * 2 + pair
+            co, si = tl.load(phase_r_ptr + k), tl.load(phase_i_ptr + k)
+            if {inverse}:
+                src = in_ptr + row * input_distance * 2
+                ar, ai = tl.split(tl.load(src + index))
+                br, bi = tl.split(tl.load(src + (1024 - k[:, None]) * 2 + pair))
+                ai = tl.where(k == 0, 0.0, ai)
+                bi = tl.where(k == 0, 0.0, bi)
+                dr, di = ar - br, ai + bi
+                real = ar + br - (dr * si + di * co)
+                imag = ai - bi + (dr * co - di * si)
+            else:
+                real, imag = tl.split(tl.load(in_ptr + row * input_distance + index))
+            for stage in tl.static_range(5):
+                real, imag = _dif_radix_four(real, imag, roots_r_ptr, roots_i_ptr, stage)
+            real, imag = _dif_natural_output(real), _dif_natural_output(imag)
+            if {inverse}:
+                tl.store(out_ptr + row * output_distance + index, tl.join(real, imag))
+            else:
+                br, bi = _reflect(real), _reflect(imag)
+                dr, di = real - br, imag + bi
+                out_r = (real + br + dr * si + di * co) * 0.5
+                out_i = (imag - bi - dr * co + di * si) * 0.5
+                dst = out_ptr + row * output_distance * 2
+                tl.store(dst + index, tl.join(out_r, out_i))
+                tl.store(dst + 2048 + k, real - imag, k == 0)
+                tl.store(dst + 2049 + k, 0.0, k == 0)
+    """)
     return name, source
 
 

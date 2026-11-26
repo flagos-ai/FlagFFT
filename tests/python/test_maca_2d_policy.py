@@ -137,6 +137,7 @@ def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
     "length,factors,perm_form,kernel_stem,warps,batch_pack",
     [
         (2048, (16, 16, 8), "maca_fp64_dif", "maca_fp64_dif2048", 2, 1),
+        (2048, (16, 16, 8), "maca_fp64_dif_w4", "maca_fp64_dif2048_w4", 4, 1),
         (64, (4, 4, 4), "maca_fp64_dif_first64", "maca_fp64_dif_first64", 8, 32),
         (128, (8, 4, 4), "maca_fp64_ct128_prepare", "maca_fp64_ct128_prepare", 4, 4),
         (128, (8, 4, 4), "maca_fp64_ct128_finish", "maca_fp64_ct128_finish", 4, 8),
@@ -220,6 +221,32 @@ def test_c550_packed_3d_real_boundary_launch_abi(tmp_path, mode, direction, prec
         assert metadata["arg_names"] == [
             "in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "phase_r_ptr", "phase_i_ptr", "nbatch",
         ]
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize("direction", ("forward", "inverse"))
+def test_c550_1d_fp64_packed_dif_distances(tmp_path, direction):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=1024, factors=(16, 8, 8), lanes=64, num_warps=4,
+            generic_radices=(), smem_size=1024, direction=direction, dtype="complex128",
+            prime_n=0, four_step_n1=0, four_step_n2=0,
+            perm_form="maca_fp64_packed_dif1024", out_dir=tmp_path,
+        )
+        assert metadata["num_warps"] == 4
+        assert metadata["batch_per_block"] == 1
+        assert metadata["arg_names"] == [
+            "in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "phase_r_ptr", "phase_i_ptr",
+            "input_distance", "output_distance", "nbatch",
+        ]
+        assert metadata["signature"].endswith(",i64,i64,i32")
     finally:
         reset_profile(profile)
 

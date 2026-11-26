@@ -1940,9 +1940,11 @@ class TritonCompiler {
   bool npu_stockham_tle_allowed_ = true;
 
   enum class MacaLeafLayout {
-    Auto, Contiguous, FirstAxis64, OuterPrepare128, OuterFinish128,
+    Auto, Contiguous, ContiguousFourWarps, FirstAxis64, OuterPrepare128, OuterFinish128,
     OuterPrepareDif128, OuterFinishDif128, RealForward64, RealInverse64
   };
+  std::shared_ptr<CompiledRawNode> compile_maca_1d_fp64_packed_dif(const LeafPlanNode &leaf,
+                                                                 const FFTRequest &request);
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request,
                                                    MacaLeafLayout maca_layout = MacaLeafLayout::Auto);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

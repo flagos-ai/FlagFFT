@@ -2721,14 +2721,24 @@ namespace {
     return length / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
   }
 
+  bool maca_1d_fp64_2048_scope(const FFTRequest &request, int64_t batch) {
+    return request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
+        (batch == 1 || batch == 64) && !request.convolution_child && !request.packed_real_child &&
+        request.fft_length == 2048 && request.requested_n == 2048 &&
+        request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        !request.input_strides.empty() && request.input_strides.back() == 1;
+  }
+
+  bool maca_1d_fp64_2048_dif_enabled(const FFTRequest &request, int64_t batch) {
+    return maca_1d_fp64_2048_scope(request, batch) &&
+        flag_or_default("FLAGFFT_MACA_1D_FP64_2048", true) &&
+        flag_or_default("FLAGFFT_MACA_1D_FP64_2048_DIF", false);
+  }
+
   bool maca_1d_fp64_2048_enabled(const FFTRequest &request, int64_t batch) {
-    if (request.device_type != "maca" || request.device_arch != "102" ||
-        request.raw_dim != 1 || request.origin_rank > 1 || batch != request.batch ||
-        (batch != 1 && batch != 64) || request.convolution_child || request.packed_real_child ||
-        request.fft_length != 2048 || request.requested_n != 2048 ||
-        request.input_dtype != "complex128" || request.output_dtype != "complex128" ||
-        request.input_layout != "contiguous" || request.requires_contiguous_copy ||
-        request.input_strides.empty() || request.input_strides.back() != 1) return false;
+    if (!maca_1d_fp64_2048_scope(request, batch)) return false;
     const char *setting = performance_env("FLAGFFT_MACA_1D_FP64_2048");
     if (setting) return std::string(setting) == "1";
     if (request.real_transform_kind != "d2z" || request.direction != "forward") return false;
@@ -3602,6 +3612,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
+    if (leaf->length == 2048 && !request.real_transform &&
+        maca_1d_fp64_2048_dif_enabled(request, batch)) {
+      return compile_raw_leaf(*leaf, request, MacaLeafLayout::ContiguousFourWarps);
+    }
     if (leaf->length == 2048 && !request.real_transform &&
         maca_1d_fp64_2048_enabled(request, batch)) {
       return compile_raw_leaf(*leaf, request, MacaLeafLayout::Contiguous);
@@ -4935,8 +4949,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
   }
+  const bool maca_1d_dif = allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch);
   const bool maca_fused_packed = allow_packed &&
-      (maca_1d_fp64_2048_enabled(request, batch) ||
+      (maca_1d_dif || maca_1d_fp64_2048_enabled(request, batch) ||
        maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_));
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
@@ -4949,6 +4964,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        if (maca_1d_dif && leaf->length == 1024) {
+          return compile_maca_1d_fp64_packed_dif(*leaf, request);
+        }
         leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
             packed_child->request.direction, packed_child->request.input_dtype,
@@ -5110,7 +5128,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
-  const bool maca_1d_fused = allow_packed && maca_1d_fp64_2048_enabled(request, batch);
+  const bool maca_1d_dif = allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch);
+  const bool maca_1d_fused = allow_packed && (maca_1d_dif || maca_1d_fp64_2048_enabled(request, batch));
   const bool maca_packed_rows = allow_packed &&
       maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
   if (auto packed_child =
@@ -5152,6 +5171,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
       leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
       if (leaf) {
+        if (maca_1d_dif && leaf->length == 1024) {
+          return compile_maca_1d_fp64_packed_dif(*leaf, request);
+        }
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),
             packed_child->request.direction,
@@ -5242,6 +5264,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                               std::move(full_output));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_maca_1d_fp64_packed_dif(
+    const LeafPlanNode &leaf, const FFTRequest &request) {
+  const bool inverse = request.direction == "inverse";
+  auto key = KernelKey::leaf(triton_target_for_request(request), request.direction, request.input_dtype,
+      leaf.length, leaf.factors, leaf.lanes, leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+  key.perm_form = "maca_fp64_packed_dif1024";
+  auto kernel = compile_kernel(key);
+  auto tables = make_maca_dif_roots(1024, true, inverse);
+  auto phase = make_maca_dif_roots(2048, true, inverse);
+  tables.push_back(std::move(phase[0]));
+  tables.push_back(std::move(phase[1]));
+  if (inverse) {
+    return std::make_shared<CompiledRawC2RLeafNode>(2048, std::move(kernel), std::move(tables));
+  }
+  return std::make_shared<CompiledRawR2CLeafNode>(2048, std::move(kernel), std::move(tables));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request,
                                                                   MacaLeafLayout maca_layout) {
@@ -5267,6 +5306,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   switch (maca_layout) {
     case MacaLeafLayout::Auto: break;
     case MacaLeafLayout::Contiguous: key.perm_form = "maca_fp64_dif"; break;
+    case MacaLeafLayout::ContiguousFourWarps: key.perm_form = "maca_fp64_dif_w4"; break;
     case MacaLeafLayout::FirstAxis64: key.perm_form = "maca_fp64_dif_first64"; break;
     case MacaLeafLayout::OuterPrepare128: key.perm_form = "maca_fp64_ct128_prepare"; break;
     case MacaLeafLayout::OuterFinish128: key.perm_form = "maca_fp64_ct128_finish"; break;

@@ -743,6 +743,8 @@ def emit_jit_kernel(
     spec = kernel_spec(kernel)
     maca_dif_layout = {
         "maca_fp64_dif": (2048, 2, 1),
+        "maca_fp64_dif_w4": (2048, 4, 1),
+        "maca_fp64_packed_dif1024": (1024, 4, 1),
         "maca_fp64_dif_first64": (64, 8, 32),
         "maca_fp64_ct128_prepare": (128, 4, 4),
         "maca_fp64_ct128_finish": (128, 4, 8),
@@ -794,12 +796,19 @@ def emit_jit_kernel(
             if direction != expected_direction:
                 raise ValueError(f"{perm_form} requires the {expected_direction} direction")
             kernel_name, kernel_source = build_maca_3d_real_boundary(direction, fp64=dtype == "complex128")
+        elif perm_form == "maca_fp64_packed_dif1024":
+            from .kernels_maca_dif import build_maca_fp64_packed_dif
+
+            kernel_name, kernel_source = build_maca_fp64_packed_dif(direction)
         else:
             from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
 
-            builder = (build_maca_fp64_dif_first_axis if required_length == 64
-                       else build_maca_fp64_dif_leaf)
-            kernel_name, kernel_source = builder(direction)
+            if required_length == 64:
+                kernel_name, kernel_source = build_maca_fp64_dif_first_axis(direction)
+            else:
+                kernel_name, kernel_source = build_maca_fp64_dif_leaf(
+                    direction, four_warps=perm_form == "maca_fp64_dif_w4",
+                )
         n1 = n2 = 0
     elif spec.is_leaf_like:
         io_mode = (
