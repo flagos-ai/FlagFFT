@@ -3544,6 +3544,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
+    if (maca_2d_dense_policy_ && request.input_dtype == "complex128" &&
+        leaf->length == 2048 && leaf->factors == std::vector<int64_t> {16, 16, 8} &&
+        flag_or_default("FLAGFFT_MACA_2D_FP64_RADIX_ORDER", false)) {
+      // Keep the FFT size and physical block geometry while moving radix 8
+      // to the middle. The reordered plan also builds the matching twiddles.
+      LeafPlanNode reordered = *leaf;
+      std::swap(reordered.factors[1], reordered.factors[2]);
+      return compile_raw_leaf(reordered, request);
+    }
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
