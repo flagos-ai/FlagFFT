@@ -843,8 +843,10 @@ TEST_F(TailPolicy, C550Fp64D2Z16NativeAcceptsDenseAndPaddedRows) {
   r.input_strides = {16, 1};
   r.real_transform = true;
   r.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_D2Z_NATIVE", "0", 1);
   EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
-  setenv("FLAGFFT_MACA_16_D2Z_NATIVE", "1", 1);
+  unsetenv("FLAGFFT_MACA_16_D2Z_NATIVE");
   EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
   r.batch = 64;
   r.input_strides = {18, 1};

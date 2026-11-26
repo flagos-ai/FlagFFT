@@ -228,7 +228,7 @@ inline bool maca_fp64_d2z16_native_enabled(const FFTRequest& request) {
   }
   const char* setting = std::getenv("FLAGFFT_MACA_16_D2Z_NATIVE");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  if (!setting || std::string_view(setting) != "1" || (plan && *plan)) return false;
+  if ((setting && std::string_view(setting) != "1") || (plan && *plan)) return false;
   if (request.batch == 1) return maca_tail_policy_enabled(request);
   const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
   return request.batch == 64 && (!batch_policy || std::string_view(batch_policy) != "0");
