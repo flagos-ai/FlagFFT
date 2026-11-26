@@ -4427,7 +4427,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
     if (leaf && bluestein->conv_length == 2048 && bluestein->length == request.requested_n &&
-        batch == request.batch && (maca_3d_real_prime_dif_ || maca_prime_dif_requested(request))) {
+        batch == request.batch && (maca_3d_prime_dif_ || maca_prime_dif_requested(request))) {
       const bool fp64 = request.input_dtype == "complex128";
       auto key = KernelKey::leaf_bluestein(
           triton_target_for_request(child_request), child_request.direction, request.input_dtype,
@@ -6696,7 +6696,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   }
 
   std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
-  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+  const bool maca_prime_dif = request.device_type == "maca" && request.device_arch == "102" &&
+      n0 == 16 && n1 == 997 && n2 == 64 && (batch == 1 || batch == 4) &&
+      !request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_PRIME_DIF", false);
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  {
+    const ScopedBool prime_dif_scope(maca_3d_prime_dif_, maca_prime_dif);
+    n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+  }
   std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
 
   // Forward: (n0,n1,n2) -021-> (n0,n2,n1) -210-> (n1,n2,n0) -201-> (n0,n1,n2).
@@ -7265,7 +7276,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         n1_fft = compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout);
       } else {
         // The compact boundary has already formed complex rows for the middle axis.
-        const ScopedBool prime_dif_scope(maca_3d_real_prime_dif_, maca_real_prime_dif);
+        const ScopedBool prime_dif_scope(maca_3d_prime_dif_, maca_real_prime_dif);
         n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
       }
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
