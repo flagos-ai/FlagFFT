@@ -252,17 +252,20 @@ def build_maca_fp64_3d_real_boundary(direction: str) -> tuple[str, str]:
             return tl.reshape(tl.permute(digits, (2, 1, 0, 3)), (32, 32))
 
         @triton.jit
+        def _packed_mirror_bit(values, BIT: tl.constexpr):
+            LOWER: tl.constexpr = 1 << BIT
+            GROUPS: tl.constexpr = 32 // (LOWER * 2)
+            digits = tl.reshape(values, (GROUPS, 2, LOWER, 32))
+            low, high = tl.split(tl.permute(digits, (0, 2, 3, 1)))
+            flip = tl.arange(0, LOWER)[None, :, None] != 0
+            swapped = tl.join(tl.where(flip, high, low), tl.where(flip, low, high))
+            return tl.reshape(tl.permute(swapped, (0, 3, 1, 2)), (32, 32))
+
+        @triton.jit
         def _packed_mirror(values):
             # Negation modulo 32 complements the bits above the lowest set bit.
-            # Static swaps keep this permutation in the compiler's layout model.
             for bit in tl.static_range(1, 5):
-                LOWER: tl.constexpr = 1 << bit
-                GROUPS: tl.constexpr = 32 // (LOWER * 2)
-                digits = tl.reshape(values, (GROUPS, 2, LOWER, 32))
-                low, high = tl.split(tl.permute(digits, (0, 2, 3, 1)))
-                flip = tl.arange(0, LOWER)[None, :, None] != 0
-                swapped = tl.join(tl.where(flip, high, low), tl.where(flip, low, high))
-                values = tl.reshape(tl.permute(swapped, (0, 3, 1, 2)), (32, 32))
+                values = _packed_mirror_bit(values, bit)
             return values
 
         @triton.jit
