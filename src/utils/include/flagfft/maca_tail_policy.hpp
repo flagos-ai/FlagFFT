@@ -4,6 +4,8 @@
 
 #include "flagfft/base.hpp"
 
+#include <string_view>
+
 namespace flagfft {
 
 // On by default for a genuine rank-1 batch-1 MACA request.  `origin_rank`
@@ -226,6 +228,20 @@ inline bool maca_524288_fp64_register_pack_enabled(const FFTRequest& request) {
   return (!setting || std::string(setting) == "1") && (!plan || !*plan) && maca_tail_policy_enabled(request);
 }
 
+inline std::string_view maca_524288_fp64_single_z2d_mode(const FFTRequest& request) {
+  const int64_t length = request.packed_real_child ? 262144 : 524288;
+  const int64_t distance = request.packed_real_child ? length : length / 2 + 1;
+  if (request.device_arch != "102" || request.requested_n != length || request.fft_length != length ||
+      !request.real_transform || request.convolution_child || request.real_transform_kind != "z2d" ||
+      request.direction != "inverse" || request.input_dtype != "complex128" ||
+      request.output_dtype != "complex128" || request.input_layout != "contiguous" ||
+      request.requires_contiguous_copy || request.input_strides != std::vector<int64_t>{distance, 1} ||
+      !maca_tail_policy_enabled(request)) return {};
+  const char* setting = std::getenv("FLAGFFT_MACA_524288_FP64_SINGLE_Z2D");
+  const std::string_view mode = setting ? setting : "";
+  return mode == "vector" || mode == "paired" ? mode : std::string_view{};
+}
+
 inline bool maca_prime_dif_requested(const FFTRequest& request) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 ||
@@ -330,6 +346,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   }
   if (maca_16384_fp64_batch_split_enabled(request)) return "z2z16384-split";
   if (maca_524288_fp64_register_pack_enabled(request)) return "z2z524288-pack4";
+  if (request.packed_real_child && !maca_524288_fp64_single_z2d_mode(request).empty()) return "batch-vecio";
   if (request.input_dtype == "complex128" &&
       maca_batch_c2c_option_enabled(request, 16, "FLAGFFT_MACA_16_FP64_BATCH_PACK16", false)) {
     return "z2z16-pack16";

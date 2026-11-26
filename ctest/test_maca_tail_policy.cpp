@@ -29,6 +29,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
+                             "FLAGFFT_MACA_524288_FP64_SINGLE_Z2D",
                              "FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4",
                              "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_185640_PACKED_REAL_SPLIT",
@@ -501,6 +502,43 @@ TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {
   r.batch = 64;
   r.input_dtype = r.output_dtype = "complex64";
   EXPECT_FALSE(flagfft::maca_16384_fp64_batch_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550SingleFp64_524288Z2DVectorIoIsScopedToThePackedChild) {
+  using flagfft::KernelKind;
+  auto outer = request(524288, "complex128");
+  outer.device_arch = "102";
+  outer.real_transform = true;
+  outer.real_transform_kind = "z2d";
+  outer.direction = "inverse";
+  outer.input_layout = "contiguous";
+  outer.input_strides = {262145, 1};
+  auto child = outer;
+  child.packed_real_child = true;
+  child.fft_length = child.requested_n = 262144;
+  child.input_strides = {262144, 1};
+  EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(outer).empty());
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "off");
+  for (const char* setting : {"vector", "paired"}) {
+    setenv("FLAGFFT_MACA_524288_FP64_SINGLE_Z2D", setting, 1);
+    EXPECT_EQ(flagfft::maca_524288_fp64_single_z2d_mode(outer), setting);
+    EXPECT_EQ(flagfft::maca_tail_codegen_root(outer), "off");
+    const auto mode = flagfft::maca_tail_codegen_root(child);
+    EXPECT_EQ(mode, "batch-vecio");
+    EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                           "complex128", 512, 512, 512), mode);
+    auto other = child;
+    other.direction = "forward";
+    EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(other).empty());
+    other = child;
+    other.batch = 64;
+    EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(other).empty());
+    other = outer;
+    other.input_strides.front() += 1;
+    EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(other).empty());
+  }
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "off");
 }
 
 TEST_F(TailPolicy, C550BatchedPackedReal524288UsesMeasuredSplit) {

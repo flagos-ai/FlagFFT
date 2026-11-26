@@ -3139,6 +3139,9 @@ namespace {
       const bool use_two_warps = batch == 1 && (inverse || request.input_dtype == "complex128");
       return use_two_warps ? "maca_paired_real_boundary_w2" : "maca_paired_real_boundary_w4";
     }
+    if (inverse && n == 524288 && maca_524288_fp64_single_z2d_mode(request) == "paired") {
+      return "maca_paired_real_boundary_w4";
+    }
     const bool measured_batch = batch == 64 &&
         (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
         (n == 185640 || n == 524288 || (n == 340200 && request.input_dtype == "complex64"));
