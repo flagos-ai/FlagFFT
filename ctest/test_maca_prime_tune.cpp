@@ -617,6 +617,37 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048));
 }
 
+TEST(Plan2D, MacaDensePolicyIsScopedToC550DenseMatrices) {
+  flagfft::FFTRequest request;
+  request.device_type = "maca";
+  request.device_arch = "102";
+  request.raw_dim = request.origin_rank = 2;
+  request.batch = 4;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+
+  ScopedEnv policy("FLAGFFT_MACA_2D_DENSE", nullptr);
+  ScopedEnv rows("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  setenv("FLAGFFT_MACA_2D_DENSE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048, false, true));
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 1024, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 1, 2048, 2048));
+  request.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  request.requires_contiguous_copy = false;
+  request.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  request.origin_rank = 2;
+  request.device_arch = "other";
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+
+  request.device_arch = "102";
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048, false, true));
+}
+
 TEST(Plan2D, RcPreservesOnlySmallMixedBatchedRows) {
   const auto leaf = [](int64_t n, std::vector<int64_t> factors, int64_t lanes = 1) {
     return std::make_shared<flagfft::LeafPlanNode>(n, std::move(factors), 1, lanes, 2,

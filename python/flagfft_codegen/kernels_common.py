@@ -36,6 +36,7 @@ from .target import (
     maca_1d_batch_default_enabled,
     musa_1d_batch_default_enabled,
     maca_2d_single_default_enabled,
+    maca_2d_dense_default_enabled,
     maca_3d_default_enabled,
     maca_3d_c2c32_single_cube_enabled,
 )
@@ -412,6 +413,11 @@ def _maca_knob(name: str, default: str = "") -> str:
     tail_default = resource_default(name)
     if tail_default is not None:
         return tail_default
+    if _maca_backend_active() and maca_2d_dense_default_enabled():
+        if name == "EXCHANGE":
+            return "direct_all"
+        if name == "2D_TRANSPOSE":
+            return "tuned"
     if maca_3d_default_enabled():
         if name == "EXCHANGE":
             return "direct_all"

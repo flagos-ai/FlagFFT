@@ -72,6 +72,7 @@ from .target import (
     set_maca_1d_batch_default,
     set_musa_1d_batch_default,
     set_maca_2d_single_default,
+    set_maca_2d_dense_default,
     set_maca_3d_default,
     set_maca_3d_c2c32_single_cube,
 )
@@ -267,6 +268,11 @@ def main() -> None:
         action="store_true",
         help="enable the MACA rank-2 FP32 batch-1 code-generation policy",
     )
+    parser.add_argument(
+        "--maca-2d-dense",
+        action="store_true",
+        help="enable tuned dense C550 rank-2 axis kernels",
+    )
     parser.add_argument("--maca-3d", action="store_true",
                         help="enable scoped MACA rank-3 axis packing")
     parser.add_argument("--maca-3d-c2c32-single-cube", action="store_true",
@@ -314,6 +320,7 @@ def main() -> None:
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
+    set_maca_2d_dense_default(args.maca_2d_dense)
     set_maca_3d_default(args.maca_3d)
     set_maca_3d_c2c32_single_cube(args.maca_3d_c2c32_single_cube)
     if args.device_profile:
@@ -372,6 +379,8 @@ def main() -> None:
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
+        if args.maca_2d_dense:
+            profile_dir += "-maca-2d-dense"
         profile_dir += "-maca-3d" if args.maca_3d else "-maca-3d-off"
         maca_env_fingerprint = _maca_environment_fingerprint()
         if maca_env_fingerprint:
@@ -840,6 +849,7 @@ def main() -> None:
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "maca_tail_mode": args.maca_tail_mode,
             "maca_2d_single_default": args.maca_2d_single,
+            "maca_2d_dense_default": args.maca_2d_dense,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

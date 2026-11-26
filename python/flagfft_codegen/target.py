@@ -29,6 +29,7 @@ _IX_PRIME_3D = ContextVar("flagfft_ix_prime_3d", default=False)
 _IX_FOURSTEP_PRESET = ContextVar("flagfft_ix_fourstep_preset", default=0)
 _IX_CT_SINGLE_TLE_DEFAULT = ContextVar("flagfft_ix_ct_single_tle_default", default=0)
 _MACA_2D_SINGLE_DEFAULT = ContextVar("flagfft_maca_2d_single_default", default=False)
+_MACA_2D_DENSE_DEFAULT = ContextVar("flagfft_maca_2d_dense_default", default=False)
 _MACA_3D_DEFAULT = ContextVar("flagfft_maca_3d_default", default=False)
 _MACA_3D_C2C32_SINGLE_CUBE = ContextVar("flagfft_maca_3d_c2c32_single_cube", default=False)
 
@@ -185,6 +186,18 @@ def reset_maca_2d_single_default(token) -> None:
 def maca_2d_single_default_enabled() -> bool:
     """Root 2D FP32 batch-1 policy, including its batched axis kernels."""
     return _MACA_2D_SINGLE_DEFAULT.get()
+
+
+def set_maca_2d_dense_default(enabled: bool):
+    return _MACA_2D_DENSE_DEFAULT.set(bool(enabled))
+
+
+def reset_maca_2d_dense_default(token) -> None:
+    _MACA_2D_DENSE_DEFAULT.reset(token)
+
+
+def maca_2d_dense_default_enabled() -> bool:
+    return _MACA_2D_DENSE_DEFAULT.get()
 
 
 def set_maca_3d_default(enabled: bool):

@@ -76,6 +76,34 @@ def test_c550_tuned_transpose_metadata(monkeypatch, tmp_path, dtype, shape, tile
         reset_profile(token)
 
 
+def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.kernels_common import _maca_knob
+    from flagfft_codegen.target import reset_maca_2d_dense_default, set_maca_2d_dense_default
+
+    monkeypatch.delenv("FLAGFFT_MACA_EXCHANGE", raising=False)
+    monkeypatch.delenv("FLAGFFT_MACA_2D_TRANSPOSE", raising=False)
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        policy = set_maca_2d_dense_default(True)
+        try:
+            assert _maca_knob("EXCHANGE") == "direct_all"
+            assert _maca_knob("2D_TRANSPOSE") == "tuned"
+            with monkeypatch.context() as override:
+                override.setenv("FLAGFFT_MACA_EXCHANGE", "transpose")
+                override.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "legacy")
+                assert _maca_knob("EXCHANGE") == "transpose"
+                assert _maca_knob("2D_TRANSPOSE") == "legacy"
+        finally:
+            reset_maca_2d_dense_default(policy)
+        assert _maca_knob("EXCHANGE") == ""
+        assert _maca_knob("2D_TRANSPOSE") == ""
+    finally:
+        reset_profile(profile)
+
+
 @pytest.mark.parametrize(
     "length,factors,lanes,expected",
     [

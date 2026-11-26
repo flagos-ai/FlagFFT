@@ -40,13 +40,27 @@ inline bool npu_portable_leaf_enabled(const FFTRequest &request) {
        performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
 }
 
-// Keep the existing single-precision default while screening compact rows
-// for dense, large C550 matrices in both precisions.
+inline bool maca_2d_dense_policy_enabled(const FFTRequest &request,
+                                         int64_t batch,
+                                         int64_t n0,
+                                         int64_t n1) {
+  const char *setting = std::getenv("FLAGFFT_MACA_2D_DENSE");
+  return setting != nullptr && std::string(setting) == "1" &&
+         request.device_type == "maca" && request.device_arch == "102" &&
+         request.raw_dim == 2 && (request.origin_rank == 0 || request.origin_rank == 2) &&
+         request.batch == batch && batch > 0 &&
+         request.input_dtype == request.output_dtype &&
+         (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+         request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+         n0 == 2048 && n1 == 2048;
+}
+
 inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
                                       int64_t batch,
                                       int64_t n0,
                                       int64_t n1,
-                                      bool default_enabled = false) {
+                                      bool default_enabled = false,
+                                      bool dense_default = false) {
   if (request.device_type != "maca" || request.raw_dim != 2 ||
       batch <= 0 || request.batch != batch ||
       request.input_dtype != request.output_dtype ||
@@ -55,7 +69,7 @@ inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
     return false;
   }
   const char *setting = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
-  const std::string mode = setting ? setting : (default_enabled ? "1" : "0");
+  const std::string mode = setting ? setting : (dense_default ? "dense" : (default_enabled ? "1" : "0"));
   if (mode == "dense" && request.device_arch == "102" && n1 >= 256 &&
       (n0 & (n0 - 1)) == 0 && (n1 & (n1 - 1)) == 0) {
     return request.input_dtype == "complex64" || request.input_dtype == "complex128";
@@ -1897,6 +1911,7 @@ class TritonCompiler {
   bool maca_1d_batch_policy_ = false;
   bool musa_1d_batch_policy_ = false;
   bool maca_2d_single_policy_ = false;
+  bool maca_2d_dense_policy_ = false;
   bool maca_3d_policy_ = false;
   bool maca_3d_c2c32_single_cube_policy_ = false;
   bool ix_ct_single_policy_ = false;

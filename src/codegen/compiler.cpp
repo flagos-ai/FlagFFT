@@ -2681,14 +2681,14 @@ namespace {
         flag_or_default("FLAGFFT_HCU_2D_REAL_ROWS", false);
   }
 
-  bool maca_2d_fused_packed_rows_enabled(const FFTRequest &request) {
+  bool maca_2d_fused_packed_rows_enabled(const FFTRequest &request, bool dense_default) {
     const int64_t length = request.requested_n;
     if (request.device_type != "maca" || request.device_arch != "102" ||
         request.origin_rank != 2 || request.raw_dim != 2 ||
         request.input_layout != "contiguous" || request.requires_contiguous_copy ||
         request.input_strides.empty() || request.input_strides.back() != 1 ||
         length < 512 || length > 2048 || (length & (length - 1)) != 0 ||
-        !flag_or_default("FLAGFFT_MACA_2D_FUSED_PACKED_ROWS", false)) {
+        !flag_or_default("FLAGFFT_MACA_2D_FUSED_PACKED_ROWS", dense_default)) {
       return false;
     }
     // The FFT and reconstruction share one CTA. Budget six half-length
@@ -2808,7 +2808,8 @@ namespace {
   std::optional<PackedRealChild> select_packed_real_child(const PlanNodePtr &original_plan,
                                                           const FFTRequest &request,
                                                           int64_t batch,
-                                                          bool inverse) {
+                                                          bool inverse,
+                                                          bool maca_fused_rows) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
     const bool hcu_large_packed = hcu_large_packed_real_enabled(original_plan, request, batch);
@@ -2817,7 +2818,7 @@ namespace {
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
                        hcu_large_packed ||
-                       maca_2d_fused_packed_rows_enabled(request) ||
+                       maca_fused_rows ||
                        hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
@@ -4829,11 +4830,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
   }
+  const bool maca_fused_rows = allow_packed &&
+      maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
+              ? select_packed_real_child(node, request, batch, false, maca_fused_rows)
+              : std::nullopt) {
     const int64_t packed = n / 2;
-    if (maca_2d_fused_packed_rows_enabled(request) ||
+    if (maca_fused_rows ||
         hcu_fused_packed_real_enabled(request, batch, n) ||
         (request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
@@ -5000,9 +5004,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
+  const bool maca_fused_rows = allow_packed &&
+      maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
+              ? select_packed_real_child(node, request, batch, true, maca_fused_rows)
+              : std::nullopt) {
     const int64_t packed = n / 2;
     const char *packed_fuse_setting = performance_env("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
     if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
@@ -5022,7 +5029,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool cuda_fused_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
-    const bool use_packed_fused_leaf = cuda_fused_leaf || maca_2d_fused_packed_rows_enabled(request) ||
+    const bool use_packed_fused_leaf = cuda_fused_leaf || maca_fused_rows ||
                                       hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
                                        batch == 256 * 256 && packed_fuse_enabled) ||
@@ -7686,6 +7693,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
+  const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
+      maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::Complex))
@@ -8015,6 +8024,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
+  const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
+      maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealForward))
@@ -8108,17 +8119,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   }
 #endif
 
-  // MACA FP32 path: compile the innermost real boundary directly so
+  // Compile the innermost real boundary directly so
   // the 2D schedule does not materialize a full complex row matrix merely to
   // discard its Hermitian half.  Restrict this to row plans that the existing
   // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.
   const bool hcu_compact_rows = hcu_2d_compact_real_rows_enabled(request, n0, n1);
-  if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
+  if ((maca_2d_real_rows_enabled(request, batch, n0, n1,
+                                 maca_2d_single_policy_, maca_2d_dense_policy_) ||
        musa_compact_real_rows || hcu_compact_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
     std::shared_ptr<CompiledRawNode> row_r2c =
         compile_raw_r2c_node(node->row_plan, row_request, batch * n0,
-                            hcu_compact_rows || maca_2d_fused_packed_rows_enabled(row_request));
+                            hcu_compact_rows ||
+                                maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
 
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8282,6 +8295,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
+  const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
+      maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealInverse))
@@ -8378,7 +8393,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   // transposes run first; the existing 1D C2R boundary node then consumes the
   // compact rows directly and writes real output.
   const bool hcu_compact_rows = hcu_2d_compact_real_rows_enabled(request, n0, n1);
-  if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
+  if ((maca_2d_real_rows_enabled(request, batch, n0, n1,
+                                 maca_2d_single_policy_, maca_2d_dense_policy_) ||
        musa_compact_real_rows || hcu_compact_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
     FFTRequest col_request = request;
@@ -8401,7 +8417,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
     std::shared_ptr<CompiledRawNode> row_c2r =
         compile_raw_c2r_node(node->row_plan, row_request, batch * n0,
-                            hcu_compact_rows || maca_2d_fused_packed_rows_enabled(row_request));
+                            hcu_compact_rows ||
+                                maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
     auto transpose_inv = use_col_permuted_store
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
