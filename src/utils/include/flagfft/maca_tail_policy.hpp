@@ -41,9 +41,10 @@ inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
 }
 
 inline bool maca_663000_batch_split_column_enabled(const FFTRequest& request) {
+  if (request.batch != 64) return false;
   const char* setting = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
-  if (!setting || request.batch != 64) return false;
-  const std::string mode(setting);
+  const char* codelet = std::getenv("FLAGFFT_MACA_RADER_CODELET");
+  const std::string mode = setting ? setting : (codelet && std::string(codelet) == "0" ? "0" : "pfa");
   return (mode == "1" || mode == "pfa") &&
       maca_663000_c2c_enabled(request) && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy;

@@ -19,6 +19,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF",
                              "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
                              "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
+                             "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
@@ -193,7 +194,13 @@ TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {
   r.batch = 64;
   r.input_layout = "contiguous";
   r.input_strides = {663000, 1};
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
+  setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  unsetenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
+  setenv("FLAGFFT_MACA_RADER_CODELET", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  unsetenv("FLAGFFT_MACA_RADER_CODELET");
   setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "1", 1);
   EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c663000");

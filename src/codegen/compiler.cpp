@@ -4321,7 +4321,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         const bool inverse = request.direction == "inverse";
         const char* batch_column = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
         const bool column_pfa = split_fp64 ? batch == 1
-            : (batch == 64 && batch_column && std::string(batch_column) == "pfa");
+            : (batch == 64 && (!batch_column || std::string(batch_column) == "pfa"));
         key.perm_form = column_pfa ? "maca_split_column1768_prepare_pfa" : "maca_split_column1768_prepare";
         auto column_preparation = CompiledRawFourStepFusedNode::ColumnPreparation{
             compile_kernel(key),
