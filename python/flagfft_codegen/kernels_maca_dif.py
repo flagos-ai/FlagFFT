@@ -357,11 +357,8 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
     return name, source
 
 
-def build_maca_fp64_c2r48_from_columns() -> tuple[str, str]:
-    """Consume the column-major half spectrum of the C550 46189 × 48 inverse."""
-    name = "maca_fp64_c2r48_from_columns"
-    width, tile = 46189, 16
-    source = dedent(f"""
+def _maca_real48_fft8_io(tile: int) -> str:
+    return dedent(f"""
         @triton.jit
         def _split_fft8(values):
             even, odd = tl.split(tl.reshape(tl.trans(values), ({tile}, 2, 2, 2)))
@@ -378,7 +375,81 @@ def build_maca_fp64_c2r48_from_columns() -> tuple[str, str]:
             even = tl.join(tl.join(a, e), tl.join(c, g))
             odd = tl.join(tl.join(b, f), tl.join(d, h))
             return tl.trans(tl.reshape(tl.join(even, odd), ({tile}, 8)))
+    """)
 
+
+def build_maca_fp64_r2c48_to_columns() -> tuple[str, str]:
+    """Write the C550 46189 × 48 forward rows in compact column order."""
+    name = "maca_fp64_r2c48_to_columns"
+    width, tile = 46189, 16
+    source = _maca_real48_fft8_io(tile) + dedent(f"""
+        @triton.jit
+        def _forward8(real, imag):
+            r0, r1, r2, r3, r4, r5, r6, r7 = _split_fft8(real)
+            i0, i1, i2, i3, i4, i5, i6, i7 = _split_fft8(imag)
+            a, b, c, d, e, f, g, h, j, k, l, m, n, p, q, s = _fwd_rad8_b1(
+                r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7)
+            return _join_fft8(a, b, c, d, e, f, g, h), _join_fft8(j, k, l, m, n, p, q, s)
+
+        @triton.jit
+        def _reflect8(values):
+            a, b, c, d, e, f, g, h = _split_fft8(values)
+            return _join_fft8(a, h, g, f, e, d, c, b)
+
+        @triton.jit
+        def _store_columns(out_ptr, phase_r_ptr, phase_i_ptr, k8, k3: tl.constexpr,
+                           dst, valid, ar, ai, peer_r, peer_i):
+            k = (9 * k8 + 16 * k3) % 24
+            br, bi = _reflect8(peer_r), _reflect8(peer_i)
+            co = tl.load(phase_r_ptr + k)[:, None]
+            si = tl.load(phase_i_ptr + k)[:, None]
+            dr, di = ar - br, ai + bi
+            re = (ar + br + dr * si + di * co) * 0.5
+            im = (ai - bi - dr * co + di * si) * 0.5
+            pair = tl.arange(0, 2)[None, None, :]
+            offset = dst[None, :] + k[:, None] * {2 * width}
+            tl.store(out_ptr + offset[:, :, None] + pair, tl.join(re, im), valid[None, :, None])
+            if k3 == 0:
+                # Packed bin zero also contains the real Nyquist mode.
+                nyquist = dst[None, :] + {48 * width} + k8[:, None] * 2
+                nyquist_valid = (k8 == 0)[:, None] & valid[None, :]
+                tl.store(out_ptr + nyquist, ar - ai, nyquist_valid)
+                tl.store(out_ptr + nyquist + 1, 0.0, nyquist_valid)
+
+        @triton.jit
+        def _load_pairs(in_ptr, row, valid, u, v: tl.constexpr):
+            k = (3 * u + 8 * v) % 24
+            pair = tl.arange(0, 2)[None, None, :]
+            offset = row[None, :].to(tl.int64) * 48 + k[:, None] * 2
+            return tl.split(tl.load(in_ptr + offset[:, :, None] + pair, valid[None, :, None], 0.0))
+
+        @triton.jit
+        def {name}(in_ptr, out_ptr, phase_r_ptr, phase_i_ptr, nbatch):
+            # One tile can span the last rows of one matrix and the first of the next.
+            physical = tl.program_id(0) * {tile} + tl.arange(0, {tile})
+            matrix, row = physical // {width}, physical % {width}
+            valid = physical < nbatch
+            dst = matrix.to(tl.int64) * {50 * width} + row * 2
+            u = tl.arange(0, 8)
+            a, ai = _load_pairs(in_ptr, physical, valid, u, 0)
+            b, bi = _load_pairs(in_ptr, physical, valid, u, 1)
+            c, ci = _load_pairs(in_ptr, physical, valid, u, 2)
+            r0, r1, r2, i0, i1, i2 = _fwd_rad3_b1(a, b, c, ai, bi, ci)
+            r0, i0 = _forward8(r0, i0)
+            r1, i1 = _forward8(r1, i1)
+            r2, i2 = _forward8(r2, i2)
+            _store_columns(out_ptr, phase_r_ptr, phase_i_ptr, u, 0, dst, valid, r0, i0, r0, i0)
+            _store_columns(out_ptr, phase_r_ptr, phase_i_ptr, u, 1, dst, valid, r1, i1, r2, i2)
+            _store_columns(out_ptr, phase_r_ptr, phase_i_ptr, u, 2, dst, valid, r2, i2, r1, i1)
+    """)
+    return name, source
+
+
+def build_maca_fp64_c2r48_from_columns() -> tuple[str, str]:
+    """Consume the column-major half spectrum of the C550 46189 × 48 inverse."""
+    name = "maca_fp64_c2r48_from_columns"
+    width, tile = 46189, 16
+    source = _maca_real48_fft8_io(tile) + dedent(f"""
         @triton.jit
         def _inverse8(real, imag):
             r0, r1, r2, r3, r4, r5, r6, r7 = _split_fft8(real)

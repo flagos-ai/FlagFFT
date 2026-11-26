@@ -220,6 +220,7 @@ def main() -> None:
             "maca_fp64_ct128_finish_dif",
             "maca_fp64_3d_r2c64",
             "maca_fp64_3d_c2r64",
+            "maca_fp64_r2c48_to_columns",
             "maca_fp64_c2r48_from_columns",
             "maca_fp32_3d_c2r64",
             "maca_fp32_fft210_pfa",

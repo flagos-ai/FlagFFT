@@ -2886,34 +2886,33 @@ flagfftResult CompiledRaw2DR2CRowNode::execute(adaptor::DevicePtr input,
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
-    if (!transpose_fwd && !transpose_inv) {
-      RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
-      return col_fft->execute(temp1.get(), output, col_context);
+    auto col_input = temp1.get();
+    auto col_scratch = temp2.get();
+    if (transpose_fwd) {
+      std::vector<JitKernelArg> transpose_fwd_args = {
+          JitKernelArg::device(col_input),
+          JitKernelArg::device(col_scratch),
+          JitKernelArg::i32(static_cast<int32_t>(batch)),
+      };
+      transpose_fwd->launch(context.stream,
+                            transpose_fwd_args,
+                            ceil_div(half_n1, tile_size),
+                            ceil_div(n0, tile_size),
+                            batch);
+      std::swap(col_input, col_scratch);
     }
 
-    std::vector<JitKernelArg> transpose_fwd_args = {
-        JitKernelArg::device(temp1.get()),
-        JitKernelArg::device(temp2.get()),
-        JitKernelArg::i32(static_cast<int32_t>(batch)),
-    };
-    transpose_fwd->launch(context.stream,
-                          transpose_fwd_args,
-                          ceil_div(half_n1, tile_size),
-                          ceil_div(n0, tile_size),
-                          batch);
-
     RawExecutionContext col_context {context.request, context.stream, batch * half_n1, n0, n0};
-    result = col_fft->execute(temp2.get(), col_permuted_store ? output : temp1.get(), col_context);
+    if (!transpose_inv) {
+      return col_fft->execute(col_input, output, col_context);
+    }
+    result = col_fft->execute(col_input, col_scratch, col_context);
     if (result != FLAGFFT_SUCCESS) {
       return result;
     }
 
-    if (col_permuted_store) {
-      return FLAGFFT_SUCCESS;
-    }
-
     std::vector<JitKernelArg> transpose_inv_args = {
-        JitKernelArg::device(temp1.get()),
+        JitKernelArg::device(col_scratch),
         JitKernelArg::device(output),
         JitKernelArg::i32(static_cast<int32_t>(batch)),
     };

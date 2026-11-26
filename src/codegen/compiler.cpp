@@ -8442,7 +8442,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                    batch);
   }
 
-  const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  const auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
   const bool hcu_row_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
       request.origin_rank == 2 && request.input_layout == "contiguous" &&
@@ -8452,17 +8452,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
       flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) || hcu_row_store) &&
-      ix_row_leaf && ix_col_leaf) {
+      row_leaf && ix_col_leaf) {
     // Keep the compact spectrum transposed between two FFT passes. Each
     // outer store stays inside its own matrix, including the odd half width.
     auto key = KernelKey::leaf_r2c_permuted_store(
         triton_target_for_request(row_request), row_request.direction, row_request.input_dtype,
-        ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
-        ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
+        row_leaf->length, row_leaf->factors, row_leaf->lanes, row_leaf->num_warps,
+        row_leaf->generic_radices, row_leaf->smem_size, "outer");
     mark_ix_warp_fft(key, row_request, n0);
     auto row_r2c = compile_raw_hcu_packed_r2c_store(row_request, batch * n0, n1, n0);
     if (!row_r2c) row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
-        n1, compile_kernel(key), build_raw_leaf_tables(*ix_row_leaf, row_request), DeviceAllocation{}, n0);
+        n1, compile_kernel(key), build_raw_leaf_tables(*row_leaf, row_request), DeviceAllocation{}, n0);
     FFTRequest col_request = request;
     col_request.fft_length = col_request.requested_n = n0;
     col_request.input_shape = {batch * half_n1, n0};
@@ -8511,10 +8511,23 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                  maca_2d_single_policy_, maca_2d_dense_policy_) ||
        musa_compact_real_rows || hcu_compact_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
-    std::shared_ptr<CompiledRawNode> row_r2c =
-        compile_raw_r2c_node(node->row_plan, row_request, batch * n0,
-                            hcu_compact_rows ||
-                                maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
+    const bool maca_fused_row = request.device_type == "maca" && request.device_arch == "102" &&
+        request.input_dtype == "complex128" && n0 == 46189 && n1 == 48 &&
+        (batch == 1 || batch == 4) && row_leaf &&
+        maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_R2C_ROW", false);
+    std::shared_ptr<CompiledRawNode> row_r2c;
+    if (maca_fused_row) {
+      auto key = KernelKey::leaf(triton_target_for_request(row_request), row_request.direction,
+          row_request.input_dtype, row_leaf->length, row_leaf->factors, row_leaf->lanes,
+          row_leaf->num_warps, row_leaf->generic_radices, row_leaf->smem_size);
+      key.perm_form = "maca_fp64_r2c48_to_columns";
+      row_r2c = std::make_shared<CompiledRawLeafNode>(n1, compile_kernel(key),
+          make_maca_dif_roots(n1, /*fp64=*/true, /*inverse=*/false));
+    } else {
+      row_r2c = compile_raw_r2c_node(
+          node->row_plan, row_request, batch * n0,
+          hcu_compact_rows || maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
+    }
 
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8534,7 +8547,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
-    auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    auto transpose_fwd = maca_fused_row
+        ? nullptr : compile_2d_transpose_kernel(request, n0, half_n1, batch);
     auto transpose_inv = use_col_permuted_store
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
