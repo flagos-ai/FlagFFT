@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <mc_runtime.h>
+#include <cstdint>
 
 namespace {
 
@@ -119,9 +120,15 @@ __device__ void reconstruct(float* out, unsigned k, float2 evenodd, float2 refle
   }
 }
 
-__global__ void shared_fft(const float* input, float* output, const float2* roots) {
+template<bool Batched>
+__global__ void shared_fft(const float* input, float* output, const float2* roots,
+                           std::int64_t input_distance, std::int64_t output_distance) {
   // Partition the packed 1024-point FFT into four 256-point wave FFTs.
   __shared__ float2 first[half];
+  if constexpr (Batched) {
+    input += static_cast<std::int64_t>(blockIdx.x) * input_distance;
+    output += static_cast<std::int64_t>(blockIdx.x) * output_distance * 2;
+  }
   constexpr unsigned axis = half / 4;
   const unsigned thread = threadIdx.x;
   const unsigned lane = thread & (wave - 1);
@@ -178,13 +185,18 @@ __global__ void residue_fft(const float* input, float* output, const float2* roo
 }  // namespace
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_fp32_r2c2048(
-    const float* input, float* output, const void* phase, bool use_residues, void* stream) {
+    const float* input, float* output, const void* phase, unsigned batch,
+    std::int64_t input_distance, std::int64_t output_distance, bool use_residues, void* stream) {
   // The independent residue blocks share the input. Exact in-place requests
   // use the shared-memory schedule, which consumes all samples before storing.
-  const bool split = use_residues && input != output;
-  const auto kernel = split ? residue_fft : shared_fft;
-  void* arguments[] = {&input, &output, &phase};
-  return mcLaunchKernel(reinterpret_cast<const void*>(kernel), dim3(split ? residues : 1),
-                        dim3(split ? 2 * wave : 4 * wave), arguments, 0,
-                        reinterpret_cast<mcStream_t>(stream));
+  auto maca_stream = reinterpret_cast<mcStream_t>(stream);
+  if (use_residues && input != output) {
+    void* arguments[] = {&input, &output, &phase};
+    return mcLaunchKernel(reinterpret_cast<const void*>(residue_fft), dim3(residues), dim3(2 * wave),
+                          arguments, 0, maca_stream);
+  }
+  const auto kernel = batch == 1 ? shared_fft<false> : shared_fft<true>;
+  void* arguments[] = {&input, &output, &phase, &input_distance, &output_distance};
+  return mcLaunchKernel(reinterpret_cast<const void*>(kernel), dim3(batch), dim3(4 * wave),
+                        arguments, 0, maca_stream);
 }

@@ -35,6 +35,7 @@ namespace flagfft {
 extern "C" int flagfft_maca_launch_fp64_fft16(const double* input, double* output,
                                              unsigned batch, int direction, void* stream);
 extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* output, const void* roots,
+                                               unsigned batch, int64_t input_distance, int64_t output_distance,
                                                bool use_residues, void* stream);
 extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, const void* roots,
                                              unsigned batch, bool innermost_fp64, void* stream);
@@ -55,7 +56,10 @@ flagfftResult CompiledRawMacaFp32R2C2048Node::execute(adaptor::DevicePtr input, 
                                                    const RawExecutionContext &context) const {
   const int status = flagfft_maca_launch_fp32_r2c2048(
       reinterpret_cast<const float*>(input), reinterpret_cast<float*>(output),
-      roots.data(), use_residues, context.stream);
+      roots.data(), static_cast<unsigned>(context.batch),
+      context.input_distance > 0 ? context.input_distance : 2048,
+      context.output_distance > 0 ? context.output_distance : 1025,
+      use_residues, context.stream);
   return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
 }
 
