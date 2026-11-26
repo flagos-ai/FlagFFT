@@ -533,6 +533,10 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
   }
   if (n == 340200 && maca_340200_batch_split_enabled(request)) {
     if (request.input_dtype == "complex64") {
+      if (maca_340200_fp32_batch_900x378_enabled()) {
+        return std::make_shared<FourStepPlanNode>(n, 900, 378,
+            make_leaf_plan(900, {10, 10, 9}), make_leaf_plan(378, {9, 7, 6}));
+      }
       const char* radix_order = std::getenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER");
       if (radix_order && std::string(radix_order) == "1") {
         return std::make_shared<FourStepPlanNode>(n, 567, 600,

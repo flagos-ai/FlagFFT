@@ -33,7 +33,7 @@ def set_maca_tail_mode(mode):
                     "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
                     "batch-c2c-tree", "batch-prime-rader-vecio", "c2c663000", "c2c663000-batch",
                     "r2c663000", "batch-c2r663000", "batch-c2r663000-split", "c2c340200-split",
-                    "c2c340200-single",
+                    "c2c340200-single", "c2c340200-batch-900x378",
                     "z2z340200-split", "batch-real340200-split", "batch-real16384-split",
                     "batch-real524288-row4", "batch-real524288-split",
                     "batch-real185640-p2", "batch-real185640-p4",
@@ -64,9 +64,10 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
     if (_root_mode.get() == "z2z16-pack16" and kernel == "leaf"
             and length == 16 and dtype == "complex128"):
         return "z2z16-pack16"
-    if (_root_mode.get() == "c2c340200-single" and (dtype, n1, n2) == ("complex64", 900, 378)
+    if (_root_mode.get() in {"c2c340200-single", "c2c340200-batch-900x378"}
+            and (dtype, n1, n2) == ("complex64", 900, 378)
             and (kernel, length) in {("four_step_row", n1), ("four_step_col", n2)}):
-        return "c2c340200-single"
+        return _root_mode.get()
     if kernel in {"four_step_row", "four_step_col"} and length in {n1, n2}:
         if dtype == "complex64":
             if _root_mode.get() == "c2c663000" and (n1, n2) == (375, 1768):
@@ -146,6 +147,9 @@ def resource_default(name):
         return {"VEC_IO": "packed", "INNER_PACK": "2", "MAX_WARPS": "4"}.get(name)
     if _kernel_mode.get() == "c2c340200-single":
         return {"VEC_IO": "packed", "MAX_WARPS": "8"}.get(name)
+    if _kernel_mode.get() == "c2c340200-batch-900x378":
+        return {"VEC_IO": "packed", "EXCHANGE": "direct_all", "MAX_WARPS": "8",
+                "FOURSTEP_ROW_PACK": "2", "FOURSTEP_COL_PACK": "4"}.get(name)
     if _kernel_mode.get() == "z2z340200-split":
         return {"VEC_IO": "packed", "FOURSTEP_ROW_PACK": "2", "FOURSTEP_COL_PACK": "1",
                 "MAX_WARPS": "4"}.get(name)

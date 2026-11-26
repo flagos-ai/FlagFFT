@@ -285,6 +285,31 @@ def test_340200_single_split_matches_the_screened_axes(tmp_path, monkeypatch, ax
     assert Path(candidate["module_path"]).read_text() == Path(manual["module_path"]).read_text()
 
 
+@pytest.mark.parametrize("axis,length,factors,lanes,pack,max_warps", [
+    ("row", 900, (10, 10, 9), 10, 2, 4),
+    ("col", 378, (9, 7, 6), 3, 4, 8),
+])
+def test_340200_batch_swapped_axes_match_the_screen(tmp_path, monkeypatch, axis, length, factors,
+                                                 lanes, pack, max_warps):
+    token = set_maca_1d_single_default(False)
+    try:
+        request = dict(kernel=f"four_step_{axis}", length=length, factors=factors, lanes=lanes,
+                       num_warps=2, generic_radices=(), smem_size=1 << (length - 1).bit_length(),
+                       direction="inverse", dtype="complex64", prime_n=0, four_step_n1=900, four_step_n2=378)
+        set_maca_tail_mode("c2c340200-batch-900x378")
+        candidate = emit_jit_kernel(**request, out_dir=tmp_path / "scoped")
+        assert (candidate["num_warps"], candidate["inner_pack"]) == (4, pack)
+        assert eligible_kernel_mode(request["kernel"], length, "complex128", 900, 378) == "off"
+        set_maca_tail_mode("off")
+        for key, value in {"VEC_IO": "packed", "EXCHANGE": "direct_all",
+                           "INNER_PACK": str(pack), "MAX_WARPS": str(max_warps)}.items():
+            monkeypatch.setenv(f"FLAGFFT_MACA_{key}", value)
+        manual = emit_jit_kernel(**request, out_dir=tmp_path / "manual")
+        assert Path(candidate["module_path"]).read_bytes() == Path(manual["module_path"]).read_bytes()
+    finally:
+        reset_maca_1d_single_default(token)
+
+
 @pytest.mark.parametrize("dtype", ["complex64", "complex128"])
 def test_16384_packed_real_resources_match_the_measured_axes(tmp_path, dtype):
     set_maca_tail_mode("batch-real16384-split")

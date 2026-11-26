@@ -153,6 +153,11 @@ inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
   return maca_batch_c2c_option_enabled(request, 340200, "FLAGFFT_MACA_340200_BATCH_SPLIT", true);
 }
 
+inline bool maca_340200_fp32_batch_900x378_enabled() {
+  const char* setting = std::getenv("FLAGFFT_MACA_340200_FP32_BATCH_900X378");
+  return setting && std::string_view(setting) == "1";
+}
+
 inline bool maca_340200_fp32_single_split_enabled(const FFTRequest& request) {
   constexpr int64_t length = 340200;
   if (request.device_arch != "102" || request.requested_n != length || request.fft_length != length ||
@@ -336,7 +341,8 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
   if (maca_340200_fp32_single_split_enabled(request)) return "c2c340200-single";
   if (maca_340200_batch_split_enabled(request)) {
-    return request.input_dtype == "complex128" ? "z2z340200-split" : "c2c340200-split";
+    if (request.input_dtype == "complex128") return "z2z340200-split";
+    return maca_340200_fp32_batch_900x378_enabled() ? "c2c340200-batch-900x378" : "c2c340200-split";
   }
   if (maca_340200_packed_real_split_enabled(request)) return "batch-real340200-split";
   if (maca_16384_packed_real_split_enabled(request)) return "batch-real16384-split";
@@ -437,7 +443,8 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "batch-prime-vecio" &&
       (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
-  if (root == "c2c340200-single" && dtype == "complex64" && n1 == 900 && n2 == 378 &&
+  if ((root == "c2c340200-single" || root == "c2c340200-batch-900x378") &&
+      dtype == "complex64" && n1 == 900 && n2 == 378 &&
       ((kind == KernelKind::FourStepRow && length == n1) ||
        (kind == KernelKind::FourStepCol && length == n2))) return root;
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&
