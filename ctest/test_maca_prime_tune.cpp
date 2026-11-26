@@ -638,6 +638,8 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   request.batch = 4;
   request.direction = "inverse";
   unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
   setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));

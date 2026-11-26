@@ -72,12 +72,12 @@ inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
   }
   const char *setting = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
   const std::string mode = setting ? setting : (dense_default ? "dense" : (default_enabled ? "1" : "0"));
-  const bool screen_fp32_inverse = setting && mode == "dense" && batch == 4 &&
+  const bool batched_fp32_inverse = batch == 4 &&
       request.input_dtype == "complex64" && request.direction == "inverse";
   if ((!setting || mode == "dense") && request.device_arch == "102" &&
       (request.origin_rank == 0 || request.origin_rank == 2) &&
       n0 == 46189 && n1 == 48 && (batch == 1 || batch == 4) &&
-      (request.input_dtype == "complex128" || screen_fp32_inverse)) {
+      (request.input_dtype == "complex128" || batched_fp32_inverse)) {
     return true;
   }
   if (mode == "dense" && request.device_arch == "102" && n1 >= 256 &&
