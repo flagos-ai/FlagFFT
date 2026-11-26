@@ -27,6 +27,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
                              "FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4",
+                             "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
@@ -412,7 +413,7 @@ TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {
   EXPECT_FALSE(flagfft::maca_16384_fp64_batch_split_enabled(r));
 }
 
-TEST_F(TailPolicy, C550BatchedPackedReal524288ChangesOnlyTheFp32RowMode) {
+TEST_F(TailPolicy, C550BatchedPackedReal524288AlternativesAreScoped) {
   using flagfft::KernelKind;
   auto r = request(262144, "complex64");
   r.device_arch = "102";
@@ -431,6 +432,17 @@ TEST_F(TailPolicy, C550BatchedPackedReal524288ChangesOnlyTheFp32RowMode) {
                                          "complex64", 512, 512, 512), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
                                          "complex64", 512, 512, 512), "batch-vecio");
+
+  setenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT", "1", 1);
+  flagfft::PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(262144, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 1024);
+  const auto split_mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(split_mode, "batch-real524288-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(split_mode, KernelKind::FourStepCol,
+                                         "complex64", 1024, 256, 1024), split_mode);
   r.input_dtype = r.output_dtype = "complex128";
   r.real_transform_kind = "d2z";
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");

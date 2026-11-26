@@ -164,6 +164,11 @@ inline bool maca_16384_packed_real_split_enabled(const FFTRequest& request) {
   return maca_batch_packed_real_option_enabled(request, 8192, "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT");
 }
 
+inline bool maca_524288_packed_real_split_enabled(const FFTRequest& request) {
+  return request.input_dtype == "complex64" &&
+      maca_batch_packed_real_option_enabled(request, 262144, "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
+}
+
 inline bool maca_16384_fp64_batch_split_enabled(const FFTRequest& request) {
   return request.input_dtype == "complex128" &&
       maca_batch_c2c_split_requested(request, 16384, "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT");
@@ -278,6 +283,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   }
   if (maca_340200_packed_real_split_enabled(request)) return "batch-real340200-split";
   if (maca_16384_packed_real_split_enabled(request)) return "batch-real16384-split";
+  if (maca_524288_packed_real_split_enabled(request)) return "batch-real524288-split";
   if (maca_16384_fp64_batch_split_enabled(request)) return "z2z16384-split";
   if (maca_524288_fp64_register_pack_enabled(request)) return "z2z524288-pack4";
   if (maca_663000_c2c_enabled(request)) {
@@ -381,6 +387,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
     if (root == "batch-real524288-row4" && dtype == "complex64" && n1 == 512 && n2 == 512) {
       return kind == KernelKind::FourStepRow ? root : "batch-vecio";
     }
+    if (root == "batch-real524288-split" && dtype == "complex64" && n1 == 256 && n2 == 1024) return root;
     if (root == "z2z16384-split" && dtype == "complex128" && n1 == 256 && n2 == 64) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||

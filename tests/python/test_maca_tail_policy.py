@@ -189,6 +189,15 @@ def test_524288_packed_real_row_pack_preserves_the_default_column(tmp_path):
         assert emit_jit_kernel(kernel="four_step_col", **request) == baseline
         row = emit_jit_kernel(kernel="four_step_row", **request)
         assert (row["num_warps"], row["inner_pack"]) == (8, 4)
+        set_maca_tail_mode("batch-real524288-split")
+        request.update(four_step_n1=256, four_step_n2=1024)
+        for axis, length, factors, geometry in (
+            ("row", 256, (4, 4, 4, 4), (4, 4)),
+            ("col", 1024, (16, 8, 8), (8, 8)),
+        ):
+            request.update(length=length, factors=factors, smem_size=length)
+            split = emit_jit_kernel(kernel=f"four_step_{axis}", **request)
+            assert (split["num_warps"], split["inner_pack"]) == geometry
     finally:
         reset_maca_1d_batch_default(batch)
 
