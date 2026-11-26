@@ -27,7 +27,8 @@ inline std::vector<MacaTailPlan> maca_tail_plans(int64_t n, const FFTRequest& re
   }
   const bool c550_large_batch = request.device_arch == "102" && request.origin_rank <= 1 &&
       request.batch == 64 && n == 663000 && !request.real_transform &&
-      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype &&
       !request.input_strides.empty() && request.input_strides.back() == 1;
   if (value == nullptr || *value == '\0' || request.device_type != "maca" ||
       request.raw_dim != 1 || (request.batch != 1 && !c550_large_batch) ||

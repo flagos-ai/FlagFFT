@@ -163,6 +163,7 @@ inline std::string maca_tail_codegen_identity(const std::string& mode) {
                            "FLAGFFT_MACA_3D_N32_FP64_PACK",
                            "FLAGFFT_MACA_3D_PERMSTORE_PACK",
                            "FLAGFFT_MACA_FP64_REGISTER_PACK", "FLAGFFT_MACA_INNER_PACK",
+                           "FLAGFFT_MACA_FOURSTEP_ROW_PACK", "FLAGFFT_MACA_FOURSTEP_COL_PACK",
                            "FLAGFFT_MACA_MAX_WARPS", "FLAGFFT_MACA_SPLIT_ORDER",
                            "FLAGFFT_MACA_VEC_IO", "FLAGFFT_MACA_LANE_MIN",
                            "FLAGFFT_MACA_MIXED_EXCHANGE", "FLAGFFT_MACA_RADER_FULL_LEAF",

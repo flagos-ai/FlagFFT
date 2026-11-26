@@ -1097,7 +1097,7 @@ def _maca_four_step_smem_pack_limit(plan: LeafPlan) -> int:
     return limit
 
 
-def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
+def _maca_four_step_inner_pack(plan: LeafPlan | None, n1: int, n2: int, stage: str) -> int:
     """Inner transforms packed per four-step row/column block on MACA.
 
     The bring-up pinned this to one before any C550 measurement. The override
@@ -1113,11 +1113,19 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None) -> int:
         # The measured FP64 register exchange uses the normal resource-derived
         # pack, while the P8 default is qualified only for FP32 leaves.
         override = ""
+    override_name = "INNER_PACK"
+    if (_maca_backend_active() and current_profile().device_arch == "102"
+            and n1 * n2 in {331500, 663000}):
+        stage_name = f"FOURSTEP_{stage}_PACK"
+        stage_override = os.environ.get(f"FLAGFFT_MACA_{stage_name}")
+        if stage_override is not None:
+            override_name = stage_name
+            override = stage_override.strip().lower()
     # An explicit number is an experiment setting, but it still goes through
     # the hard launchable shared-memory limit.
     if override not in {"", "auto"}:
         pack = min(
-            _positive_knob("INNER_PACK", override), _portable_exchange_max_pack()
+            _positive_knob(override_name, override), _portable_exchange_max_pack()
         )
         if (
             pack >= 8
@@ -1190,7 +1198,7 @@ def _four_step_col_inner_pack_for(
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
         return _npu_four_step_inner_pack(plan)
     if _portable_leaf_backend_active():
-        return _maca_four_step_inner_pack(plan)
+        return _maca_four_step_inner_pack(plan, n1, n2, "COL")
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if plan is not None and current_profile().policy != "legacy":
@@ -1220,7 +1228,7 @@ def _four_step_row_inner_pack_for(
     if _npu_backend_active() and os.environ.get("FLAGFFT_NPU_FOURSTEP_LEAF") == "1":
         return _npu_four_step_inner_pack(plan)
     if _portable_leaf_backend_active():
-        return _maca_four_step_inner_pack(plan)
+        return _maca_four_step_inner_pack(plan, n1, n2, "ROW")
     if plan is not None and _mthreads_small_mixed_leaf(plan):
         return _four_step_resource_inner_pack_for(plan)
     if plan is not None and current_profile().policy != "legacy":
