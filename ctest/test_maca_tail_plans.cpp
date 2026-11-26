@@ -106,12 +106,16 @@ struct Experiment {
   bool fp64;
   std::vector<std::string> names;
 };
+const std::vector<std::string> splits_663000 = {
+  "ct375x1768", "ct650x1020", "ct780x850", "ct680x975", "ct975x680",
+  "ct884x750", "ct750x884", "ct663x1000", "ct1000x663",
+};
 const std::vector<Experiment> experiments = {
   {997, true, {"bs2000", "bs2048"}},
   {1009, false, {"rader1008", "bs2048"}},
   {1048576, true, {"ct512x2048", "ct1024x1024"}},
-  {663000, false, {"ct375x1768", "ct650x1020", "ct780x850"}},
-  {663000, true, {"ct375x1768", "ct650x1020", "ct780x850"}},
+  {663000, false, splits_663000},
+  {663000, true, splits_663000},
   {328050, false, {"ct450x729", "ct486x675", "ct405x810"}},
   {328050, true, {"ct450x729", "ct486x675", "ct405x810"}},
 };
