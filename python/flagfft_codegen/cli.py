@@ -208,9 +208,10 @@ def main() -> None:
             "inner_middle",
             "inner_middle_c2r_cube",
             "outer_last",
+            "maca_fp64_dif",
         ),
         default="outer",
-        help="axis placement for the permuted store's fused permutation",
+        help="layout for a permuted store or specialized leaf",
     )
     parser.add_argument("--hcu-3d-full-smem", action="store_true")
     parser.add_argument("--bluestein-n", type=int)

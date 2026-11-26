@@ -5161,10 +5161,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
+  const bool maca_dif = maca_2d_dense_policy_ && request.input_dtype == "complex128" &&
+      leaf.length == 2048 && flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", false);
+  if (maca_dif) key.perm_form = "maca_fp64_dif";
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
+  std::vector<DeviceAllocation> tables;
+  if (maca_dif) {
+    std::vector<double> roots_r(leaf.length);
+    std::vector<double> roots_i(leaf.length);
+    const double phase_step = (request.direction == "inverse" ? 2.0 : -2.0) * kPi / leaf.length;
+    for (int64_t i = 0; i < leaf.length; ++i) {
+      roots_r[i] = std::cos(phase_step * i);
+      roots_i[i] = std::sin(phase_step * i);
+    }
+    tables.push_back(adaptor::Memory::from_doubles(roots_r));
+    tables.push_back(adaptor::Memory::from_doubles(roots_i));
+  } else {
+    tables = build_raw_leaf_tables(leaf, request);
+  }
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
-                                               build_raw_leaf_tables(leaf, request));
+                                               std::move(tables));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

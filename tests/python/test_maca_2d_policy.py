@@ -132,6 +132,28 @@ def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
         reset_profile(profile)
 
 
+@pytest.mark.parametrize("direction", ("forward", "inverse"))
+def test_c550_fp64_dif_leaf_launch_abi(tmp_path, direction):
+    from flagfft_codegen.emit import emit_jit_kernel
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=2048, factors=(16, 16, 8), lanes=128, num_warps=4,
+            generic_radices=(), smem_size=2048, direction=direction, dtype="complex128",
+            prime_n=0, four_step_n1=0, four_step_n2=0, perm_form="maca_fp64_dif", out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == f"maca_fp64_dif2048_{direction}"
+        assert metadata["num_warps"] == 2
+        assert metadata["batch_per_block"] == 1
+        assert metadata["arg_names"] == ["in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "nbatch"]
+    finally:
+        reset_profile(token)
+
+
 @pytest.mark.parametrize(
     "length,factors,lanes,expected",
     [

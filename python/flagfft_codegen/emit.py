@@ -722,7 +722,16 @@ def emit_jit_kernel(
         dtype=dtype,
     )
     spec = kernel_spec(kernel)
-    if spec.is_leaf_like:
+    maca_fp64_dif = kernel == "leaf" and perm_form == "maca_fp64_dif"
+    if maca_fp64_dif:
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and dtype == "complex128" and length == 2048):
+            raise ValueError("the FP64 DIF leaf requires a 2048-point C550 transform")
+        from .kernels_maca_dif import build_maca_fp64_dif_leaf
+
+        kernel_name, kernel_source = build_maca_fp64_dif_leaf(direction)
+        n1 = n2 = 0
+    elif spec.is_leaf_like:
         io_mode = (
             "permuted_r2c"
             if kernel == "leaf_r2c" and perm_form == "permuted"
@@ -803,7 +812,7 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM:
+    if spec.family == STOCKHAM or maca_fp64_dif:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):
@@ -817,7 +826,7 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    if spec.is_leaf_like:
+    if spec.is_leaf_like and not maca_fp64_dif:
         radices = tuple(
             sorted(
                 codelet_radices_for(factors)
@@ -851,6 +860,8 @@ def emit_jit_kernel(
         permutation_span=permutation_span,
         permutation_batch=permutation_batch,
     )
+    if maca_fp64_dif:
+        metadata.update(num_warps=2, batch_per_block=1)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:
