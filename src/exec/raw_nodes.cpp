@@ -4532,13 +4532,15 @@ CompiledRaw3DHybridNode::CompiledRaw3DHybridNode(int64_t n0,
                                                  DeviceAllocation temp1,
                                                  DeviceAllocation temp2,
                                                  std::shared_ptr<JitKernel> perm_021,
-                                                 std::shared_ptr<JitKernel> perm_201)
+                                                 std::shared_ptr<JitKernel> perm_201,
+                                                 std::shared_ptr<CompiledRawNode> n0_first)
     : n0(n0),
       n1(n1),
       n2(n2),
       n2_fft(std::move(n2_fft)),
       n1_fft(std::move(n1_fft)),
       n0_fft(std::move(n0_fft)),
+      n0_first(std::move(n0_first)),
       perm_210(std::move(perm_210)),
       perm_021(std::move(perm_021)),
       perm_201(std::move(perm_201)),
@@ -4554,7 +4556,9 @@ std::string CompiledRaw3DHybridNode::describe() const {
       << ", last_transpose=" << (perm_201 != nullptr)
       << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
       << ", n0_fft=" << n0_fft->describe()
-      << ", perm_201=" << (perm_201 ? perm_201->execution_description() : "null") << ")";
+      << ", perm_201=" << (perm_201 ? perm_201->execution_description() : "null");
+  if (n0_first) oss << ", n0_first=" << n0_first->describe();
+  oss << ")";
   return oss.str();
 }
 
@@ -4585,6 +4589,12 @@ flagfftResult CompiledRaw3DHybridNode::execute(adaptor::DevicePtr input,
     }
     adaptor::DevicePtr n0_input = perm_210 ? (perm_021 ? temp2.get() : temp1.get())
                                             : (perm_021 ? temp1.get() : temp2.get());
+    if (n0_first) {
+      auto intermediate = n0_input == temp1.get() ? temp2.get() : temp1.get();
+      result = n0_first->execute(n0_input, intermediate, n0_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      n0_input = intermediate;
+    }
     adaptor::DevicePtr n0_output = perm_201
         ? (n0_input == temp1.get() ? temp2.get() : temp1.get())
         : output;

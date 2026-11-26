@@ -722,17 +722,29 @@ def emit_jit_kernel(
         dtype=dtype,
     )
     spec = kernel_spec(kernel)
-    maca_fp64_first_axis = perm_form == "maca_fp64_dif_first64"
-    maca_fp64_dif = kernel == "leaf" and (perm_form == "maca_fp64_dif" or maca_fp64_first_axis)
-    if maca_fp64_dif:
-        required_length = 64 if maca_fp64_first_axis else 2048
+    maca_fp64_layout = {
+        "maca_fp64_dif": (2048, 2, 1),
+        "maca_fp64_dif_first64": (64, 8, 32),
+        "maca_fp64_ct128_prepare": (128, 4, 4),
+        "maca_fp64_ct128_finish": (128, 4, 8),
+    }.get(perm_form) if kernel == "leaf" else None
+    if maca_fp64_layout:
+        required_length, maca_warps, maca_pack = maca_fp64_layout
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and dtype == "complex128" and length == required_length):
-            raise ValueError(f"this FP64 DIF leaf requires a {required_length}-point C550 transform")
-        from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
+            raise ValueError(f"this FP64 leaf requires a {required_length}-point C550 transform")
+        if perm_form.startswith("maca_fp64_ct128"):
+            from .kernels_maca_ct import build_maca_fp64_outer_ct
 
-        builder = build_maca_fp64_dif_first_axis if maca_fp64_first_axis else build_maca_fp64_dif_leaf
-        kernel_name, kernel_source = builder(direction)
+            kernel_name, kernel_source = build_maca_fp64_outer_ct(
+                direction, prepare=perm_form == "maca_fp64_ct128_prepare",
+            )
+        else:
+            from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
+
+            builder = (build_maca_fp64_dif_first_axis if required_length == 64
+                       else build_maca_fp64_dif_leaf)
+            kernel_name, kernel_source = builder(direction)
         n1 = n2 = 0
     elif spec.is_leaf_like:
         io_mode = (
@@ -815,7 +827,7 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM or maca_fp64_dif:
+    if spec.family == STOCKHAM or maca_fp64_layout:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):
@@ -829,7 +841,7 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    if spec.is_leaf_like and not maca_fp64_dif:
+    if spec.is_leaf_like and not maca_fp64_layout:
         radices = tuple(
             sorted(
                 codelet_radices_for(factors)
@@ -863,11 +875,8 @@ def emit_jit_kernel(
         permutation_span=permutation_span,
         permutation_batch=permutation_batch,
     )
-    if maca_fp64_dif:
-        if maca_fp64_first_axis:
-            metadata.update(num_warps=8, batch_per_block=32)
-        else:
-            metadata.update(num_warps=2, batch_per_block=1)
+    if maca_fp64_layout:
+        metadata.update(num_warps=maca_warps, batch_per_block=maca_pack)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:

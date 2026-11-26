@@ -210,6 +210,8 @@ def main() -> None:
             "outer_last",
             "maca_fp64_dif",
             "maca_fp64_dif_first64",
+            "maca_fp64_ct128_prepare",
+            "maca_fp64_ct128_finish",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",

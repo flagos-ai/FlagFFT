@@ -138,9 +138,11 @@ def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
     [
         (2048, (16, 16, 8), "maca_fp64_dif", "maca_fp64_dif2048", 2, 1),
         (64, (4, 4, 4), "maca_fp64_dif_first64", "maca_fp64_dif_first64", 8, 32),
+        (128, (8, 4, 4), "maca_fp64_ct128_prepare", "maca_fp64_ct128_prepare", 4, 4),
+        (128, (8, 4, 4), "maca_fp64_ct128_finish", "maca_fp64_ct128_finish", 4, 8),
     ],
 )
-def test_c550_fp64_dif_leaf_launch_abi(
+def test_c550_fp64_specialized_leaf_launch_abi(
     tmp_path, direction, length, factors, perm_form, kernel_stem, warps, batch_pack,
 ):
     from flagfft_codegen.emit import emit_jit_kernel

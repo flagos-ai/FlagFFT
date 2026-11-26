@@ -1654,7 +1654,8 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
                           DeviceAllocation temp1,
                           DeviceAllocation temp2,
                           std::shared_ptr<JitKernel> perm_021 = nullptr,
-                          std::shared_ptr<JitKernel> perm_201 = nullptr);
+                          std::shared_ptr<JitKernel> perm_201 = nullptr,
+                          std::shared_ptr<CompiledRawNode> n0_first = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1666,6 +1667,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n2_fft;
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<CompiledRawNode> n0_first;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_201;
@@ -1928,9 +1930,9 @@ class TritonCompiler {
   // does not support yet; keep it on the native/JIT path.
   bool npu_stockham_tle_allowed_ = true;
 
-  enum class MacaDifLayout { Auto, Contiguous, FirstAxis64 };
+  enum class MacaLeafLayout { Auto, Contiguous, FirstAxis64, OuterPrepare128, OuterFinish128 };
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request,
-                                                   MacaDifLayout maca_dif_layout = MacaDifLayout::Auto);
+                                                   MacaLeafLayout maca_layout = MacaLeafLayout::Auto);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                     const FFTRequest &request,
                                                                     int64_t perm_span,
