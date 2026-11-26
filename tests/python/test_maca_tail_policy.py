@@ -69,6 +69,21 @@ def test_paired_batch_real_boundary_keeps_distance_and_grid(tmp_path, monkeypatc
     assert metadata["grid_x_override"] == (length // 4 + 256) // 256
 
 
+def test_fused_c2r_row_binds_the_phase_after_output(tmp_path):
+    config = dict(kernel="four_step_row", length=64, factors=(4, 4, 4), lanes=16,
+                  num_warps=2, generic_radices=(), smem_size=64, direction="inverse",
+                  dtype="complex64", prime_n=0, four_step_n1=64, four_step_n2=128, out_dir=tmp_path)
+    base = emit_jit_kernel(**config)
+    fused = emit_jit_kernel(**config, perm_form="maca_packed_c2r_row")
+    assert fused["arg_names"] == [*base["arg_names"][:2], "packed_twiddle_ptr", *base["arg_names"][2:]]
+    assert fused["arg_names"][:3] == ["in_ptr", "out_ptr", "packed_twiddle_ptr"]
+    assert (fused["inner_pack"], fused["num_warps"]) == (4, 2)
+    assert fused["module_path"] != base["module_path"]
+    source = Path(fused["module_path"]).read_text()
+    assert "four_step_batch.to(tl.int64) * 8193" in source
+    assert "tl.where(src_idx0 == 0, 0.0, ai0)" in source
+
+
 @pytest.mark.parametrize("kernel", ["four_step_row", "four_step_col"])
 @pytest.mark.parametrize("mode,n1", [("p4w4", 1024), ("z2z524288-pack4", 512)])
 def test_plan_local_resources_match_measured_manual_configuration(tmp_path, monkeypatch, kernel, mode, n1):

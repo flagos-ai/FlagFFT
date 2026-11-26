@@ -5171,6 +5171,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
               ? select_packed_real_child(node, request, batch, true, maca_packed_rows || maca_1d_fused)
               : std::nullopt) {
     const int64_t packed = n / 2;
+    auto make_layout_fallback = [node, request, batch]() {
+      TritonCompiler compiler;
+      return compiler.compile_raw_c2r_node(node, request, batch, false);
+    };
     const char *packed_fuse_setting = performance_env("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
     if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
         std::string(packed_fuse_setting) != "1") {
@@ -5226,10 +5230,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             compile_kernel(key),
             build_raw_packed_real_twiddle(request, n),
             build_raw_leaf_tables(*leaf, packed_child->request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
-            [node, request, batch]() {
-              TritonCompiler compiler;
-              return compiler.compile_raw_c2r_node(node, request, batch, false);
-            });
+            make_layout_fallback);
+      }
+    }
+    if (maca_1d_batch_policy_ && request.real_transform_kind == "c2r" && n == 16384 &&
+        batch == request.batch && request.input_layout == "contiguous" &&
+        !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{packed + 1, 1} &&
+        maca_flag_or_default("FLAGFFT_MACA_16384_FUSED_PACKED_C2R", false)) {
+      const auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan);
+      if (pair && pair->n1 == 64 && pair->n2 == 128) {
+        const auto row = std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan);
+        const auto col = std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan);
+        if (row && col && row->factors == std::vector<int64_t>{4, 4, 4} &&
+            col->factors == std::vector<int64_t>{4, 4, 4, 2}) {
+          const auto& child = packed_child->request;
+          auto key = KernelKey::four_step_row(triton_target_for_request(child), child.direction,
+              child.input_dtype, pair->n1, pair->n2, row->length, row->factors, row->lanes,
+              row->num_warps, row->generic_radices, row->smem_size);
+          key.perm_form = "maca_packed_c2r_row";
+          auto row_tables = build_raw_leaf_tables(*row, child);
+          row_tables.insert(row_tables.begin(), build_raw_packed_real_twiddle(request, n));
+          auto fft = std::make_shared<CompiledRawFourStepFusedNode>(packed, pair->n1, pair->n2,
+              compile_kernel(key), std::move(row_tables),
+              compile_four_step_col_kernel(*col, child, pair->n1, pair->n2), build_raw_leaf_tables(*col, child),
+              build_raw_four_step_twiddle(child, pair->n1, pair->n2),
+              adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes)));
+          return std::make_shared<CompiledRawPackedC2RNode>(n, nullptr, std::move(fft),
+              DeviceAllocation{}, DeviceAllocation{}, make_layout_fallback);
+        }
       }
     }
     DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
@@ -5247,10 +5275,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         compile_raw_node(packed_child->plan, packed_child->request, batch),
         std::move(boundary_twiddle),
         std::move(packed_input),
-        [node, request, batch]() {
-          TritonCompiler compiler;
-          return compiler.compile_raw_c2r_node(node, request, batch, false);
-        },
+        std::move(make_layout_fallback),
         std::move(aiv_preprocess));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);

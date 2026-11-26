@@ -702,6 +702,7 @@ def _scoped_maca_tail(fn):
         with maca_tail_kernel_scope(
             kwargs["kernel"], kwargs["length"], kwargs["dtype"],
             kwargs["four_step_n1"], kwargs["four_step_n2"],
+            perm_form=kwargs.get("perm_form", "outer"),
         ):
             return fn(**kwargs)
     return scoped
@@ -933,7 +934,8 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM or maca_dif_layout or maca_prime_dif or maca_split_column:
+    if (spec.family == STOCKHAM or maca_dif_layout or maca_prime_dif or maca_split_column
+            or perm_form == "maca_packed_c2r_row"):
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):

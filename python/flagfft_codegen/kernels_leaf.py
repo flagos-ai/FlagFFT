@@ -171,6 +171,16 @@ def _emit_npu_matrix_store(indent, tag, real, imag, lanes, pack, active, offset,
     return lines
 
 
+def _emit_packed_fp32_complex_load(indent: str, ptr: str, mask: str, dest: str) -> list[str]:
+    real, imag = (name.strip() for name in dest.split(","))
+    pair = f"_packed_pair_{real}"
+    return [
+        f"{indent}{pair} = tl.load(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), mask={mask}, other=0)",
+        f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
+        f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
+    ]
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -179,14 +189,7 @@ def _emit_vectorized_complex_load(
     dtype: str,
 ) -> list[str]:
     if _packed_maca_fp32_complex_io(dtype) or _packed_hcu_fp32_complex_io(dtype):
-        pair = "_packed_pair_" + dest.split(",")[0].strip()
-        real, imag = (name.strip() for name in dest.split(","))
-        return [
-            f"{indent}{pair} = tl.load(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), "
-            f"mask={mask}, other=0)",
-            f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
-            f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
-        ]
+        return _emit_packed_fp32_complex_load(indent, ptr, mask, dest)
     if _portable_complex_vector_io(dtype):
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
@@ -1301,6 +1304,7 @@ def _emit_stage_block(
     perm_inner: bool = False,
     perm_batched: bool = False,
     packed_smem_alias: bool = False,
+    maca_packed_c2r_row: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2020,7 +2024,24 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
-                if vectorized_complex_io:
+                if maca_packed_c2r_row:
+                    half = four_step_n1 * four_step_n2
+                    k = f"src_idx{j}"
+                    base = f"four_step_batch.to(tl.int64) * {half + 1}"
+                    for ptr, dest in (
+                        (f"in_ptr + ({base} + {k}) * 2", f"ar{j}, ai{j}"),
+                        (f"in_ptr + ({base} + {half} - {k}) * 2", f"br{j}, bi{j}"),
+                        (f"packed_twiddle_ptr + {k} * 2", f"co{j}, si{j}"),
+                    ):
+                        lines.extend(_emit_packed_fp32_complex_load(indent, ptr, "lane_mask", dest))
+                    lines.extend([
+                        f"{indent}ai{j} = tl.where({k} == 0, 0.0, ai{j})",
+                        f"{indent}bi{j} = tl.where({k} == 0, 0.0, bi{j})",
+                        f"{indent}dr{j}, di{j} = ar{j} - br{j}, ai{j} + bi{j}",
+                        f"{indent}r{j} = ar{j} + br{j} - (di{j} * co{j} - dr{j} * si{j})",
+                        f"{indent}i{j} = ai{j} - bi{j} + (dr{j} * co{j} + di{j} * si{j})",
+                    ])
+                elif vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_load(
                             indent,
@@ -3527,6 +3548,13 @@ def _build_leaf_kernel_source_for_io(
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
     kernel_perm_form = perm_form
+    maca_packed_c2r_row = perm_form == "maca_packed_c2r_row"
+    if maca_packed_c2r_row and not (
+        _maca_backend_active() and current_profile().device_arch == "102"
+        and io_mode == "four_step_row" and plan.dtype == "complex64" and plan.direction == "inverse"
+        and (four_step_n1, four_step_n2) == (64, 128)
+    ):
+        raise ValueError("the packed C2R row requires inverse FP32 FourStep 64 × 128 on C550")
     batched_permutation = perm_form.endswith("_batched")
     if batched_permutation:
         perm_form = perm_form.removesuffix("_batched")
@@ -3581,7 +3609,6 @@ def _build_leaf_kernel_source_for_io(
         io_mode = io_mode.rsplit("_", 1)[0]
     from .target import ix_warp_fft_pack
     warp_pack = ix_warp_fft_pack()
-    from .backend_profile import current_profile
     if (warp_pack and _ix_backend_active() and current_profile().device_arch=='71'
             and current_profile().warp_size==64 and plan.dtype=='complex64'
             and io_mode in {'four_step_row','four_step_col','four_step_real_row',
@@ -3815,6 +3842,8 @@ def _build_leaf_kernel_source_for_io(
             }
         ),
     )
+    if maca_packed_c2r_row:
+        params.insert(params.index("out_ptr") + 1, "packed_twiddle_ptr")
 
     suffix = "_".join(str(x) for x in factors)
     if io_mode == "contiguous":
@@ -3873,6 +3902,8 @@ def _build_leaf_kernel_source_for_io(
         )
     if permuted_smem_store:
         kernel_name += "_smstore"
+    if maca_packed_c2r_row:
+        kernel_name = f"maca_packed_c2r_row_{kernel_name}"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
@@ -4171,6 +4202,7 @@ def _build_leaf_kernel_source_for_io(
                 exchange_slot_stride=smem_slot_stride,
                 bluestein_real_kind=bluestein_real_kind,
                 permuted_smem_store=permuted_smem_store,
+                maca_packed_c2r_row=maca_packed_c2r_row,
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,

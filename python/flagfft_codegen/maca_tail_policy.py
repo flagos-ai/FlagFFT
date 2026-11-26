@@ -94,8 +94,11 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
 
 
 @contextmanager
-def maca_tail_kernel_scope(kernel, length, dtype, n1=0, n2=0):
-    token = _kernel_mode.set(eligible_kernel_mode(kernel, length, dtype, n1, n2))
+def maca_tail_kernel_scope(kernel, length, dtype, n1=0, n2=0, *, perm_form="outer"):
+    mode = eligible_kernel_mode(kernel, length, dtype, n1, n2)
+    if backend_name() == "maca" and perm_form == "maca_packed_c2r_row":
+        mode = perm_form
+    token = _kernel_mode.set(mode)
     try:
         yield
     finally:
@@ -122,6 +125,8 @@ def resource_default(name):
     if _kernel_mode.get() == "z2z16384-split":
         return {"VEC_IO": "1", "EXCHANGE": "direct_all", "FOURSTEP_ROW_PACK": "4",
                 "FOURSTEP_COL_PACK": "8", "MAX_WARPS": "4"}.get(name)
+    if _kernel_mode.get() == "maca_packed_c2r_row":
+        return {"VEC_IO": "packed", "EXCHANGE": "direct_all", "INNER_PACK": "4"}.get(name)
     if _kernel_mode.get() == "batch-c2r663000":
         return {"VEC_IO": "packed"}.get(name)
     if _kernel_mode.get() == "c2c663000-batch":

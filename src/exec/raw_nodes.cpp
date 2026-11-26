@@ -2383,13 +2383,16 @@ flagfftResult CompiledRawPackedC2RNode::execute(adaptor::DevicePtr input,
     const int64_t packed = length / 2;
     const int64_t half = packed + 1;
     const int64_t input_distance = context.input_distance > 0 ? context.input_distance : half;
-    if (context.batch > 1 &&
-        (input == output || (context.output_distance > 0 && context.output_distance != length))) {
+    const bool fused_input = !preprocess_kernel && !aiv_preprocess;
+    if ((context.batch > 1 &&
+         (input == output || (context.output_distance > 0 && context.output_distance != length))) ||
+        (fused_input && input_distance != half)) {
       std::lock_guard<std::mutex> lock(layout_mutex);
       if (!layout_fallback && make_layout_fallback) layout_fallback = make_layout_fallback();
       if (!layout_fallback) return FLAGFFT_INVALID_VALUE;
       return layout_fallback->execute(input, output, context);
     }
+    if (fused_input) return fft->execute(input, output, context);
 
     if (aiv_preprocess) {
       RawExecutionContext boundary_context {

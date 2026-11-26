@@ -236,6 +236,7 @@ def main() -> None:
             "maca_split_column1105_finish_t32",
             "maca_paired_real_boundary_w2",
             "maca_paired_real_boundary_w4",
+            "maca_packed_c2r_row",
         ),
         default="outer",
         help="layout for a permuted store or specialized leaf",
