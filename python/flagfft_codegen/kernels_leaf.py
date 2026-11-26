@@ -1276,27 +1276,14 @@ def _emit_portable_exchange(
 _IX_DISJOINT_MIXED_LENGTHS = {221, 425, 504, 675, 780, 1500, 1560}
 
 
-def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
-    # The final radix-2 butterflies for k and n/2-k contain both packed
-    # spectra required to reconstruct each other's real FFT coefficients.
-    # Read the previous stage directly and avoid a second shared tile.
+def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
+                              swizzle: bool, shift: int) -> list[str]:
     half = n // 2
-    shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
-    swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
-    body = [
-        f"    k_lane = tl.arange(0, {half // 2})",
-        # Keep the frequency tile aligned at each shared-memory group.
-        # Lane zero handles the self-partner frequency at n/4.
-        f"    k = tl.where(k_lane == 0, {half // 2}, k_lane)",
-        f"    partner_k = {half} - k",
-        "    finish_mask = batch_id < nbatch",
-        "    partner_mask = finish_mask & (partner_k != k)",
-        "    finish_out = out_ptr + 2 * batch_id * output_distance",
-    ]
-    for prefix, frequency in (("a", "k"), ("b", "partner_k")):
+    body = ["    partner_mask = finish_store_mask & (partner_k != k)"]
+    for prefix in ("a", "b"):
         for digit in (0, 1):
             index = f"{prefix}{digit}_index"
-            body.append(f"    {index} = {frequency} + ({frequency} & {-lanes}) + {digit * lanes}")
+            body.append(f"    {index} = {prefix}_offset + {digit * lanes}")
             address = f"{index} ^ ({index} >> {shift})" if swizzle else index
             for component in ("r", "i"):
                 body.append(
@@ -1316,8 +1303,8 @@ def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
         "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
     ])
     for value, partner, frequency, wr, wi, mask in (
-        ("a", "d", "k", "wr", "wi", "finish_mask"),
-        ("b", "c", f"k + {half}", "wi", "-wr", "finish_mask"),
+        ("a", "d", "k", "wr", "wi", "finish_store_mask"),
+        ("b", "c", f"k + {half}", "wi", "-wr", "finish_store_mask"),
         ("c", "b", "partner_k", "-wi", "-wr", "partner_mask"),
         ("d", "a", f"partner_k + {half}", "-wr", "wi", "partner_mask"),
     ):
@@ -1336,6 +1323,46 @@ def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
                 f"    tl.store({ptr}, xr_{value}, {mask})",
                 f"    tl.store({ptr} + 1, xi_{value}, {mask})",
             ])
+    return body
+
+
+def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
+    # Both final butterflies for k and n/2-k feed the same packed real
+    # reconstruction. Keep intermediate FFT values in the original tile.
+    half = n // 2
+    shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
+    swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    body = [
+        "    finish_mask = batch_id < nbatch",
+        "    finish_out = out_ptr + 2 * batch_id * output_distance",
+    ]
+    if n == 8192:
+        # This narrow tile retains the fast lowering away from group
+        # boundaries. Compute the four boundary pairs with constant strides.
+        body.extend([
+            f"    k = tl.arange(0, {half // 2}) + 1",
+            f"    partner_k = {half} - k",
+            f"    a_offset = k + {lanes} * (k // {lanes})",
+            f"    b_offset = partner_k + {lanes} * (partner_k // {lanes})",
+            f"    finish_store_mask = finish_mask & ((k & {lanes - 1}) != 0)",
+        ])
+        body.extend(_emit_ix_r2c_finish_pairs(n, lanes, stage, swizzle, shift))
+        body.extend([
+            f"    k = (tl.arange(0, {half // (2 * lanes)}) + 1) * {lanes}",
+            f"    partner_k = {half} - k",
+            "    a_offset = 2 * k",
+            "    b_offset = 2 * partner_k",
+        ])
+    else:
+        body.extend([
+            f"    k_lane = tl.arange(0, {half // 2})",
+            f"    k = tl.where(k_lane == 0, {half // 2}, k_lane)",
+            f"    partner_k = {half} - k",
+            f"    a_offset = k + (k & {-lanes})",
+            f"    b_offset = partner_k + (partner_k & {-lanes})",
+        ])
+    body.append("    finish_store_mask = finish_mask")
+    body.extend(_emit_ix_r2c_finish_pairs(n, lanes, stage, swizzle, shift))
     second = lanes ^ (lanes >> shift) if swizzle else lanes
     for digit, address in enumerate((0, second)):
         for component in ("r", "i"):

@@ -1444,7 +1444,9 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
 
 def ix_packed_r2c_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
     return (_ix_backend_active() and current_profile().device_arch == "71"
-            and io_mode == "packed_r2c" and n == 1024 and factors == (8, 8, 8, 2)
+            and io_mode == "packed_r2c"
+            and ((n == 1024 and factors == (8, 8, 8, 2))
+                 or (n == 8192 and factors == (16, 16, 16, 2)))
             and _maca_knob("PACKED_R2C_TLE", "0") == "1")
 
 

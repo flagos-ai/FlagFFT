@@ -4787,7 +4787,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       request.input_strides.size() == 2 && request.input_strides.front() == n;
   const bool fused_ix = fused_setting ? std::string(fused_setting) == "1" : !use_full_single;
   const char *ix_batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
-  const bool packed_tle = n == 2048 && batch == 64 && request.ix_fourstep_preset == 9 &&
+  const bool short_tle_shape = n == 2048 && batch == 64 && request.ix_fourstep_preset == 9;
+  const bool large_tle_shape = packed_cta && request.ix_fourstep_preset == 8;
+  const bool packed_tle = (short_tle_shape || large_tle_shape) &&
       !std::getenv("FLAGFFT_IX_PORTABLE_LEAF") && !std::getenv("FLAGFFT_IX_LEAF_FACTORS") &&
       !std::getenv("FLAGFFT_IX_WARPS") && (!ix_batch_pack || std::string(ix_batch_pack) == "1") &&
       !flag_or_default("FLAGFFT_IX_WARP_FFT", false) &&
@@ -4825,13 +4827,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       const bool explicit_child_factors = child_leaf && factor_override &&
           std::strtoll(factor_override, &factor_end, 10) == n / 2 &&
           factor_end && *factor_end == ':';
-      const std::vector<int64_t> factors = packed_tle ? std::vector<int64_t>{8, 8, 8, 2} :
+      const std::vector<int64_t> factors = packed_tle && large_tle_shape ? std::vector<int64_t>{16, 16, 16, 2} :
+          packed_tle ? std::vector<int64_t>{8, 8, 8, 2} :
           n == 2048 && !explicit_child_factors
           ? std::vector<int64_t>{16, 8, 8}
           : child_leaf->factors;
-      const int64_t lanes = packed_tle ? 128 :
+      const int64_t lanes = packed_tle ? (n / 2) / factors.front() :
           packed_cta ? child_leaf->lanes : child_builder.choose_lanes(n / 2, factors);
-      const int64_t warps = packed_tle ? 4 :
+      const int64_t warps = packed_tle ? (large_tle_shape ? 8 : 4) :
           packed_cta ? child_leaf->num_warps : child_builder.choose_num_warps(lanes);
       LeafPlanNode packed_leaf(n / 2, factors, 1, lanes, warps, {}, n / 2);
       KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),

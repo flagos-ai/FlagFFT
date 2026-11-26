@@ -42,7 +42,6 @@ namespace {
       {"FLAGFFT_IX_PACKED_R2C_INPUT", "1"},
       {"FLAGFFT_IX_PORTABLE_LEAF", "0"},
       {"FLAGFFT_IX_BATCH_PACK", "1"},
-      {"FLAGFFT_IX_WARPS", "4"},
       {"FLAGFFT_IX_SMEM_SWIZZLE", "1"},
       {"FLAGFFT_IX_SMEM_SWIZZLE_SHIFT", "5"},
       {"FLAGFFT_IX_TLE_DISJOINT_STAGE", "1"},
@@ -807,6 +806,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     for (const auto &[name, value] : kIxPackedR2CTleDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
+    if (!performance_env("FLAGFFT_IX_WARPS")) jit_command << "FLAGFFT_IX_WARPS=" << key.num_warps << " ";
   }
   const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
       (key.perm_form == "ix_split_frequency" || key.perm_form == "ix_split_c2r_frequency");
