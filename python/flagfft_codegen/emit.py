@@ -1193,6 +1193,8 @@ def _emit_tiled_transpose3d_jit_kernel(
         fp32_long = dtype == "complex64" and (n0, n1, n2, order) in {
             (128, 64, 2048, "210"),
             (2048, 64, 128, "201"),
+            (128, 2048, 33, "120"),
+            (2048, 33, 128, "210"),
         }
         maca_mode_default = "pair16sg2rg2" if fp32_cube else "pair16"
         maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D")
