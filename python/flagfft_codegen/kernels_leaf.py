@@ -2230,15 +2230,20 @@ def _emit_stage_block(
         # reuses that buffer for a different, batch-contiguous layout.
         lines.append(f"{indent}tl.debug_barrier()")
 
-    ix_register_prime = False
-    if _ix_backend_active() and dtype=='complex64' and radix in {13,17}:
-        setting=_maca_knob('RADER_CODELET','0')
-        if setting not in {'0','1'}:
-            raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
-        ix_register_prime=setting=='1'
-    if ix_register_prime:
+    register_prime = False
+    if dtype == "complex64" and radix in {13, 17}:
+        ix_target = _ix_backend_active()
+        maca_target = _maca_backend_active() and current_profile().device_arch == "102"
+        if ix_target or maca_target:
+            setting = _maca_knob("RADER_CODELET", "0")
+            if setting not in {"0", "1"}:
+                backend = "IX" if ix_target else "MACA"
+                raise ValueError(f"FLAGFFT_{backend}_RADER_CODELET must be 0 or 1")
+            register_prime = setting == "1"
+    if register_prime:
         from .ix_prime_codelets import emit_prime_codelet
-        lines.extend(emit_prime_codelet(indent,radix,direction))
+
+        lines.extend(emit_prime_codelet(indent, radix, direction))
     elif radix == 16:
         lines.extend(_emit_radix16_codelet_call(indent, direction))
     elif radix == 32:
