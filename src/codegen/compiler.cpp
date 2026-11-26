@@ -5286,7 +5286,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_wave_bands(
     std::shared_ptr<CompiledRawNode> fallback) {
   const auto axis = length / bands;
   FFTRequest child = request;
-  child.fft_length = child.requested_n = child.n = axis;
+  child.fft_length = child.requested_n = axis;
+  child.n = axis;
   child.input_shape = {1, axis};
   child.input_strides = {axis, 1};
   child.real_transform = false;
