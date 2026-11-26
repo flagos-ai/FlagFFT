@@ -6993,7 +6993,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       (inverse || performance_env("FLAGFFT_MACA_3D_R2C_FIRST_STORE") == nullptr);
   const bool maca_fp32_inverse_boundary = maca_long_real && inverse && maca_real_boundary_default &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_C2R_FP32_BOUNDARY_DIF", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2R_FP32_BOUNDARY_DIF", true);
   const bool maca_real_boundary_dif = maca_fp32_inverse_boundary || (maca_long_fp64 &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_BOUNDARY_DIF", maca_real_boundary_default));
   const auto middle_dif_layout = maca_real_middle_dif
