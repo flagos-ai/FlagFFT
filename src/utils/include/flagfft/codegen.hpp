@@ -224,10 +224,14 @@ struct CompiledRawMacaFp64FFT16Node final : CompiledRawNode {
 };
 
 struct CompiledRawMacaFp64D2Z16Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp64D2Z16Node(int64_t batch)
+      : dense_input_copy(batch > 1 ? DeviceAllocation(static_cast<std::size_t>(batch * 16 * sizeof(double)))
+                                   : DeviceAllocation{}) {}
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
   bool is_single_kernel() const override { return true; }
+  DeviceAllocation dense_input_copy;
 };
 
 struct CompiledRawMacaFp64FFT23Node final : CompiledRawNode {
@@ -240,14 +244,17 @@ struct CompiledRawMacaFp64FFT23Node final : CompiledRawNode {
 };
 
 struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
-  CompiledRawMacaFp32R2C2048Node(DeviceAllocation roots, bool use_residues)
-      : roots(std::move(roots)), use_residues(use_residues) {}
+  CompiledRawMacaFp32R2C2048Node(DeviceAllocation roots, bool use_residues, int64_t batch)
+      : roots(std::move(roots)), use_residues(use_residues),
+        dense_input_copy(batch > 1 ? DeviceAllocation(static_cast<std::size_t>(batch * 2048 * sizeof(float)))
+                                   : DeviceAllocation{}) {}
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
   bool is_single_kernel() const override { return true; }
   DeviceAllocation roots;
   bool use_residues;
+  DeviceAllocation dense_input_copy;
 };
 
 struct CompiledRawMacaLongAxisNode final : CompiledRawNode {

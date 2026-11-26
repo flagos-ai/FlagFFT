@@ -4963,7 +4963,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const int64_t n = request.requested_n;
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
   if (batch == request.batch && maca_fp64_d2z16_native_enabled(request)) {
-    return std::make_shared<CompiledRawMacaFp64D2Z16Node>();
+    return std::make_shared<CompiledRawMacaFp64D2Z16Node>(batch);
   }
   const char* sdk = std::getenv("FLAGFFT_MACA_2048_FP32_SINGLE_NATIVE");
   const std::string_view sdk_mode = sdk ? sdk : "residues";
@@ -4980,7 +4980,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       (!sdk_single || maca_tail_policy_enabled(request))) {
     return std::make_shared<CompiledRawMacaFp32R2C2048Node>(
         DeviceAllocation::from_floats(make_maca_sdk_roots<float>(n, false)),
-        sdk_single && sdk_mode == "residues");
+        sdk_single && sdk_mode == "residues", batch);
   }
 #endif
   // Reuse the bounded complex-axis schedule for mixed real four-step

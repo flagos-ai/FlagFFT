@@ -45,6 +45,22 @@ extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, co
 extern "C" int flagfft_maca_launch_long_axis_fp32_first(const void* input, void* output, const void* roots,
                                                         unsigned batch, bool inverse, void* stream);
 
+namespace {
+
+adaptor::DevicePtr snapshot_dense_real_rows(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                          int64_t length, int64_t input_distance,
+                                          const DeviceAllocation &copy, adaptor::StreamHandle stream) {
+  // Dense in-place input rows overlap the following row's wider spectrum.
+  // Padded rows share the same input and output byte pitch.
+  if (input == output && input_distance == length && copy.size() > 0) {
+    adaptor::copy_device_to_device(copy.get(), input, copy.size(), stream);
+    return copy.get();
+  }
+  return input;
+}
+
+}  // namespace
+
 flagfftResult CompiledRawMacaFp64FFT16Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
   const int status = flagfft_maca_launch_fp64_fft16(
@@ -59,13 +75,19 @@ std::string CompiledRawMacaFp64FFT16Node::describe() const {
 
 flagfftResult CompiledRawMacaFp64D2Z16Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                   const RawExecutionContext &context) const {
-  // A basic Plan1d descriptor also uses padded real rows for in-place execution.
-  const int64_t input_distance = std::max<int64_t>(context.input_distance, input == output ? 18 : 16);
-  const int64_t output_distance = context.output_distance > 0 ? context.output_distance : 9;
-  const int status = flagfft_maca_launch_fp64_d2z16(
-      reinterpret_cast<const double*>(input), reinterpret_cast<double*>(output),
-      static_cast<unsigned>(context.batch), input_distance, output_distance, context.stream);
-  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+  try {
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : 16;
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : 9;
+    const auto source = snapshot_dense_real_rows(input, output, 16, input_distance,
+                                                 dense_input_copy, context.stream);
+    const int status = flagfft_maca_launch_fp64_d2z16(
+        reinterpret_cast<const double*>(source), reinterpret_cast<double*>(output),
+        static_cast<unsigned>(context.batch), input_distance, output_distance, context.stream);
+    return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[flagfft] C550 D2Z16 execute failed: %s\n", error.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
 }
 
 std::string CompiledRawMacaFp64D2Z16Node::describe() const {
@@ -85,14 +107,20 @@ std::string CompiledRawMacaFp64FFT23Node::describe() const {
 
 flagfftResult CompiledRawMacaFp32R2C2048Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
-  const int64_t input_distance = std::max<int64_t>(context.input_distance, input == output ? 2050 : 2048);
-  const int status = flagfft_maca_launch_fp32_r2c2048(
-      reinterpret_cast<const float*>(input), reinterpret_cast<float*>(output),
-      roots.data(), static_cast<unsigned>(context.batch),
-      input_distance,
-      context.output_distance > 0 ? context.output_distance : 1025,
-      use_residues, context.stream);
-  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+  try {
+    const int64_t input_distance = context.input_distance > 0 ? context.input_distance : 2048;
+    const int64_t output_distance = context.output_distance > 0 ? context.output_distance : 1025;
+    const auto source = snapshot_dense_real_rows(input, output, 2048, input_distance,
+                                                 dense_input_copy, context.stream);
+    const int status = flagfft_maca_launch_fp32_r2c2048(
+        reinterpret_cast<const float*>(source), reinterpret_cast<float*>(output),
+        roots.data(), static_cast<unsigned>(context.batch), input_distance, output_distance,
+        use_residues, context.stream);
+    return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "[flagfft] C550 R2C2048 execute failed: %s\n", error.what());
+    return FLAGFFT_EXEC_FAILED;
+  }
 }
 
 std::string CompiledRawMacaFp32R2C2048Node::describe() const {
