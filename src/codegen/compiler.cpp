@@ -8014,6 +8014,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t n1 = node->n1;
   const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1);
   const bool rc_eligible = n0 <= 256;
+  const bool maca_short_fp64_direct = request.device_arch == "102" && request.raw_dim == 2 &&
+      request.origin_rank == 2 && !request.real_transform && request.input_dtype == "complex128" &&
+      request.output_dtype == "complex128" && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && request.batch == batch && (batch == 1 || batch == 4) &&
+      n0 == n1 && (n0 == 64 || n0 == 128);
   // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
   // about 0.1 ms versus direct launches (both RC and transpose paths).
   // Keep other devices and unmeasured batch sizes on the existing policy.
@@ -8026,7 +8031,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS")) &&
       !(request.device_type == "musa" && request.device_arch == "31" && batch == 1) &&
       (request.device_type != "maca" ||
-       maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", !maca_2d_single_policy_));
+       maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", !(maca_2d_single_policy_ || maca_short_fp64_direct)));
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
