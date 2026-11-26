@@ -2219,6 +2219,30 @@ def test_maca_compact_four_step_stages_retain_gather_width(monkeypatch):
     assert "lane_mask = base_lane_mask & (lane < 104)" in compact
 
 
+def test_maca_compact_fp64_leaf_routes_to_the_next_stage_width(monkeypatch):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+
+    monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", "direct_all")
+    monkeypatch.setenv("FLAGFFT_MACA_LANE_MIN", "auto")
+    monkeypatch.setenv("FLAGFFT_MACA_BATCH_PACK", "1")
+    token = set_profile(_maca_profile())
+    try:
+        plan = LeafPlan(2048, (16, 16, 8), 1, 128, 4, (), 2048, "inverse", "complex128")
+        monkeypatch.setenv("FLAGFFT_MACA_COMPACT_STAGES", "0")
+        _, baseline = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+        monkeypatch.setenv("FLAGFFT_MACA_COMPACT_STAGES", "1")
+        _, compact = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+    finally:
+        reset_profile(token)
+
+    assert "lane_vec = tl.arange(0, 128)" not in baseline
+    assert compact.count("lane_vec = tl.arange(0, 128)") == 2
+    assert "tl.reshape(smem_b_register_r, (1, 128, 2, 2, 2, 2))" in compact
+    assert "tl.reshape(smem_a_register_r, (1, 256, 2, 2, 2))" in compact
+
+
 @pytest.mark.parametrize("inner_pack", ["1", "4"])
 def test_maca_portable_exchange_indexes_the_register_layout(
     kernels, monkeypatch, inner_pack

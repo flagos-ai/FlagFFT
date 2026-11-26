@@ -1133,6 +1133,7 @@ def _emit_portable_exchange(
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
     allow_mixed_direct: bool = True,
+    next_lane_block: int | None = None,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -1182,7 +1183,7 @@ def _emit_portable_exchange(
                     buffer,
                     factors[stage + 1],
                     n,
-                    lane_block,
+                    lane_block if next_lane_block is None else next_lane_block,
                     pack,
                     interleaved=register_lane_stride > 1,
                 )
@@ -1309,25 +1310,39 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
-    compact_maca_stage = (
-        _maca_backend_active()
+    maca_compact = (
+        portable_exchange and _maca_backend_active()
         and current_profile().device_arch == "102"
         and _maca_knob("COMPACT_STAGES") == "1"
+    )
+    compact_maca_four_step = (
+        maca_compact
         and _maca_knob("MIXED_EXCHANGE") != "direct"
         and io_mode in {"four_step_row", "four_step_col"}
     )
-    compact_stage = (portable_exchange
-        and (compact_maca_stage or (_npu_backend_active()
+    compact_maca_leaf = (
+        maca_compact and n == 2048 and dtype == "complex128"
+        and io_mode == "contiguous" and smem_pack == 1
+        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+        and _structured_exchange_supported(factors, exchange_size, exchange_slot_stride, smem_pack)
+    )
+    compact_stage = compact_maca_leaf or (portable_exchange
+        and (compact_maca_four_step or (_npu_backend_active()
             and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"))
         and any(factor & (factor-1) for factor in factors)
         and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r",
                         "four_step_row", "four_step_col", "four_step_real_row",
                         "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"})
+    next_lane_block = None
     if compact_stage:
         lane_block = lane_block_for(current_lanes)
-        if compact_maca_stage:
+        if maca_compact:
             # Retain the MetaX gather width while reducing padded registers.
-            lane_block = max(lane_block, _portable_exchange_lane_floor(smem_pack))
+            exchange_floor = _portable_exchange_lane_floor(smem_pack)
+            lane_block = max(lane_block, exchange_floor)
+            if compact_maca_leaf:
+                # Direct exchange builds the next stage's register bank.
+                next_lane_block = max(lane_block_for(next_lanes), exchange_floor)
     npu_affine_tables = (portable_exchange and _npu_backend_active()
         and os.environ.get("FLAGFFT_NPU_AFFINE_MATRIX_IO") == "1")
     npu_matrix_io = (npu_affine_tables and inner_pack >= 4 and dtype == "complex64"
@@ -2867,6 +2882,7 @@ def _emit_stage_block(
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
                     allow_mixed_direct=mixed_direct_layout,
+                    next_lane_block=next_lane_block,
                 )
             )
     elif not is_last:
