@@ -38,21 +38,24 @@ def maca(monkeypatch):
 
 def emit(path, kernel="four_step_col", dtype="complex128", length=1024, n1=1024, n2=1024):
     real = kernel.startswith("direct_dft")
+    factors = () if real else ((8, 4, 4, 4) if length == 512 else (16, 8, 8))
     return emit_jit_kernel(
-        kernel=kernel, length=length, factors=() if real else (16, 8, 8),
+        kernel=kernel, length=length, factors=factors,
         lanes=1 if real else 64, num_warps=4 if real else 2,
-        generic_radices=(), smem_size=0 if real else 1024,
+        generic_radices=(), smem_size=0 if real else length,
         direction="inverse" if kernel == "direct_dft_c2r" else "forward",
         dtype=dtype, prime_n=0, four_step_n1=n1, four_step_n2=n2, out_dir=path,
     )
 
 
 @pytest.mark.parametrize("kernel", ["four_step_row", "four_step_col"])
-def test_plan_local_resources_match_measured_manual_configuration(tmp_path, monkeypatch, kernel):
+@pytest.mark.parametrize("mode,n1", [("p4w4", 1024), ("z2z524288-pack4", 512)])
+def test_plan_local_resources_match_measured_manual_configuration(tmp_path, monkeypatch, kernel, mode, n1):
     before = dict(os.environ)
-    baseline = emit(tmp_path, kernel)
-    set_maca_tail_mode("p4w4")
-    candidate = emit(tmp_path, kernel)
+    request = dict(kernel=kernel, length=n1 if kernel == "four_step_row" else 1024, n1=n1)
+    baseline = emit(tmp_path, **request)
+    set_maca_tail_mode(mode)
+    candidate = emit(tmp_path, **request)
     assert candidate["inner_pack"] == 4
     assert candidate["num_warps"] == 4
     assert dict(os.environ) == before
@@ -62,7 +65,7 @@ def test_plan_local_resources_match_measured_manual_configuration(tmp_path, monk
     set_maca_tail_mode("off")
     for key, value in {"FP64_REGISTER_PACK": "1", "INNER_PACK": "4", "MAX_WARPS": "4"}.items():
         monkeypatch.setenv("FLAGFFT_MACA_" + key, value)
-    manual = emit(tmp_path, kernel)
+    manual = emit(tmp_path, **request)
     assert manual["inner_pack"] == candidate["inner_pack"]
     assert manual["num_warps"] == candidate["num_warps"]
     assert Path(manual["module_path"]).read_text() == candidate_source
@@ -104,16 +107,17 @@ def test_packed_663000_resources_match_manual_mode(tmp_path, monkeypatch, kernel
         assert candidate["inner_pack"] == (4 if row else 2)
 
 
-@pytest.mark.parametrize("mode,dtype,n1,n2", [
-    ("c2c340200-split", "complex64", 567, 600),
-    ("z2z340200-split", "complex128", 504, 675),
+@pytest.mark.parametrize("mode,dtype,n1,n2,vec_io", [
+    ("c2c340200-split", "complex64", 567, 600, "packed"),
+    ("z2z340200-split", "complex128", 504, 675, "packed"),
+    ("z2z16384-split", "complex128", 256, 64, "1"),
 ])
-def test_340200_split_resources_are_local_to_its_fourstep_axes(mode, dtype, n1, n2):
+def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n2, vec_io):
     other_dtype = "complex128" if dtype == "complex64" else "complex64"
     set_maca_tail_mode(mode)
     for kernel, length in (("four_step_row", n1), ("four_step_col", n2)):
         with maca_tail_kernel_scope(kernel, length, dtype, n1, n2):
-            assert resource_default("VEC_IO") == "packed"
+            assert resource_default("VEC_IO") == vec_io
             assert resource_default("MAX_WARPS") == "4"
         assert eligible_kernel_mode(kernel, length, other_dtype, n1, n2) == "off"
         assert eligible_kernel_mode(kernel, length, dtype, 378, 900) == "off"
