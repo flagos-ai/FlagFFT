@@ -8187,7 +8187,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       !request.requires_contiguous_copy && request.input_dtype == "complex64" &&
       request.output_dtype == "complex64" && n0 == 128 && n1 == 128 && batch == 1 &&
       (!policy || std::string(policy) == "balanced") &&
-      flag_or_default("FLAGFFT_IX_2D_R2C_128_TRANSPOSE", false) &&
+      flag_or_default("FLAGFFT_IX_ND_WARP", true) && flag_or_default("FLAGFFT_IX_WARP_FFT", true) &&
+      flag_or_default("FLAGFFT_IX_2D_R2C_128_TRANSPOSE", true) &&
       adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
