@@ -5259,6 +5259,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::FirstAxis64: key.perm_form = "maca_fp64_dif_first64"; break;
     case MacaLeafLayout::OuterPrepare128: key.perm_form = "maca_fp64_ct128_prepare"; break;
     case MacaLeafLayout::OuterFinish128: key.perm_form = "maca_fp64_ct128_finish"; break;
+    case MacaLeafLayout::OuterPrepareDif128: key.perm_form = "maca_fp64_ct128_prepare_dif"; break;
+    case MacaLeafLayout::OuterFinishDif128: key.perm_form = "maca_fp64_ct128_finish_dif"; break;
     case MacaLeafLayout::RealForward64: key.perm_form = "maca_fp64_3d_r2c64"; break;
     case MacaLeafLayout::RealInverse64: key.perm_form = "maca_fp64_3d_c2r64"; break;
   }
@@ -6462,8 +6464,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     std::shared_ptr<CompiledRawNode> n0_first;
     std::shared_ptr<CompiledRawNode> n0_fft;
     if (maca_outer_ct) {
-      n0_first = compile_raw_leaf(*n0_leaf, n0_request, MacaLeafLayout::OuterPrepare128);
-      n0_fft = compile_raw_leaf(*n0_leaf, n0_request, MacaLeafLayout::OuterFinish128);
+      const bool outer_dif = maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_DIF", false);
+      n0_first = compile_raw_leaf(*n0_leaf, n0_request,
+          outer_dif ? MacaLeafLayout::OuterPrepareDif128 : MacaLeafLayout::OuterPrepare128);
+      n0_fft = compile_raw_leaf(*n0_leaf, n0_request,
+          outer_dif ? MacaLeafLayout::OuterFinishDif128 : MacaLeafLayout::OuterFinish128);
     } else {
       n0_fft = maca_long_axis
           ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)

@@ -5,6 +5,77 @@
 
 from textwrap import dedent
 
+from .kernels_maca_dif import _dif_column_helpers
+
+
+def build_maca_fp64_outer_dif(direction: str, *, prepare: bool) -> tuple[str, str]:
+    phase = "prepare" if prepare else "finish"
+    name = f"maca_fp64_ct128_{phase}_dif_{direction}"
+    length = 16 if prepare else 8
+    children = 128 // length
+    groups = 2048
+    batch_pack = length // 2
+    helpers = _dif_column_helpers(length, direction, tile=64, root_stride=children)
+    if prepare:
+        body = dedent(f"""
+            @triton.jit
+            def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
+                block = tl.program_id(0)
+                if block * {batch_pack} >= nbatch:
+                    return
+                cube = block // {groups * children}
+                part = (block // {groups}) % {children}
+                base = cube.to(tl.int64) * 33554432
+                column = (block % {groups}) * 64 + tl.arange(0, 64)
+                k = tl.arange(0, {length})
+                pair = tl.arange(0, 2)[None, None, :]
+                row = k * {children} + part
+                offset = row[:, None] * 131072 + column[None, :]
+                r, i = tl.split(tl.load(in_ptr + base + offset[:, :, None] * 2 + pair))
+                for stage in tl.static_range(2):
+                    r, i = _first_axis_radix_four(r, i, roots_r_ptr, roots_i_ptr, stage)
+                r = tl.reshape(tl.permute(tl.reshape(r, (4, 4, 64)), (1, 0, 2)), ({length}, 64))
+                i = tl.reshape(tl.permute(tl.reshape(i, (4, 4, 64)), (1, 0, 2)), ({length}, 64))
+                co = tl.load(roots_r_ptr + k * part)[:, None]
+                si = tl.load(roots_i_ptr + k * part)[:, None]
+                value = tl.join(r * co - i * si, r * si + i * co)
+                tl.store(out_ptr + base + offset[:, :, None] * 2 + pair, value)
+        """)
+    else:
+        body = dedent(f"""
+            @triton.jit
+            def _outer_finish8(values):
+                pairs = tl.permute(tl.reshape(values, (4, 2, 64)), (0, 2, 1))
+                a, b = tl.split(pairs)
+                return tl.reshape(tl.permute(tl.join(a + b, a - b), (2, 0, 1)), (8, 64))
+
+            @triton.jit
+            def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
+                block = tl.program_id(0)
+                if block * {batch_pack} >= nbatch:
+                    return
+                cube = block // {groups * children}
+                part = (block // {groups}) % {children}
+                group = block % {groups}
+                base = cube.to(tl.int64) * 33554432
+                y_base = (group % 256) * 8
+                z_base = (group // 256) * 8
+                lane = tl.arange(0, 64)
+                k = tl.arange(0, {length})
+                pair = tl.arange(0, 2)[None, None, :]
+                in_column = (z_base + lane // 8) * 2048 + y_base + lane % 8
+                src = (part * {length} + k[:, None]) * 131072 + in_column[None, :]
+                r, i = tl.split(tl.load(in_ptr + base + src[:, :, None] * 2 + pair))
+                r, i = _first_axis_radix_four(r, i, roots_r_ptr, roots_i_ptr, 0)
+                values = tl.join(_outer_finish8(r), _outer_finish8(i))
+                values = tl.reshape(tl.permute(tl.reshape(values, (8, 8, 8, 2)),
+                                               (0, 2, 1, 3)), (8, 64, 2))
+                out_column = (y_base + lane // 8) * 64 + z_base + lane % 8
+                dst = (k[:, None] * {children} + part) * 131072 + out_column[None, :]
+                tl.store(out_ptr + base + dst[:, :, None] * 2 + pair, values)
+        """)
+    return name, helpers + body
+
 
 def build_maca_fp64_outer_ct(direction: str, *, prepare: bool) -> tuple[str, str]:
     phase = "prepare" if prepare else "finish"

@@ -140,6 +140,8 @@ def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
         (64, (4, 4, 4), "maca_fp64_dif_first64", "maca_fp64_dif_first64", 8, 32),
         (128, (8, 4, 4), "maca_fp64_ct128_prepare", "maca_fp64_ct128_prepare", 4, 4),
         (128, (8, 4, 4), "maca_fp64_ct128_finish", "maca_fp64_ct128_finish", 4, 8),
+        (128, (8, 4, 4), "maca_fp64_ct128_prepare_dif", "maca_fp64_ct128_prepare_dif", 2, 8),
+        (128, (8, 4, 4), "maca_fp64_ct128_finish_dif", "maca_fp64_ct128_finish_dif", 2, 4),
     ],
 )
 def test_c550_fp64_specialized_leaf_launch_abi(

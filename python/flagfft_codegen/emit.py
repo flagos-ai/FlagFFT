@@ -727,6 +727,8 @@ def emit_jit_kernel(
         "maca_fp64_dif_first64": (64, 8, 32),
         "maca_fp64_ct128_prepare": (128, 4, 4),
         "maca_fp64_ct128_finish": (128, 4, 8),
+        "maca_fp64_ct128_prepare_dif": (128, 2, 8),
+        "maca_fp64_ct128_finish_dif": (128, 2, 4),
         "maca_fp64_3d_r2c64": (64, 2, 32),
         "maca_fp64_3d_c2r64": (64, 2, 32),
     }.get(perm_form) if kernel == "leaf" else None
@@ -759,11 +761,11 @@ def emit_jit_kernel(
                 and dtype == "complex128" and length == required_length):
             raise ValueError(f"this FP64 leaf requires a {required_length}-point C550 transform")
         if perm_form.startswith("maca_fp64_ct128"):
-            from .kernels_maca_ct import build_maca_fp64_outer_ct
+            from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
 
-            kernel_name, kernel_source = build_maca_fp64_outer_ct(
-                direction, prepare=perm_form == "maca_fp64_ct128_prepare",
-            )
+            builder = (build_maca_fp64_outer_dif if perm_form.endswith("_dif")
+                       else build_maca_fp64_outer_ct)
+            kernel_name, kernel_source = builder(direction, prepare="_prepare" in perm_form)
         elif perm_form.startswith("maca_fp64_3d_"):
             from .kernels_maca_dif import build_maca_fp64_3d_real_boundary
 

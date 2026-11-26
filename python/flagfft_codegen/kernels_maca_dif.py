@@ -153,14 +153,15 @@ def build_maca_prime_dif(n: int, mode: str) -> tuple[str, str]:
     return name, source
 
 
-def _dif_column_helpers(length: int, direction: str) -> str:
+def _dif_column_helpers(length: int, direction: str, *, tile: int = 32, root_stride: int = 1) -> str:
     sign = 1 if direction == "inverse" else -1
+    phase_stride = f" * {root_stride}" if root_stride != 1 else ""
     return dedent(
         f"""
         @triton.jit
         def _first_axis_split(values, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
-            groups = tl.reshape(values, (GROUPS, 4, QUARTER, 32))
-            digits = tl.reshape(tl.permute(groups, (0, 2, 3, 1)), (GROUPS, QUARTER, 32, 2, 2))
+            groups = tl.reshape(values, (GROUPS, 4, QUARTER, {tile}))
+            digits = tl.reshape(tl.permute(groups, (0, 2, 3, 1)), (GROUPS, QUARTER, {tile}, 2, 2))
             ac, bd = tl.split(digits)
             a, c = tl.split(ac)
             b, d = tl.split(bd)
@@ -168,8 +169,8 @@ def _dif_column_helpers(length: int, direction: str) -> str:
 
         @triton.jit
         def _first_axis_join(a, b, c, d, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
-            digits = tl.reshape(tl.join(tl.join(a, c), tl.join(b, d)), (GROUPS, QUARTER, 32, 4))
-            return tl.reshape(tl.permute(digits, (0, 3, 1, 2)), ({length}, 32))
+            digits = tl.reshape(tl.join(tl.join(a, c), tl.join(b, d)), (GROUPS, QUARTER, {tile}, 4))
+            return tl.reshape(tl.permute(digits, (0, 3, 1, 2)), ({length}, {tile}))
 
         @triton.jit
         def _first_axis_rotate(real, imag, roots_r, roots_i, phase):
@@ -193,7 +194,7 @@ def _dif_column_helpers(length: int, direction: str) -> str:
             r3 = diff_even_r + ({sign}) * diff_odd_i
             i3 = diff_even_i - ({sign}) * diff_odd_r
             if QUARTER > 1:
-                phase = tl.arange(0, QUARTER) * GROUPS
+                phase = tl.arange(0, QUARTER) * GROUPS{phase_stride}
                 r1, i1 = _first_axis_rotate(r1, i1, roots_r, roots_i, phase)
                 r2, i2 = _first_axis_rotate(r2, i2, roots_r, roots_i, phase * 2)
                 r3, i3 = _first_axis_rotate(r3, i3, roots_r, roots_i, phase * 3)
