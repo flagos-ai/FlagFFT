@@ -402,7 +402,7 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 }
 
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
-                                                   bool portable_default) {
+                                                   bool portable_default, bool ix_fixed_lanes) {
   const bool is_double = dtype_is_double(request.input_dtype);
   const char *hcu_conv_buffer = performance_env("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
   const int64_t hcu_convolution_limit = request.device_type == "hcu" &&
@@ -421,10 +421,15 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool portable_cuda = adaptor::backend_name() == "cuda" && cuda_portable &&
                               std::string(cuda_portable) == "1";
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
-    const int64_t lanes = (adaptor::backend_name() == "maca" || portable_ix || portable_cuda || npu_portable_leaf_enabled(request)) ? leaf.length / leaf.factors[stage]
-                          : use_cooperative_stage_lanes(leaf, request)
-                              ? cooperative_stage_lanes(leaf.length, leaf.factors[stage], request, hcu_convolution_limit)
-                              : leaf.lanes;
+    int64_t lanes = leaf.lanes;
+    if (!ix_fixed_lanes) {
+      if (adaptor::backend_name() == "maca" || portable_ix || portable_cuda ||
+          npu_portable_leaf_enabled(request)) {
+        lanes = leaf.length / leaf.factors[stage];
+      } else if (use_cooperative_stage_lanes(leaf, request)) {
+        lanes = cooperative_stage_lanes(leaf.length, leaf.factors[stage], request, hcu_convolution_limit);
+      }
+    }
     if (is_double) {
       auto twiddles =
           build_stage_twiddles_d(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);

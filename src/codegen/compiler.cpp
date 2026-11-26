@@ -4327,9 +4327,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         leaf != nullptr && real_kind.empty() && bluestein->conv_length <= 4096 && batch == chunk_batch &&
         flag_or_default("FLAGFFT_CUDA_BLUESTEIN_BOUNDARY", false);
     const char *ix_batch_pack = performance_env("FLAGFFT_IX_BATCH_PACK");
-    // Pairing a batch of 64 real FFTs leaves 32 complex convolutions.
     const bool use_ix_batch_boundary_leaf = request.ix_fourstep_preset == 1 &&
-        batch == 32 && !request.origin_real_transform_kind.empty() &&
+        (batch == 64 || (batch == 32 && !request.origin_real_transform_kind.empty())) &&
         bluestein->length == 8191 && bluestein->conv_length == 16384 && four_step &&
         real_kind.empty() && batch == chunk_batch &&
         adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024 &&
@@ -4400,7 +4399,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
               *boundary_leaf, child_request, bluestein->length, use_ix_batch_boundary_leaf),
           compile_leaf_bluestein_finish_kernel(
               *boundary_leaf, child_request, bluestein->length, use_ix_batch_boundary_leaf),
-          build_raw_leaf_tables(*boundary_leaf, child_request),
+          // The final radix-4 stage has four groups of 1024 codelets.
+          build_raw_leaf_tables(*boundary_leaf, child_request, false, use_ix_batch_boundary_leaf),
           std::move(chirp),
           std::move(b_time),
           std::move(work_buf),
