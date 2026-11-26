@@ -4902,13 +4902,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const int64_t n = request.requested_n;
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
   const char* sdk = std::getenv("FLAGFFT_MACA_2048_FP32_SINGLE_NATIVE");
-  const std::string_view sdk_mode = sdk ? sdk : "";
-  const bool sdk_single = batch == 1 && (sdk_mode == "residues" || sdk_mode == "shared") &&
-      maca_tail_policy_enabled(request);
+  const std::string_view sdk_mode = sdk ? sdk : "residues";
+  const bool sdk_single = batch == 1 && (sdk_mode == "residues" || sdk_mode == "shared");
   const bool sdk_batch = batch == 64 && maca_flag_or_default("FLAGFFT_MACA_2048_FP32_BATCH_NATIVE", false) &&
       flag_or_default("FLAGFFT_MACA_1D_BATCH", true);
+  const char* packed = std::getenv("FLAGFFT_PACKED_REAL");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   if ((sdk_single || sdk_batch) && allow_packed && maca_1d_2048_scope(request, batch, "complex64") &&
-      request.real_transform_kind == "r2c" && request.direction == "forward") {
+      request.real_transform_kind == "r2c" && request.direction == "forward" &&
+      (!packed || std::string_view(packed) != "0") && (!plan || !*plan) &&
+      (!sdk_single || maca_tail_policy_enabled(request))) {
     return std::make_shared<CompiledRawMacaFp32R2C2048Node>(
         DeviceAllocation::from_floats(make_maca_sdk_roots<float>(n, false)),
         sdk_single && sdk_mode == "residues");
