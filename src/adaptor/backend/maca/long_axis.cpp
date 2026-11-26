@@ -46,8 +46,18 @@ __device__ void dif(Complex<T> (&values)[Registers][Length / wave], const Comple
   }
 }
 
-template<unsigned Length, unsigned Rows, unsigned Warps, unsigned Pad, class T>
+template<bool Wide, class T>
+__device__ Complex<T> load_pair(const T* pointer) {
+  if constexpr (Wide) {
+    const auto pair = *reinterpret_cast<const float2*>(pointer);
+    return {pair.x, pair.y};
+  }
+  return {pointer[0], pointer[1]};
+}
+
+template<unsigned Length, unsigned Rows, unsigned Warps, unsigned Pad, class T, bool Wide>
 __global__ void fft_transpose(const T* input, T* output, const Complex<T>* roots) {
+  static_assert(!Wide || sizeof(T) == sizeof(float));
   constexpr unsigned registers = Rows / Warps;
   constexpr unsigned per_plane = Length == 64 ? 2048 : 64;
   constexpr unsigned tiles_per_plane = per_plane / Rows;
@@ -65,12 +75,13 @@ __global__ void fft_transpose(const T* input, T* output, const Complex<T>* roots
   #pragma unroll
   for (unsigned row = 0; row < registers; ++row) {
     const auto row_start = base + (tile + row * Warps + warp) * Length;
-    const auto* first = input + 2 * (row_start + lane);
-    values[row][0] = {first[0], first[1]};
+    const auto* address = input + 2 * (row_start + lane);
+    const auto first = load_pair<Wide>(address);
+    values[row][0] = first;
     if constexpr (Length == 128) {
-      const auto* second = first + 2 * wave;
-      values[row][1] = rotate(Complex<T>{first[0] - second[0], first[1] - second[1]}, roots[lane]);
-      values[row][0] = {first[0] + second[0], first[1] + second[1]};
+      const auto second = load_pair<Wide>(address + 2 * wave);
+      values[row][1] = rotate(Complex<T>{first.re - second.re, first.im - second.im}, roots[lane]);
+      values[row][0] = {first.re + second.re, first.im + second.im};
     }
   }
   dif<32, Length, registers>(values, roots, lane);
@@ -86,7 +97,10 @@ __global__ void fft_transpose(const T* input, T* output, const Complex<T>* roots
     const unsigned slot = row * Warps + warp;
     #pragma unroll
     for (unsigned branch = 0; branch < Length / wave; ++branch) {
-      transposed[(Length / wave) * reversed + branch][slot] = values[row][branch];
+      const unsigned frequency = (Length / wave) * reversed + branch;
+      // Spread a wave's strided frequency stores over the shared-memory banks.
+      const unsigned shared_slot = Wide ? slot ^ (frequency & (Rows - 1)) : slot;
+      transposed[frequency][shared_slot] = values[row][branch];
     }
   }
   __syncthreads();
@@ -101,16 +115,21 @@ __global__ void fft_transpose(const T* input, T* output, const Complex<T>* roots
       const auto cube_base = static_cast<std::size_t>(plane / 2048) * cube;
       address = cube_base + (frequency * 2048 + (plane % 2048)) * per_plane + tile + slot;
     }
-    const auto value = transposed[frequency][slot];
-    output[2 * address] = value.re;
-    output[2 * address + 1] = value.im;
+    const unsigned shared_slot = Wide ? slot ^ (frequency & (Rows - 1)) : slot;
+    const auto value = transposed[frequency][shared_slot];
+    if constexpr (Wide) {
+      reinterpret_cast<float2*>(output)[address] = make_float2(value.re, value.im);
+    } else {
+      output[2 * address] = value.re;
+      output[2 * address + 1] = value.im;
+    }
   }
 }
 
-template<class T, unsigned Length, unsigned Rows, unsigned Warps, unsigned Pad>
+template<class T, unsigned Length, unsigned Rows, unsigned Warps, unsigned Pad, bool Wide = false>
 int launch(const void* input, void* output, const void* roots, unsigned batch, void* stream) {
   constexpr unsigned rows_per_cube = Length == 64 ? 128 * 2048 : 2048 * 64;
-  const void* kernel = reinterpret_cast<const void*>(fft_transpose<Length, Rows, Warps, Pad, T>);
+  const void* kernel = reinterpret_cast<const void*>(fft_transpose<Length, Rows, Warps, Pad, T, Wide>);
   void* arguments[] = {&input, &output, &roots};
   return mcLaunchKernel(kernel, dim3(batch * rows_per_cube / Rows), dim3(Warps * wave), arguments,
                         0, reinterpret_cast<mcStream_t>(stream));
@@ -265,6 +284,15 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_ax
     bool innermost_fp64, void* stream) {
   if (innermost_fp64) return launch<double, 64, 32, 8, 0>(input, output, roots, batch, stream);
   return launch<float, 128, 16, 4, 1>(input, output, roots, batch, stream);
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_last_wide(
+    const void* input, void* output, const void* roots, unsigned batch, void* stream) {
+  const auto addresses = reinterpret_cast<std::uintptr_t>(input) | reinterpret_cast<std::uintptr_t>(output);
+  if (addresses % alignof(float2) != 0) {
+    return launch<float, 128, 16, 4, 1>(input, output, roots, batch, stream);
+  }
+  return launch<float, 128, 32, 4, 0, true>(input, output, roots, batch, stream);
 }
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_first(
