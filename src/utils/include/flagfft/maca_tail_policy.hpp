@@ -448,7 +448,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
     return request.input_dtype == "complex128" ? "batch-real185640-p4" : "batch-real185640-p2";
   }
   if (request.input_dtype == "complex64" &&
-      maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", false)) {
+      maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", true)) {
     return "c2c16384-row-twiddle";
   }
   if (maca_16384_fp64_batch_split_enabled(request)) return "z2z16384-split";

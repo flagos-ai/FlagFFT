@@ -537,10 +537,11 @@ TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
   r.batch = 64;
   r.input_layout = "contiguous";
   r.input_strides = {16384, 1};
-  EXPECT_NE(flagfft::maca_tail_codegen_root(r), "c2c16384-row-twiddle");
-  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "1", 1);
   const auto mode = flagfft::maca_tail_codegen_root(r);
   ASSERT_EQ(mode, "c2c16384-row-twiddle");
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "0", 1);
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
+  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
                                          "complex64", 256, 256, 64), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
