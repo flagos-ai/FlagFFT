@@ -6536,7 +6536,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     std::shared_ptr<CompiledRawNode> n0_first;
     std::shared_ptr<CompiledRawNode> n0_fft;
     if (maca_outer_ct) {
-      const bool outer_dif = maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_DIF", false);
+      const bool outer_dif = maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_DIF", true);
       n0_first = compile_raw_leaf(*n0_leaf, n0_request,
           outer_dif ? MacaLeafLayout::OuterPrepareDif128 : MacaLeafLayout::OuterPrepare128);
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request,
