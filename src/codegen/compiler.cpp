@@ -8236,7 +8236,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       col_request.ix_warp_fft_pack_default = 4;
     }
     const bool ix_dif_store = use_ix_2d_transpose_store && ix_nd_pack == 16 &&
-        n0 == 2048 && n1 == 2048 && batch == 1 &&
+        n0 == 2048 && n1 == 2048 && (batch == 1 || batch == 4) &&
         flag_or_default("FLAGFFT_IX_2D_C2C_DIF_STORE", true);
     // Offset successive scratch rows from the power-of-two pitch while
     // retaining dense input and output matrices.
