@@ -4786,6 +4786,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const bool use_full_single = n == 2048 && batch == 1 && ix_real_single_pack_ &&
       request.input_strides.size() == 2 && request.input_strides.front() == n;
   const bool fused_ix = fused_setting ? std::string(fused_setting) == "1" : !use_full_single;
+  const char *ix_batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
+  const bool packed_tle = n == 2048 && batch == 64 && request.ix_fourstep_preset == 9 &&
+      !std::getenv("FLAGFFT_IX_PORTABLE_LEAF") && !std::getenv("FLAGFFT_IX_LEAF_FACTORS") &&
+      !std::getenv("FLAGFFT_IX_WARPS") && (!ix_batch_pack || std::string(ix_batch_pack) == "1") &&
+      !flag_or_default("FLAGFFT_IX_WARP_FFT", false) &&
+      flag_or_default("FLAGFFT_IX_PACKED_R2C_TLE", true) &&
+      adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
@@ -4818,21 +4825,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       const bool explicit_child_factors = child_leaf && factor_override &&
           std::strtoll(factor_override, &factor_end, 10) == n / 2 &&
           factor_end && *factor_end == ':';
-      const std::vector<int64_t> factors = n == 2048 && !explicit_child_factors
+      const std::vector<int64_t> factors = packed_tle ? std::vector<int64_t>{8, 8, 8, 2} :
+          n == 2048 && !explicit_child_factors
           ? std::vector<int64_t>{16, 8, 8}
           : child_leaf->factors;
-      const int64_t lanes = packed_cta ? child_leaf->lanes : child_builder.choose_lanes(n / 2, factors);
-      LeafPlanNode packed_leaf(n / 2, factors, 1, lanes,
-                               packed_cta ? child_leaf->num_warps : child_builder.choose_num_warps(lanes), {}, n / 2);
+      const int64_t lanes = packed_tle ? 128 :
+          packed_cta ? child_leaf->lanes : child_builder.choose_lanes(n / 2, factors);
+      const int64_t warps = packed_tle ? 4 :
+          packed_cta ? child_leaf->num_warps : child_builder.choose_num_warps(lanes);
+      LeafPlanNode packed_leaf(n / 2, factors, 1, lanes, warps, {}, n / 2);
       KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
                                            request.direction, request.input_dtype,
                                            packed_leaf.length, packed_leaf.factors,
                                            packed_leaf.lanes, packed_leaf.num_warps,
                                            packed_leaf.generic_radices, packed_leaf.smem_size);
       key.kind = KernelKind::LeafPackedR2C;
+      if (packed_tle) key.perm_form = "ix_r2c_tle";
       mark_ix_warp_fft(key,request);
       return std::make_shared<CompiledRawR2CLeafNode>(
-          n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
+          n, compile_kernel(key),
+          build_raw_leaf_tables(packed_leaf, child_request,
+                               request.ix_fourstep_preset == 7 || request.ix_fourstep_preset == 8,
+                               packed_tle),
           build_raw_packed_real_twiddle(request, n));
     }
   }

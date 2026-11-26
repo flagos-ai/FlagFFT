@@ -1442,6 +1442,12 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     )
 
 
+def ix_packed_r2c_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
+    return (_ix_backend_active() and current_profile().device_arch == "71"
+            and io_mode == "packed_r2c" and n == 1024 and factors == (8, 8, 8, 2)
+            and _maca_knob("PACKED_R2C_TLE", "0") == "1")
+
+
 def _leaf_single_smem_buffer_eligible(
     plan: LeafPlan,
     *,
@@ -1478,7 +1484,8 @@ def _leaf_single_smem_buffer_eligible(
         and 64 <= plan.length <= 4096 and plan.length & (plan.length - 1) == 0
         and all(radix in {2,4,8} for radix in plan.factors)
     )
-    if io_mode not in {"contiguous", "strided"} and not ix_boundary:
+    ix_packed = ix_packed_r2c_tle(plan.length, plan.factors, io_mode)
+    if io_mode not in {"contiguous", "strided"} and not (ix_boundary or ix_packed):
         return False
     stage_lanes = cooperative_stage_lanes_for(plan)
     if not (ix_boundary or ix_cooperative) and any(lanes != plan.lanes for lanes in stage_lanes):
@@ -1491,7 +1498,7 @@ def _leaf_single_smem_buffer_eligible(
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
     smem_bytes = 4 * smem_n * _real_element_bytes(plan.dtype)
-    return smem_bytes >= profile.max_dynamic_shared_memory // 4
+    return ix_packed or smem_bytes >= profile.max_dynamic_shared_memory // 4
 
 
 def _use_single_smem_buffer(

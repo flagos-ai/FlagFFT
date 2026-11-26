@@ -38,6 +38,7 @@ from .kernels_common import (
     _ix_permuted_single_smem,
     _portable_leaf_backend_active,
     _maca_knob,
+    ix_packed_r2c_tle,
     _non_nvidia_backend_active,
     _tl_real_dtype,
     _use_single_smem_buffer,
@@ -1275,7 +1276,89 @@ def _emit_portable_exchange(
 _IX_DISJOINT_MIXED_LENGTHS = {221, 425, 504, 675, 780, 1500, 1560}
 
 
+def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
+    # The final radix-2 butterflies for k and n/2-k contain both packed
+    # spectra required to reconstruct each other's real FFT coefficients.
+    # Read the previous stage directly and avoid a second shared tile.
+    half = n // 2
+    shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
+    swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    body = [
+        f"    k_lane = tl.arange(0, {half // 2})",
+        # Keep the frequency tile aligned at each shared-memory group.
+        # Lane zero handles the self-partner frequency at n/4.
+        f"    k = tl.where(k_lane == 0, {half // 2}, k_lane)",
+        f"    partner_k = {half} - k",
+        "    finish_mask = batch_id < nbatch",
+        "    partner_mask = finish_mask & (partner_k != k)",
+        "    finish_out = out_ptr + 2 * batch_id * output_distance",
+    ]
+    for prefix, frequency in (("a", "k"), ("b", "partner_k")):
+        for digit in (0, 1):
+            index = f"{prefix}{digit}_index"
+            body.append(f"    {index} = {frequency} + ({frequency} & {-lanes}) + {digit * lanes}")
+            address = f"{index} ^ ({index} >> {shift})" if swizzle else index
+            for component in ("r", "i"):
+                body.append(
+                    f"    {prefix}{digit}_{component} = tl.load(tle.gpu.local_ptr("
+                    f"smem_b_{component}, ({address},)), finish_mask, 0.0)"
+                )
+    body.extend([
+        f"    twr = tl.load(tw{stage}_r_ptr + a1_index, finish_mask, 0.0)",
+        f"    twi = tl.load(tw{stage}_i_ptr + a1_index, finish_mask, 0.0)",
+        "    a1_r, a1_i = _cmul(a1_r, a1_i, twr, twi)",
+        "    b1_r, b1_i = _cmul(b1_r, b1_i, -twr, twi)",
+        "    ar, ai = a0_r + a1_r, a0_i + a1_i",
+        "    br, bi = a0_r - a1_r, a0_i - a1_i",
+        "    cr, ci = b0_r + b1_r, b0_i + b1_i",
+        "    dr, di = b0_r - b1_r, b0_i - b1_i",
+        "    wr = tl.load(packed_twiddle_ptr + 2 * k, finish_mask, 0.0)",
+        "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
+    ])
+    for value, partner, frequency, wr, wi, mask in (
+        ("a", "d", "k", "wr", "wi", "finish_mask"),
+        ("b", "c", f"k + {half}", "wi", "-wr", "finish_mask"),
+        ("c", "b", "partner_k", "-wi", "-wr", "partner_mask"),
+        ("d", "a", f"partner_k + {half}", "-wr", "wi", "partner_mask"),
+    ):
+        body.extend([
+            f"    diff_r = {value}r - {partner}r",
+            f"    sum_i = {value}i + {partner}i",
+            f"    xr_{value} = 0.5 * ({value}r + {partner}r + ({wi}) * diff_r + ({wr}) * sum_i)",
+            f"    xi_{value} = 0.5 * ({value}i - {partner}i - ({wr}) * diff_r + ({wi}) * sum_i)",
+        ])
+        ptr = f"finish_out + 2 * ({frequency})"
+        if _packed_maca_fp32_complex_io("complex64"):
+            body.extend(_emit_vectorized_complex_store(
+                "    ", ptr, f"xr_{value}", f"xi_{value}", mask, "complex64"))
+        else:
+            body.extend([
+                f"    tl.store({ptr}, xr_{value}, {mask})",
+                f"    tl.store({ptr} + 1, xi_{value}, {mask})",
+            ])
+    second = lanes ^ (lanes >> shift) if swizzle else lanes
+    for digit, address in enumerate((0, second)):
+        for component in ("r", "i"):
+            body.append(
+                f"    edge{digit}_{component} = tl.load(tle.gpu.local_ptr("
+                f"smem_b_{component}, ({address},)), finish_mask, 0.0)"
+            )
+    body.extend([
+        "    dc_r = edge0_r + edge1_r",
+        "    dc_i = edge0_i + edge1_i",
+        "    tl.store(finish_out, dc_r + dc_i, finish_mask)",
+        "    tl.store(finish_out + 1, 0.0, finish_mask)",
+        f"    tl.store(finish_out + {n}, edge0_r - edge1_r, finish_mask)",
+        f"    tl.store(finish_out + {n + 1}, edge1_i - edge0_i, finish_mask)",
+        f"    tl.store(finish_out + {2 * n}, dc_r - dc_i, finish_mask)",
+        f"    tl.store(finish_out + {2 * n + 1}, 0.0, finish_mask)",
+    ])
+    return body
+
+
 def _ix_full_cta_disjoint(n, factors, io_mode, prime_n):
+    if ix_packed_r2c_tle(n, factors, io_mode):
+        return _maca_knob("TLE_DISJOINT_CTA", "0") == "1"
     return (
         n == 16384 and factors == (16, 16, 16, 4)
         and (io_mode == "contiguous" or
@@ -3656,10 +3739,12 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
+    ix_packed_tle = (plan.dtype == "complex64" and not portable_exchange
+                     and ix_packed_r2c_tle(plan.length, plan.factors, io_mode))
     native_packed_r2c = (io_mode == "packed_r2c" and (
         (current_profile().backend == "cuda" and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
         or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_FUSED_PACKED_REAL") == "1")
-        or native_packed_cta))
+        or native_packed_cta or ix_packed_tle))
     if io_mode == "packed_r2c" and not portable_exchange and not native_packed_r2c:
         raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
@@ -3774,6 +3859,7 @@ def _build_leaf_kernel_source_for_io(
         four_step_n1=four_step_n1,
         four_step_n2=four_step_n2,
     )
+    ix_packed_r2c_finish = ix_packed_tle and single_smem_buffer and batch_pack == 1
     packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
                          and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
@@ -3927,6 +4013,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_split_frequency"
     if ix_split_c2r:
         kernel_name += "_c2r"
+    if ix_packed_r2c_finish:
+        kernel_name += "_tle_finish"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
@@ -4183,7 +4271,7 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
-    if native_packed_r2c and not portable_exchange:
+    if native_packed_r2c and not portable_exchange and not ix_packed_r2c_finish:
         tl_dtype = _tl_real_dtype(plan.dtype)
         if packed_smem_alias:
             body.extend(["    packed_r = smem_b_r", "    packed_i = smem_b_i"])
@@ -4198,6 +4286,9 @@ def _build_leaf_kernel_source_for_io(
         intermediate_buffer = "smem_b" if single_smem_buffer else ("smem_a" if last_source == "smem_b" else "smem_b")
 
     for stage in range(len(factors)):
+        if ix_packed_r2c_finish and stage == len(factors) - 1:
+            body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage))
+            break
         body.extend(
             _emit_stage_block(
                 stage,
@@ -4233,7 +4324,7 @@ def _build_leaf_kernel_source_for_io(
             )
         )
 
-    if io_mode == "packed_r2c":
+    if io_mode == "packed_r2c" and not ix_packed_r2c_finish:
         # The final codelet outputs were gathered into natural frequency order
         # by the portable exchange. Reconstruct the real FFT's half spectrum
         # without a second kernel launch or a global intermediate buffer.
