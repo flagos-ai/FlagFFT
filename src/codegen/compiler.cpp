@@ -8181,6 +8181,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       !request.requires_contiguous_copy && n0 > 256 && n1 > 1 && (n1 % 2) == 0 &&
       flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048);
   const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1);
+  const char *policy = performance_env("FLAGFFT_EXECUTION_POLICY");
+  const bool ix_small_transpose = request.device_type == "ix" && request.device_arch == "71" &&
+      request.origin_rank == 2 && request.raw_dim == 2 && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && request.input_dtype == "complex64" &&
+      request.output_dtype == "complex64" && n0 == 128 && n1 == 128 && batch == 1 &&
+      (!policy || std::string(policy) == "balanced") &&
+      flag_or_default("FLAGFFT_IX_2D_R2C_128_TRANSPOSE", false) &&
+      adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
 
   // Build row C2C FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -8207,8 +8215,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       flag_or_default("FLAGFFT_HCU_2D_REAL_ROW_STORE", false);
   if (((request.device_type == "ix" && request.device_arch == "71" &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048 &&
-      flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0)) || hcu_row_store) &&
+      ((n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048) || ix_small_transpose) &&
+      flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0 || ix_small_transpose)) || hcu_row_store) &&
       ix_row_leaf && ix_col_leaf) {
     // Keep the compact spectrum transposed between two FFT passes. Each
     // outer store stays inside its own matrix, including the odd half width.
@@ -8216,6 +8224,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         triton_target_for_request(row_request), row_request.direction, row_request.input_dtype,
         ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
         ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
+    if (ix_small_transpose) row_request.ix_warp_fft_pack_default = 8;
     mark_ix_warp_fft(key, row_request, n0);
     auto row_r2c = compile_raw_hcu_packed_r2c_store(row_request, batch * n0, n1, n0);
     if (!row_r2c) row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
@@ -8225,7 +8234,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     col_request.input_shape = {batch * half_n1, n0};
     col_request.input_strides = {n0, 1};
     col_request.batch = batch * half_n1;
-    col_request.ix_warp_fft_pack_default=ix_nd_pack;
+    col_request.ix_warp_fft_pack_default = ix_small_transpose ? 4 : ix_nd_pack;
     auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer");
     return std::make_shared<CompiledRaw2DR2CRowNode>(
         n0, n1, std::move(row_r2c), std::move(col_fft), nullptr, nullptr,
