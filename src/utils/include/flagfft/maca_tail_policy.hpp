@@ -178,9 +178,9 @@ inline bool maca_batch_prime_real_four_step_enabled(const FFTRequest& request, i
       distance == length / 2 + 1;
   const char* setting = std::getenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP");
   const char* direct = std::getenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT");
-  const bool direct_enabled = direct && std::string_view(direct) == "1";
   const bool use_default = !std::getenv("FLAGFFT_MACA_BATCH_RADER_SPLIT") &&
                            !std::getenv("FLAGFFT_MACA_RADER_CODELET");
+  const bool direct_enabled = direct ? std::string_view(direct) == "1" : use_default;
   const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   return (forward || inverse) && (setting ? std::string_view(setting) == "1" : (use_default || direct_enabled)) &&
