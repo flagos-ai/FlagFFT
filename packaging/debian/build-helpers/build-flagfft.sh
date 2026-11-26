@@ -12,21 +12,29 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Default values — must match Dockerfile.deb's ARG BASE_IMAGE default.
 BASE_IMAGE="nvidia/cuda:12.8.0-devel-ubuntu24.04"
+PYTHON_VERSION=""
 TORCH_INDEX="https://resource.flagos.net/repository/flagos-pypi-nvidia/simple"
 OUTPUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --base-image) BASE_IMAGE="$2"; shift 2 ;;
-        --python-version)
-            log_error "--python-version is unsupported: each Ubuntu base image uses its native system Python (3.10 on 22.04, 3.12 on 24.04)"
-            exit 1
-            ;;
+        --python-version) PYTHON_VERSION="$2"; shift 2 ;;
         --torch-index) TORCH_INDEX="$2"; shift 2 ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--base-image IMAGE] [--torch-index URL] [--output-dir DIR]"; exit 1 ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--base-image IMAGE] [--python-version VER] [--torch-index URL] [--output-dir DIR]"; exit 1 ;;
     esac
 done
+
+if [ -n "${PYTHON_VERSION}" ]; then
+    case "${BASE_IMAGE}:${PYTHON_VERSION}" in
+        *ubuntu22.04*:3.10|*ubuntu24.04*:3.12) ;;
+        *ubuntu22.04*:*|*ubuntu24.04*:*)
+            log_error "PYTHON_VERSION=${PYTHON_VERSION} conflicts with native system Python of ${BASE_IMAGE}"
+            exit 1
+            ;;
+    esac
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -46,6 +54,7 @@ IMAGE_TAG="flagfft-deb-builder:$(date +%s)"
 log_step "docker build (base: ${BASE_IMAGE})"
 docker build \
     --build-arg BASE_IMAGE="${BASE_IMAGE}" \
+    --build-arg PYTHON_VERSION="${PYTHON_VERSION}" \
     --build-arg TORCH_INDEX="${TORCH_INDEX}" \
     -f "${PROJECT_ROOT}/packaging/debian/build-helpers/Dockerfile.deb" \
     -t "${IMAGE_TAG}" \
