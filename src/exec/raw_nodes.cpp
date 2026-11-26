@@ -4574,6 +4574,7 @@ std::string CompiledRaw3DHybridNode::describe() const {
       << ", last_transpose=" << (perm_201 != nullptr)
       << ", n2_fft=" << n2_fft->describe() << ", n1_fft=" << n1_fft->describe()
       << ", n0_fft=" << n0_fft->describe()
+      << ", perm_210=" << (perm_210 ? perm_210->execution_description() : "null")
       << ", perm_201=" << (perm_201 ? perm_201->execution_description() : "null");
   if (n0_first) oss << ", n0_first=" << n0_first->describe();
   oss << ")";
