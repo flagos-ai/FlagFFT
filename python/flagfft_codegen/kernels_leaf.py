@@ -1749,7 +1749,9 @@ def _emit_stage_block(
     ix_column_twiddle_recurrence = (
         _ix_backend_active() and dtype == "complex64"
         and stage == 0 and io_mode == "four_step_col" and not fuse_twiddle_into_row
-        and (four_step_n1, four_step_n2) == (1024, 512)
+        and (four_step_n1, four_step_n2) in {
+            (1024, 512), (504, 675), (1560, 425), (425, 1560),
+        }
         and _maca_knob("FOURSTEP_COL_TWIDDLE_RECURRENCE", "0") == "1"
     )
     hcu_u64_load = (

@@ -1104,6 +1104,29 @@ namespace {
     key.ix_warp_fft_pack=pack;
   }
 
+  void mark_ix_mixed_fourstep(KernelKey &key, const FFTRequest &request) {
+    const int64_t length = key.four_step_n1 * key.four_step_n2;
+    const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+    if (request.device_type != "ix" || request.device_arch != "71" ||
+        request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+        request.raw_dim != 1 || request.origin_rank > 1 ||
+        request.requested_n != length || request.fft_length != length ||
+        request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+        request.packed_real_child || !request.real_transform_kind.empty() ||
+        !request.origin_real_transform_kind.empty() ||
+        (request.batch != 1 && request.batch != 64) ||
+        (policy && std::string(policy) != "balanced")) {
+      return;
+    }
+    if (key.four_step_n1 == 504 && key.four_step_n2 == 675) {
+      key.perm_form = "ix_mixed_fourstep_tile8";
+    } else if (key.kind == KernelKind::FourStepCol &&
+               ((request.batch == 1 && key.four_step_n1 == 1560 && key.four_step_n2 == 425) ||
+                (request.batch == 64 && key.four_step_n1 == 425 && key.four_step_n2 == 1560))) {
+      key.perm_form = "ix_mixed_fourstep_recurrence";
+    }
+  }
+
   // Match the Python dense FourStep policy when constructing stage tables.
   // Other leaf families, including strided FourStep, retain their own layout.
   bool ix_large_fourstep_portable_default(const FFTRequest &request, int64_t n1, int64_t n2) {
@@ -5605,6 +5628,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_kernel(const Le
                                            leaf.smem_size);
   mark_npu_portable_leaf(key, request);
   mark_ix_warp_fourstep(key, request);
+  mark_ix_mixed_fourstep(key, request);
   return compile_kernel(key);
 }
 
@@ -5692,6 +5716,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_kernel(const Le
                                            leaf.smem_size);
   mark_npu_portable_leaf(key, request);
   mark_ix_warp_fourstep(key, request);
+  mark_ix_mixed_fourstep(key, request);
   return compile_kernel(key);
 }
 

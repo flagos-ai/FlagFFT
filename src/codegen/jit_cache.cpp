@@ -42,6 +42,16 @@ namespace {
       {"FLAGFFT_IX_VEC_IO", "packed"},
   };
 
+  constexpr char kIxFourStepColTwiddle[] = "FLAGFFT_IX_FOURSTEP_COL_TWIDDLE_RECURRENCE";
+  constexpr std::pair<const char *, const char *> kIxMixedFourStepTileDefaults[] = {
+      {"FLAGFFT_IX_TLE_DISJOINT_STAGE", "1"},
+      {"FLAGFFT_IX_TLE_DISJOINT_MIXED", "1"},
+      {"FLAGFFT_IX_RECURRENCE", "1"},
+      {"FLAGFFT_IX_VEC_IO", "packed"},
+      {"FLAGFFT_IX_SMEM_INTERLEAVE", "1"},
+      {"FLAGFFT_IX_TLE_INNER_PACK", "8"},
+  };
+
   constexpr std::pair<const char *, const char *> kIxPackedRealTleDefaults[] = {
       {"FLAGFFT_IX_PACKED_R2C_TLE", "1"},
       {"FLAGFFT_IX_PACKED_R2C_INPUT", "1"},
@@ -285,6 +295,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_bluestein_packed_r2c)
     cache_key += ";ix-bluestein-vector-io=" + std::string(ix_bluestein_vector_io ? ix_bluestein_vector_io : "1");
   const bool ix_packed_real_tle = key.perm_form == "ix_r2c_tle" || key.perm_form == "ix_c2r_tle";
+  const bool ix_mixed_fourstep_tile = key.perm_form == "ix_mixed_fourstep_tile8";
+  const bool ix_mixed_col_twiddle = key.kind == KernelKind::FourStepCol &&
+      (ix_mixed_fourstep_tile || key.perm_form == "ix_mixed_fourstep_recurrence");
+  if (ix_mixed_fourstep_tile) {
+    for (const auto &[name, default_value] : kIxMixedFourStepTileDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+  }
   const char *ix_packed_smem_shift = key.perm_form == "ix_c2r_tle" && key.length == 1024 ? "4" : "5";
   if (ix_bluestein_cta) {
     for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
@@ -484,10 +503,11 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       if (const char *value = performance_env(name)) cache_key += ";" + std::string(name) + "=" + value;
     }
   }
-  if (key.kind == KernelKind::FourStepCol && adaptor::backend_name() == "ix" &&
-      key.four_step_n1 == 1024 && key.four_step_n2 == 512) {
-    if (const char *setting = performance_env("FLAGFFT_IX_FOURSTEP_COL_TWIDDLE_RECURRENCE")) {
-      cache_key += ";ix-fourstep-col-recurrence=" + std::string(setting);
+  if (key.kind == KernelKind::FourStepCol && adaptor::backend_name() == "ix") {
+    if (const char *setting = performance_env(kIxFourStepColTwiddle)) {
+      cache_key += ";" + std::string(kIxFourStepColTwiddle) + "=" + setting;
+    } else if (ix_mixed_col_twiddle) {
+      cache_key += ";" + std::string(kIxFourStepColTwiddle) + "=1";
     }
   }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "npu") {
@@ -826,6 +846,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (ix_mixed_col_twiddle && !performance_env(kIxFourStepColTwiddle))
+    jit_command << kIxFourStepColTwiddle << "=1 ";
+  if (ix_mixed_fourstep_tile) {
+    for (const auto &[name, value] : kIxMixedFourStepTileDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+  }
   if (ix_bluestein_packed_r2c && !ix_bluestein_vector_io)
     jit_command << "FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO=1 ";
   if (ix_bluestein_cta) {
