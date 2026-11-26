@@ -7198,7 +7198,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
         maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", true));
     auto middle = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
     const bool wide_outer = !inverse && batch == 4 && request.input_dtype == "complex64" &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_OUTER_WIDE", false);
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_OUTER_WIDE", true);
     auto outer = compile_raw_leaf(*n0_leaf, n0_request, wide_outer ? MacaLeafLayout::RealPrimeOuter16Wide
                                                                  : MacaLeafLayout::RealPrimeOuter16);
     const auto bytes = static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
