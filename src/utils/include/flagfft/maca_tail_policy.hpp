@@ -72,6 +72,15 @@ inline bool maca_663000_real_enabled(const FFTRequest& request) {
       (batch_policy == nullptr || std::string(batch_policy) != "0");
 }
 
+inline bool maca_663000_packed_c2r_split_enabled(const FFTRequest& request) {
+  const char* setting = std::getenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT");
+  return setting && std::string(setting) == "1" && request.packed_real_child &&
+      request.batch == 64 && request.input_dtype == "complex64" &&
+      request.real_transform_kind == "c2r" &&
+      request.input_strides == std::vector<int64_t>{331500, 1} &&
+      maca_663000_real_enabled(request);
+}
+
 inline bool maca_prime_dif_requested(const FFTRequest& request) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 ||
@@ -115,6 +124,7 @@ inline std::string maca_tail_automatic_plan(const FFTRequest& request) {
   if (maca_batch_prime_bluestein_enabled(request)) {
     return request.requested_n == 8191 ? "bs16384" : "bs32768";
   }
+  if (maca_663000_packed_c2r_split_enabled(request)) return "ct340x975";
   if (request.batch == 64 && maca_663000_c2c_enabled(request)) {
     return maca_663000_batch_split_column_enabled(request) ? "ct375x1768" : "ct780x850";
   }
@@ -164,6 +174,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
         ? "c2c663000-batch" : "c2c663000";
   }
   if (request.packed_real_child && maca_663000_real_enabled(request)) {
+    if (maca_663000_packed_c2r_split_enabled(request)) return "batch-c2r663000-split";
     if (request.batch == 64) return "batch-c2r663000";
     if (request.input_dtype == "complex64") return "r2c663000";
   }
@@ -245,6 +256,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
     if (n1 == 300 && n2 == 1105 &&
         ((root == "r2c663000" && dtype == "complex64") ||
          (root == "batch-c2r663000" && (dtype == "complex64" || dtype == "complex128")))) return root;
+    if (root == "batch-c2r663000-split" && dtype == "complex64" && n1 == 340 && n2 == 975) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||
          (n1 == 64 && n2 == 128) ||

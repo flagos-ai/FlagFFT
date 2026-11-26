@@ -19,6 +19,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF",
                              "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
                              "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
+                             "FLAGFFT_MACA_663000_PACKED_C2R_SPLIT",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
@@ -186,6 +187,53 @@ TEST_F(TailPolicy, C550Packed663000ResourcesMatchMeasuredRequests) {
   setenv("FLAGFFT_MACA_663000_REAL", "0", 1);
   EXPECT_FALSE(flagfft::maca_663000_real_enabled(r));
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+}
+
+TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
+  using flagfft::KernelKind;
+  auto r = request(331500, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {331500, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.real_transform_kind = "c2r";
+  r.direction = "inverse";
+  flagfft::PlanBuilder builder;
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  const auto baseline = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->n1, 300);
+  EXPECT_EQ(baseline->n2, 1105);
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct340x975");
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-c2r663000-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex64", 340, 340, 975), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex64", 1105, 300, 1105), "off");
+
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 340);
+  EXPECT_EQ(plan->n2, 975);
+  const auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->row_plan);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t>{17, 5, 4}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{13, 5, 5, 3}));
+
+  r.packed_real_child = false;
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  r.packed_real_child = true;
+  r.batch = 1;
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "z2d";
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
 }
 
 TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {

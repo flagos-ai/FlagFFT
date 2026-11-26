@@ -32,7 +32,7 @@ def set_maca_tail_mode(mode):
     if mode not in {"off", "p4w4", "real-direct", "batch-vecio",
                     "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
                     "batch-c2c-tree", "batch-prime-rader-vecio", "c2c663000", "c2c663000-batch",
-                    "r2c663000", "batch-c2r663000"}:
+                    "r2c663000", "batch-c2r663000", "batch-c2r663000-split"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -63,6 +63,8 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
                 return "c2c663000-batch"
             if _root_mode.get() == "r2c663000" and (n1, n2) == (300, 1105):
                 return "r2c663000"
+            if _root_mode.get() == "batch-c2r663000-split" and (n1, n2) == (340, 975):
+                return "batch-c2r663000-split"
         if (_root_mode.get() == "batch-c2r663000" and dtype in {"complex64", "complex128"}
                 and (n1, n2) == (300, 1105)):
             return "batch-c2r663000"
@@ -101,6 +103,9 @@ def resource_default(name):
         return {"REAL_DFT_REDUCTION": "tree"}.get(name)
     if _kernel_mode.get() in {"c2c663000", "r2c663000"}:
         return {"RADER_CODELET": "1", "VEC_IO": "packed"}.get(name)
+    if _kernel_mode.get() == "batch-c2r663000-split":
+        return {"RADER_CODELET": "1", "VEC_IO": "packed",
+                "FOURSTEP_ROW_PACK": "4", "FOURSTEP_COL_PACK": "2"}.get(name)
     if _kernel_mode.get() == "batch-c2r663000":
         return {"VEC_IO": "packed"}.get(name)
     if _kernel_mode.get() == "c2c663000-batch":
