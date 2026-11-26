@@ -6750,7 +6750,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
       request.input_dtype == request.output_dtype && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_PRIME_DIF", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_PRIME_DIF", request.input_dtype == "complex128");
   std::shared_ptr<CompiledRawNode> n1_fft;
   {
     const ScopedBool prime_dif_scope(maca_3d_prime_dif_, maca_prime_dif);
