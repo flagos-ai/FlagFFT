@@ -256,6 +256,8 @@ def main() -> None:
             "maca_rader_four_step_scatter",
             "maca_rader_four_step_scatter_i16",
             "maca_rader_four_step_scatter_sorted",
+            "maca_rader_four_step_scatter_pfa",
+            "maca_rader_four_step_scatter_pfa_i16",
             "maca_rader_four_step_scatter_r2c",
             "maca_rader_four_step_scatter_c2r",
             "maca_rader_four_step_spectral",

@@ -104,6 +104,27 @@ def test_maca_rader_fused_spectrum_emits_the_table_free_middle_stage(tmp_path):
         emit_jit_kernel(**dict(config, prime_n=8191))
 
 
+@pytest.mark.parametrize("prime,rows,cols,factors,lanes,pack,warps,narrow", [
+    (8191, 117, 70, (7, 10), 1, 8, 2, False),
+    (8191, 117, 70, (7, 10), 1, 8, 2, True),
+    (16381, 91, 180, (5, 4, 3, 3), 3, 4, 4, False),
+])
+def test_maca_rader_good_thomas_scatter_has_no_twiddle_arguments(
+    tmp_path, prime, rows, cols, factors, lanes, pack, warps, narrow,
+):
+    suffix = "_i16" if narrow else ""
+    meta = emit_jit_kernel(kernel="four_step_col", length=cols, factors=factors,
+        lanes=lanes, num_warps=2, generic_radices=(), smem_size=1 << (cols - 1).bit_length(),
+        direction="forward", dtype="complex64", prime_n=prime, four_step_n1=rows,
+        four_step_n2=cols, perm_form="maca_rader_four_step_scatter_pfa" + suffix, out_dir=tmp_path)
+    assert meta["arg_names"] == [
+        "idx16_ptr" if narrow else "idx_ptr", "zero_ptr", "in_ptr", "out_ptr", "nbatch",
+    ]
+    assert meta["signature"].split(",")[0] == ("*i16:16" if narrow else "*i32:16")
+    assert (meta["inner_pack"], meta["num_warps"]) == (pack, warps)
+    assert not meta["tle_fused_twiddle"]
+
+
 @pytest.mark.parametrize("real_kind", ["r2c", "c2r"])
 @pytest.mark.parametrize("prime,row,col", [(8191, (7, 10), (13, 9)), (16381, (5, 4, 3, 3), (13, 7))])
 def test_maca_rader_direct_real_passes_accept_public_distances(tmp_path, real_kind, prime, row, col):

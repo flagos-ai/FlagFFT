@@ -746,6 +746,7 @@ struct CompiledRawMacaRaderFourStepNode final : CompiledRawNode {
     std::shared_ptr<JitKernel> scatter;
     std::shared_ptr<JitKernel> spectrum_row;
     std::shared_ptr<JitKernel> spectrum_col;
+    bool scatter_uses_row_tables = true;
   };
 
   CompiledRawMacaRaderFourStepNode(int64_t n1, int64_t n2, int64_t batch, Boundary boundary,

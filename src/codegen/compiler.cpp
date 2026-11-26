@@ -4842,9 +4842,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_ste
   const int64_t m = prime - 1;
   const bool narrow_indices = prime == 8191 && !request.real_transform &&
       flag_or_default("FLAGFFT_MACA_8191_RADER_INDEX16", false);
-  const bool sorted_scatter = prime == 16381 && boundary == Boundary::Complex && !request.real_transform &&
+  const bool complex_boundary = boundary == Boundary::Complex && !request.real_transform;
+  const bool pfa_scatter = (prime == 8191 || prime == 16381) && complex_boundary &&
+      flag_or_default("FLAGFFT_MACA_BATCH_PRIME_RADER_PFA_SCATTER", false);
+  const bool sorted_scatter = prime == 16381 && complex_boundary && !pfa_scatter &&
       flag_or_default("FLAGFFT_MACA_16381_RADER_SORTED_SCATTER", false);
-  const bool fused_spectrum = prime == 16381 && boundary == Boundary::Complex && !request.real_transform &&
+  const bool fused_spectrum = prime == 16381 && complex_boundary &&
       flag_or_default("FLAGFFT_MACA_16381_RADER_FUSED_SPECTRUM", false);
   const std::string real_suffix = boundary == Boundary::RealForward ? "_r2c" :
       (boundary == Boundary::RealInverse ? "_c2r" : "");
@@ -4868,8 +4871,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_ste
   if (!fused_spectrum) {
     kernels.inverse_row = compile_pass(col, n2, n1, true, "plain");
   }
-  kernels.scatter = compile_pass(row, n2, n1, false,
-                                 "scatter" + (sorted_scatter ? "_sorted" : boundary_suffix));
+  std::string scatter_phase = "scatter";
+  if (pfa_scatter) scatter_phase += "_pfa";
+  scatter_phase += sorted_scatter ? "_sorted" : boundary_suffix;
+  kernels.scatter = compile_pass(row, n2, n1, false, scatter_phase);
+  kernels.scatter_uses_row_tables = !pfa_scatter;
 
   std::vector<int64_t> gather_indices(static_cast<std::size_t>(m));
   std::vector<int64_t> scatter_indices(static_cast<std::size_t>(m));

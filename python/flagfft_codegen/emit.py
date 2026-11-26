@@ -748,6 +748,9 @@ def emit_jit_kernel(
     )
     spec = kernel_spec(kernel)
     maca_rader_spectral = perm_form == "maca_rader_four_step_spectral"
+    maca_rader_pfa_scatter = perm_form in {
+        "maca_rader_four_step_scatter_pfa", "maca_rader_four_step_scatter_pfa_i16",
+    }
     maca_real48_forward = perm_form in {"maca_fp32_r2c48_to_columns", "maca_fp64_r2c48_to_columns"}
     maca_real48_inverse = perm_form == "maca_fp64_c2r48_from_columns"
     maca_dif_layout = {
@@ -898,6 +901,20 @@ def emit_jit_kernel(
 
         kernel_name, kernel_source = build_maca_rader16381_spectral()
         n1, n2 = four_step_n1, four_step_n2
+    elif maca_rader_pfa_scatter:
+        from .kernels_maca_rader import PFA_SCATTER_CONFIGS, build_maca_rader_pfa_scatter
+
+        narrow_indices = perm_form.endswith("_i16")
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and direction == "forward" and dtype == "complex64"
+                and (not narrow_indices or prime_n == 8191)
+                and (prime_n, four_step_n1, four_step_n2, length, factors) in {
+                    (8191, 117, 70, 70, (7, 10)), (16381, 91, 180, 180, (5, 4, 3, 3)),
+                }):
+            raise ValueError("the Good–Thomas scatter requires a supported C550 FP32 Rader column")
+        pfa_radices, _, pfa_pack, pfa_warps = PFA_SCATTER_CONFIGS[prime_n]
+        kernel_name, kernel_source = build_maca_rader_pfa_scatter(prime_n, narrow_indices=narrow_indices)
+        n1, n2 = four_step_n1, four_step_n2
     elif spec.is_leaf_like:
         io_mode = (
             "permuted_r2c"
@@ -1003,6 +1020,8 @@ def emit_jit_kernel(
         radices = (8,)
     elif perm_form == "maca_fp32_fft210_pfa":
         radices = (5, 6, 7)
+    elif maca_rader_pfa_scatter:
+        radices = tuple(sorted(codelet_radices_for(pfa_radices)))
     elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(
@@ -1045,6 +1064,8 @@ def emit_jit_kernel(
         metadata.update(num_warps=num_warps, grid_x_override=column_grid, tle_fused_twiddle=False)
     if maca_rader_spectral:
         metadata.update(num_warps=SPECTRAL_WARPS, inner_pack=SPECTRAL_PACK, tle_fused_twiddle=False)
+    if maca_rader_pfa_scatter:
+        metadata.update(num_warps=pfa_warps, inner_pack=pfa_pack, tle_fused_twiddle=False)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:

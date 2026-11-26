@@ -1770,9 +1770,9 @@ flagfftResult CompiledRawMacaRaderFourStepNode::execute(adaptor::DevicePtr input
         real_distance = std::max(*real_distance, 2 * half);
       }
     }
+    const std::vector<DeviceAllocation> no_tables;
     launch(*kernels.gather, n2, {gather_indices.get(), input, stage1.get()}, row_tables, input_distance);
     if (boundary == Boundary::Complex) {
-      const std::vector<DeviceAllocation> no_tables;
       launch(*kernels.product, n1,
              {spectrum.get(), input, output, input_zero.get(), stage1.get(), stage2.get()},
              kernels.inverse_row ? col_tables : no_tables);
@@ -1786,7 +1786,7 @@ flagfftResult CompiledRawMacaRaderFourStepNode::execute(adaptor::DevicePtr input
       scatter_input = stage1.get();
     }
     launch(*kernels.scatter, n2, {scatter_indices.get(), input_zero.get(), scatter_input, output},
-           row_tables, output_distance);
+           kernels.scatter_uses_row_tables ? row_tables : no_tables, output_distance);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &error) {
     std::fprintf(stderr, "[flagfft] C550 FourStep Rader execute failed: %s\n", error.what());

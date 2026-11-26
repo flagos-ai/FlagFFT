@@ -1,27 +1,37 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""The fused frequency-domain stage of the C550 16381-point Rader FFT."""
+"""Good–Thomas spectral and scatter kernels for C550 Rader FFTs."""
+
+import math
+
 
 SPECTRAL_PACK = 8
 SPECTRAL_WARPS = 2
+PFA_SCATTER_CONFIGS = {
+    8191: ((7, 10), 117, 8, 2),
+    16381: ((5, 4, 9), 91, 4, 4),
+}
 
 
-def _radix_axis_source(axis: str, radix: int, qpad: int, rpad: int, tile: int) -> str:
+def _radix_axis_source(tag: str, radix: int, shape: tuple[int, ...], axis: int) -> str:
     """Split one digit axis into codelet inputs and restore its padded layout."""
-    columns = rpad * tile if axis == "q" else qpad * tile
-    padded = qpad if axis == "q" else rpad
+    size = math.prod(shape)
+    padded = shape[axis]
+    columns = size // padded
     bits = padded.bit_length() - 1
-    permutation = (1, 2, 0) if axis == "q" else (0, 2, 1)
+    permutation = tuple(index for index in range(len(shape)) if index != axis) + (axis,)
+    view = tuple(shape[index] for index in permutation)
+    natural = tuple(permutation.index(index) for index in range(len(shape)))
     lines = [
         "@triton.jit",
-        f"def _fft_{axis}(real, imag):",
+        f"def {tag}(real, imag):",
         f"    zero = tl.full(({columns},), 0, tl.float32)",
     ]
     branch_shape = (columns,) + (2,) * bits
     for part, data in (("r","real"),("i","imag")):
         lines.extend([
-            f"    view_{part} = tl.permute(tl.reshape({data}, ({qpad}, {rpad}, {tile})), {permutation})",
+            f"    view_{part} = tl.permute(tl.reshape({data}, {shape}), {permutation})",
             f"    bank_{part} = tl.reshape(view_{part}, {branch_shape})",
         ])
 
@@ -47,18 +57,11 @@ def _radix_axis_source(axis: str, radix: int, qpad: int, rpad: int, tile: int) -
             return names[0]
         return f"tl.join({nested(names[::2])}, {nested(names[1::2])})"
 
-    if axis == "q":
-        view = (rpad, tile, qpad)
-        permutation = (2, 0, 1)
-    else:
-        view = (qpad, tile, rpad)
-        permutation = (0, 2, 1)
-    size = qpad * rpad * tile
     for part in ("r", "i"):
         ordered = [f"x{part}{j}" if j < radix else "zero" for j in range(padded)]
         lines += [
             f"    packed_{part} = tl.reshape({nested(ordered)}, {view})",
-            f"    result_{part} = tl.reshape(tl.permute(packed_{part}, {permutation}), ({size},))",
+            f"    result_{part} = tl.reshape(tl.permute(packed_{part}, {natural}), ({size},))",
         ]
     return "\n".join([*lines, "    return result_r, result_i", ""])
 
@@ -110,5 +113,56 @@ def {name}(b_fft_ptr, user_ptr, dc_ptr, zero_ptr, in_ptr, out_ptr, nbatch):
     target = (base + k1 * {n2} + time) * 2
     tl.store(out_ptr + target[:, None] + pair, tl.join(pr, pi), valid[:, None])
 """
-    helpers = (_radix_axis_source("r", r, qpad, rpad, tile), _radix_axis_source("q", q, qpad, rpad, tile))
+    shape = (qpad, rpad, tile)
+    helpers = (_radix_axis_source("_fft_r", r, shape, 1), _radix_axis_source("_fft_q", q, shape, 0))
     return name, "\n".join((*helpers, kernel))
+
+
+def _crt(radices: tuple[int, ...]) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
+    length = math.prod(radices)
+    steps = tuple(length // radix for radix in radices)
+    multipliers = tuple(step * pow(step, -1, radix) for step, radix in zip(steps, radices))
+    return length, steps, multipliers
+
+
+def build_maca_rader_pfa_scatter(prime: int, *, narrow_indices: bool = False) -> tuple[str, str]:
+    """Map the final convolution FFT's residue digits directly to public output."""
+    radices, n2, tile, _ = PFA_SCATTER_CONFIGS[prime]
+    n1, steps, multipliers = _crt(radices)
+    shape = tuple(1 << (radix - 1).bit_length() for radix in radices) + (tile,)
+    size = math.prod(shape)
+    index_ptr = "idx16_ptr" if narrow_indices else "idx_ptr"
+    width_tag = "_i16" if narrow_indices else ""
+    label = f"maca_rader_four_step_scatter_pfa{width_tag}_{prime}"
+    lines = [
+        _radix_axis_source(f"_boundary_axis{axis}", radix, shape, axis)
+        for axis, radix in enumerate(radices)
+    ]
+    lines += ["@triton.jit", f"def {label}({index_ptr}, zero_ptr, in_ptr, out_ptr, nbatch):",
+              "    batch = tl.program_id(1)", f"    flat = tl.arange(0, {size})",
+              f"    col = tl.program_id(0) * {tile} + flat % {tile}"]
+    digits = []
+    valid = ["(batch < nbatch)", f"(col < {n2})"]
+    for axis, radix in enumerate(radices):
+        digit = f"digit{axis}"
+        digits.append(digit)
+        lines.append(f"    {digit} = flat // {math.prod(shape[axis + 1:])} % {shape[axis]}")
+        valid.append(f"({digit} < {radix})")
+    time = " + ".join(f"{digit} * {step}" for digit, step in zip(digits, steps))
+    frequency = " + ".join(f"{digit} * {step}" for digit, step in zip(digits, multipliers))
+    lines += [f"    mask = {' & '.join(valid)}",
+              f"    input_row = ({time}) % {n1}",
+              f"    output_row = ({frequency}) % {n1}",
+              f"    scratch_base = batch * {prime - 1}",
+              "    pair = tl.arange(0, 2)[None, :]"]
+    lines += [f"    source = (scratch_base + input_row * {n2} + col) * 2",
+              f"    index = tl.load({index_ptr} + output_row * {n2} + col, mask, 0)",
+              f"    destination = (batch * {prime} + index) * 2"]
+    lines.append("    real, imag = tl.split(tl.load(in_ptr + source[:, None] + pair, mask[:, None], 0.0))")
+    for axis in range(len(radices)):
+        lines.append(f"    real, imag = _boundary_axis{axis}(real, imag)")
+    lines += ["    x0r = tl.load(zero_ptr + batch * 2, batch < nbatch, 0.0)",
+              "    x0i = tl.load(zero_ptr + batch * 2 + 1, batch < nbatch, 0.0)",
+              f"    real, imag = x0r + real / {prime - 1}, x0i - imag / {prime - 1}"]
+    lines.append("    tl.store(out_ptr + destination[:, None] + pair, tl.join(real, imag), mask[:, None])")
+    return label, "\n".join(lines) + "\n"
