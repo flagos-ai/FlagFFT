@@ -45,7 +45,9 @@ inline bool maca_2d_dense_policy_enabled(const FFTRequest &request,
                                          int64_t n0,
                                          int64_t n1) {
   const char *setting = std::getenv("FLAGFFT_MACA_2D_DENSE");
-  return setting != nullptr && std::string(setting) == "1" &&
+  // Batch four has paired C550 timings in both directions and precisions.
+  const bool enabled = setting ? std::string(setting) == "1" : batch == 4;
+  return enabled &&
          request.device_type == "maca" && request.device_arch == "102" &&
          request.raw_dim == 2 && (request.origin_rank == 0 || request.origin_rank == 2) &&
          request.batch == batch && batch > 0 &&

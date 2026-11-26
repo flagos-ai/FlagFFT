@@ -628,6 +628,13 @@ TEST(Plan2D, MacaDensePolicyIsScopedToC550DenseMatrices) {
 
   ScopedEnv policy("FLAGFFT_MACA_2D_DENSE", nullptr);
   ScopedEnv rows("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  request.batch = 1;
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 1, 2048, 2048));
+  setenv("FLAGFFT_MACA_2D_DENSE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 1, 2048, 2048));
+  request.batch = 4;
+  setenv("FLAGFFT_MACA_2D_DENSE", "0", 1);
   EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
   setenv("FLAGFFT_MACA_2D_DENSE", "1", 1);
   EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
