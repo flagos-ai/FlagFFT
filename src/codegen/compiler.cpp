@@ -6781,7 +6781,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::getenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL") ||
         std::getenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP");
     if (maca_sdk_shape && request.input_dtype == "complex64" &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_MIDDLE", false)) {
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_MIDDLE", !maca_transpose_override)) {
       sdk_middle = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation{},
           CompiledRawMacaLongAxisNode::Stage::MiddleFp32);
     }
