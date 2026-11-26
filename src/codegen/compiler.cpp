@@ -4904,7 +4904,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   const char* sdk = std::getenv("FLAGFFT_MACA_2048_FP32_SINGLE_NATIVE");
   const std::string_view sdk_mode = sdk ? sdk : "residues";
   const bool sdk_single = batch == 1 && (sdk_mode == "residues" || sdk_mode == "shared");
-  const bool sdk_batch = batch == 64 && maca_flag_or_default("FLAGFFT_MACA_2048_FP32_BATCH_NATIVE", false) &&
+  const bool sdk_batch_default = std::getenv("FLAGFFT_MACA_1D_FP32_2048_R2C_GATHER") == nullptr;
+  const bool sdk_batch = batch == 64 &&
+      maca_flag_or_default("FLAGFFT_MACA_2048_FP32_BATCH_NATIVE", sdk_batch_default) &&
       flag_or_default("FLAGFFT_MACA_1D_BATCH", true);
   const char* packed = std::getenv("FLAGFFT_PACKED_REAL");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
@@ -6663,13 +6665,17 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         request.input_dtype == request.output_dtype &&
         request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1};
     if (maca_sdk_shape && maca_first_dif &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_NATIVE_FIRST", false)) {
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_NATIVE_FIRST", true)) {
       auto roots = make_maca_sdk_roots<double>(n2, request.direction == "inverse");
       n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_doubles(roots),
           CompiledRawMacaLongAxisNode::Stage::FirstFp64);
     }
+    const bool maca_transpose_override = std::getenv("FLAGFFT_MACA_TRANSPOSE3D") ||
+        std::getenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS") ||
+        std::getenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL") ||
+        std::getenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP");
     if (maca_sdk_shape && request.input_dtype == "complex64" &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_LAST", false)) {
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_LAST", !maca_transpose_override)) {
       auto roots = make_maca_sdk_roots<float>(n0, request.direction == "inverse");
       sdk_last = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots),
           CompiledRawMacaLongAxisNode::Stage::LastFp32);
