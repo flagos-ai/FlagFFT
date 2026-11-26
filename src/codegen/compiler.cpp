@@ -2732,9 +2732,10 @@ namespace {
   }
 
   bool maca_1d_fp64_2048_dif_enabled(const FFTRequest &request, int64_t batch) {
+    const bool qualified = !request.real_transform || request.real_transform_kind == "z2d";
     return maca_1d_fp64_2048_scope(request, batch) &&
         flag_or_default("FLAGFFT_MACA_1D_FP64_2048", true) &&
-        flag_or_default("FLAGFFT_MACA_1D_FP64_2048_DIF", false);
+        flag_or_default("FLAGFFT_MACA_1D_FP64_2048_DIF", qualified);
   }
 
   bool maca_1d_fp64_2048_enabled(const FFTRequest &request, int64_t batch) {
