@@ -57,6 +57,12 @@ inline bool maca_2d_dense_policy_enabled(const FFTRequest &request,
          n0 == 2048 && n1 == 2048;
 }
 
+inline bool maca_2d_46189_fp32_fused_r2c_enabled(const FFTRequest &request) {
+  const char *setting = std::getenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW");
+  return request.batch == 4 && request.input_dtype == "complex64" &&
+         request.direction == "forward" && setting && std::string(setting) == "1";
+}
+
 inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
                                       int64_t batch,
                                       int64_t n0,
@@ -77,7 +83,8 @@ inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
   if ((!setting || mode == "dense") && request.device_arch == "102" &&
       (request.origin_rank == 0 || request.origin_rank == 2) &&
       n0 == 46189 && n1 == 48 && (batch == 1 || batch == 4) &&
-      (request.input_dtype == "complex128" || batched_fp32_inverse)) {
+      (request.input_dtype == "complex128" || batched_fp32_inverse ||
+       maca_2d_46189_fp32_fused_r2c_enabled(request))) {
     return true;
   }
   if (mode == "dense" && request.device_arch == "102" && n1 >= 256 &&

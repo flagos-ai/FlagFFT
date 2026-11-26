@@ -8511,18 +8511,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                  maca_2d_single_policy_, maca_2d_dense_policy_) ||
        musa_compact_real_rows || hcu_compact_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
+    const bool fp64 = request.input_dtype == "complex128";
     const bool maca_fused_row = request.device_type == "maca" && request.device_arch == "102" &&
-        request.input_dtype == "complex128" && n0 == 46189 && n1 == 48 &&
-        (batch == 1 || batch == 4) && row_leaf &&
-        maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_R2C_ROW", true);
+        n0 == 46189 && n1 == 48 && row_leaf &&
+        (fp64 ? (batch == 1 || batch == 4) &&
+             maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_R2C_ROW", true)
+              : maca_2d_46189_fp32_fused_r2c_enabled(request));
     std::shared_ptr<CompiledRawNode> row_r2c;
     if (maca_fused_row) {
       auto key = KernelKey::leaf(triton_target_for_request(row_request), row_request.direction,
           row_request.input_dtype, row_leaf->length, row_leaf->factors, row_leaf->lanes,
           row_leaf->num_warps, row_leaf->generic_radices, row_leaf->smem_size);
-      key.perm_form = "maca_fp64_r2c48_to_columns";
+      key.perm_form = fp64 ? "maca_fp64_r2c48_to_columns" : "maca_fp32_r2c48_to_columns";
       row_r2c = std::make_shared<CompiledRawLeafNode>(n1, compile_kernel(key),
-          make_maca_dif_roots(n1, /*fp64=*/true, /*inverse=*/false));
+          make_maca_dif_roots(n1, fp64, /*inverse=*/false));
     } else {
       row_r2c = compile_raw_r2c_node(
           node->row_plan, row_request, batch * n0,

@@ -578,6 +578,7 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   request.requires_contiguous_copy = false;
 
   ScopedEnv gate("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
+  ScopedEnv fused_fp32("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW", nullptr);
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048, true));
 
@@ -644,6 +645,14 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
   request.direction = "forward";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 50));
+  request.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.requires_contiguous_copy = false;
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
 }
 

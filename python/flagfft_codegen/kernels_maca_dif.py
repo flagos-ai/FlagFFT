@@ -378,9 +378,9 @@ def _maca_real48_fft8_io(tile: int) -> str:
     """)
 
 
-def build_maca_fp64_r2c48_to_columns() -> tuple[str, str]:
+def build_maca_r2c48_to_columns(*, fp64: bool) -> tuple[str, str]:
     """Write the C550 46189 × 48 forward rows in compact column order."""
-    name = "maca_fp64_r2c48_to_columns"
+    name = f"maca_{'fp64' if fp64 else 'fp32'}_r2c48_to_columns"
     width, tile = 46189, 16
     source = _maca_real48_fft8_io(tile) + dedent(f"""
         @triton.jit
