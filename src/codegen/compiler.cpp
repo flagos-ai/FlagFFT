@@ -5273,17 +5273,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::OuterPrepareDif128: key.perm_form = "maca_fp64_ct128_prepare_dif"; break;
     case MacaLeafLayout::OuterFinishDif128: key.perm_form = "maca_fp64_ct128_finish_dif"; break;
     case MacaLeafLayout::RealForward64: key.perm_form = "maca_fp64_3d_r2c64"; break;
-    case MacaLeafLayout::RealInverse64: key.perm_form = "maca_fp64_3d_c2r64"; break;
+    case MacaLeafLayout::RealInverse64:
+      key.perm_form = request.input_dtype == "complex128" ? "maca_fp64_3d_c2r64" : "maca_fp32_3d_c2r64";
+      break;
   }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   const bool packed_boundary = maca_layout == MacaLeafLayout::RealForward64 ||
                                maca_layout == MacaLeafLayout::RealInverse64;
   const bool inverse = request.direction == "inverse";
+  const bool fp64 = request.input_dtype == "complex128";
   auto tables = maca_layout != MacaLeafLayout::Auto
-      ? make_maca_dif_roots(packed_boundary ? leaf.length / 2 : leaf.length, true, inverse)
+      ? make_maca_dif_roots(packed_boundary ? leaf.length / 2 : leaf.length, fp64, inverse)
       : build_raw_leaf_tables(leaf, request);
   if (packed_boundary) {
-    auto boundary_roots = make_maca_dif_roots(leaf.length, true, inverse);
+    auto boundary_roots = make_maca_dif_roots(leaf.length, fp64, inverse);
     tables.push_back(std::move(boundary_roots[0]));
     tables.push_back(std::move(boundary_roots[1]));
   }
@@ -6925,17 +6928,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   }
 
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
-  const bool maca_long_fp64 = maca_real_compact && request.device_arch == "102" &&
-      request.input_dtype == "complex128" && n0 == 128 && n1 == 2048 && n2 == 64 &&
-      (batch == 1 || batch == 4);
+  const bool maca_long_real = maca_real_compact && request.device_arch == "102" &&
+      n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4);
+  const bool maca_long_fp64 = maca_long_real && request.input_dtype == "complex128";
   const bool maca_real_middle_dif = maca_long_fp64 &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", true);
   const char *packed_real_setting = std::getenv("FLAGFFT_PACKED_REAL");
   const bool maca_real_boundary_default =
       (packed_real_setting == nullptr || std::string(packed_real_setting) != "0") &&
       (inverse || performance_env("FLAGFFT_MACA_3D_R2C_FIRST_STORE") == nullptr);
-  const bool maca_real_boundary_dif = maca_long_fp64 &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_BOUNDARY_DIF", maca_real_boundary_default);
+  const bool maca_fp32_inverse_boundary = maca_long_real && inverse && maca_real_boundary_default &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2R_FP32_BOUNDARY_DIF", false);
+  const bool maca_real_boundary_dif = maca_fp32_inverse_boundary || (maca_long_fp64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_BOUNDARY_DIF", maca_real_boundary_default));
   const auto middle_dif_layout = maca_real_middle_dif
       ? MacaLeafLayout::Contiguous : MacaLeafLayout::Auto;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&

@@ -195,8 +195,12 @@ def test_c550_prime_dif_leaf_launch_abi(tmp_path, mode, length, dtype, warps):
         reset_profile(token)
 
 
-@pytest.mark.parametrize("mode,direction", (("r2c", "forward"), ("c2r", "inverse")))
-def test_c550_packed_3d_real_boundary_launch_abi(tmp_path, mode, direction):
+@pytest.mark.parametrize("mode,direction,precision,dtype", (
+    ("r2c", "forward", "fp64", "complex128"),
+    ("c2r", "inverse", "fp64", "complex128"),
+    ("c2r", "inverse", "fp32", "complex64"),
+))
+def test_c550_packed_3d_real_boundary_launch_abi(tmp_path, mode, direction, precision, dtype):
     from flagfft_codegen.emit import emit_jit_kernel
     from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
 
@@ -204,10 +208,10 @@ def test_c550_packed_3d_real_boundary_launch_abi(tmp_path, mode, direction):
         "backend": "maca", "device_arch": "102", "warp_size": 64,
     }))
     try:
-        form = f"maca_fp64_3d_{mode}64"
+        form = f"maca_{precision}_3d_{mode}64"
         metadata = emit_jit_kernel(
             kernel="leaf", length=64, factors=(4, 4, 4), lanes=16, num_warps=2,
-            generic_radices=(), smem_size=64, direction=direction, dtype="complex128",
+            generic_radices=(), smem_size=64, direction=direction, dtype=dtype,
             prime_n=0, four_step_n1=0, four_step_n2=0, perm_form=form, out_dir=tmp_path,
         )
         assert metadata["kernel_name"] == form

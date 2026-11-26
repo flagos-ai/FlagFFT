@@ -238,10 +238,11 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
     return name, source
 
 
-def build_maca_fp64_3d_real_boundary(direction: str) -> tuple[str, str]:
+def build_maca_3d_real_boundary(direction: str, *, fp64: bool) -> tuple[str, str]:
     inverse = direction == "inverse"
     mode = "c2r" if inverse else "r2c"
-    name = f"maca_fp64_3d_{mode}64"
+    precision = "fp64" if fp64 else "fp32"
+    name = f"maca_{precision}_3d_{mode}64"
     source = _dif_column_helpers(32, direction) + dedent(
         f"""
         @triton.jit

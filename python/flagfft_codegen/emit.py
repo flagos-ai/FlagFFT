@@ -741,7 +741,7 @@ def emit_jit_kernel(
         dtype=dtype,
     )
     spec = kernel_spec(kernel)
-    maca_fp64_layout = {
+    maca_dif_layout = {
         "maca_fp64_dif": (2048, 2, 1),
         "maca_fp64_dif_first64": (64, 8, 32),
         "maca_fp64_ct128_prepare": (128, 4, 4),
@@ -750,6 +750,7 @@ def emit_jit_kernel(
         "maca_fp64_ct128_finish_dif": (128, 2, 4),
         "maca_fp64_3d_r2c64": (64, 2, 32),
         "maca_fp64_3d_c2r64": (64, 2, 32),
+        "maca_fp32_3d_c2r64": (64, 2, 32),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
     maca_split_column = perm_form in {"maca_split_column1768_prepare", "maca_split_column1768_finish"}
@@ -774,24 +775,25 @@ def emit_jit_kernel(
 
         kernel_name, kernel_source = build_maca_prime_dif(prime_n, mode)
         n1 = n2 = 0
-    elif maca_fp64_layout:
-        required_length, maca_warps, maca_pack = maca_fp64_layout
+    elif maca_dif_layout:
+        required_length, maca_warps, maca_pack = maca_dif_layout
+        required_dtype = "complex64" if perm_form == "maca_fp32_3d_c2r64" else "complex128"
         if not (_maca_backend_active() and current_profile().device_arch == "102"
-                and dtype == "complex128" and length == required_length):
-            raise ValueError(f"this FP64 leaf requires a {required_length}-point C550 transform")
+                and dtype == required_dtype and length == required_length):
+            raise ValueError(f"{perm_form} requires a {required_length}-point C550 {required_dtype} transform")
         if perm_form.startswith("maca_fp64_ct128"):
             from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
 
             builder = (build_maca_fp64_outer_dif if perm_form.endswith("_dif")
                        else build_maca_fp64_outer_ct)
             kernel_name, kernel_source = builder(direction, prepare="_prepare" in perm_form)
-        elif perm_form.startswith("maca_fp64_3d_"):
-            from .kernels_maca_dif import build_maca_fp64_3d_real_boundary
+        elif perm_form.endswith(("_r2c64", "_c2r64")):
+            from .kernels_maca_dif import build_maca_3d_real_boundary
 
-            expected_direction = "inverse" if perm_form == "maca_fp64_3d_c2r64" else "forward"
+            expected_direction = "inverse" if perm_form.endswith("_c2r64") else "forward"
             if direction != expected_direction:
                 raise ValueError(f"{perm_form} requires the {expected_direction} direction")
-            kernel_name, kernel_source = build_maca_fp64_3d_real_boundary(direction)
+            kernel_name, kernel_source = build_maca_3d_real_boundary(direction, fp64=dtype == "complex128")
         else:
             from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
 
@@ -880,7 +882,7 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM or maca_fp64_layout or maca_prime_dif or maca_split_column:
+    if spec.family == STOCKHAM or maca_dif_layout or maca_prime_dif or maca_split_column:
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):
@@ -896,7 +898,7 @@ def emit_jit_kernel(
     module_path = out_dir / f"{module_name}.py"
     if maca_split_column:
         radices = () if prepare_column else (8,)
-    elif spec.is_leaf_like and not (maca_fp64_layout or maca_prime_dif):
+    elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(
                 codelet_radices_for(factors)
@@ -930,7 +932,7 @@ def emit_jit_kernel(
         permutation_span=permutation_span,
         permutation_batch=permutation_batch,
     )
-    if maca_fp64_layout:
+    if maca_dif_layout:
         metadata.update(num_warps=maca_warps, batch_per_block=maca_pack)
     if maca_prime_dif:
         metadata.update(num_warps=4 if dtype == "complex128" else 2, batch_per_block=1)
