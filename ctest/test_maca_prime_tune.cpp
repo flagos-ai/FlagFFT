@@ -625,6 +625,13 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   request.batch = 1;
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
   unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 50));
+  request.batch = 4;
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.batch = 1;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
 }
 
