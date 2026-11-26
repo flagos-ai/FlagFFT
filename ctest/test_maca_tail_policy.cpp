@@ -763,8 +763,11 @@ TEST_F(TailPolicy, C550Fp32PrimeRaderAllowsPublicRealBoundaries) {
   r.real_transform = true;
   r.real_transform_kind = "r2c";
   r.input_strides = {8191, 1};
-  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
   EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  setenv("FLAGFFT_MACA_BATCH_RADER_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  unsetenv("FLAGFFT_MACA_BATCH_RADER_SPLIT");
   setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT", "1", 1);
   EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
   setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "0", 1);
