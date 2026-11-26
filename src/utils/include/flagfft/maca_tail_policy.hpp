@@ -261,7 +261,7 @@ inline std::string_view maca_524288_fp64_single_z2d_mode(const FFTRequest& reque
       request.requires_contiguous_copy || request.input_strides != std::vector<int64_t>{distance, 1} ||
       !maca_tail_policy_enabled(request)) return {};
   const char* setting = std::getenv("FLAGFFT_MACA_524288_FP64_SINGLE_Z2D");
-  const std::string_view mode = setting ? setting : "";
+  const std::string_view mode = setting ? setting : "paired";
   return mode == "vector" || mode == "paired" ? mode : std::string_view{};
 }
 

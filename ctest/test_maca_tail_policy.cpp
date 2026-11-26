@@ -532,6 +532,9 @@ TEST_F(TailPolicy, C550SingleFp64_524288Z2DVectorIoIsScopedToThePackedChild) {
   child.packed_real_child = true;
   child.fft_length = child.requested_n = 262144;
   child.input_strides = {262144, 1};
+  EXPECT_EQ(flagfft::maca_524288_fp64_single_z2d_mode(outer), "paired");
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "batch-vecio");
+  setenv("FLAGFFT_MACA_524288_FP64_SINGLE_Z2D", "0", 1);
   EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(outer).empty());
   EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "off");
   for (const char* setting : {"vector", "paired"}) {
