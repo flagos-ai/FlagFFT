@@ -101,6 +101,24 @@ def test_2048_fp64_d2z_gather_keeps_the_packed_leaf_signature(tmp_path):
     assert "if indices.shape[0] == 1:" in source
 
 
+def test_2048_fp32_r2c_gather_uses_float_tables_and_runtime_distances(tmp_path):
+    config = dict(kernel="leaf", length=1024, factors=(16, 8, 8), lanes=64,
+                  num_warps=2, generic_radices=(), smem_size=1024, direction="forward",
+                  dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path,
+                  perm_form="maca_fp32_packed_dif1024_gather")
+    metadata = emit_jit_kernel(**config)
+    assert metadata["kernel_name"] == "maca_fp32_packed_dif1024_r2c_gather"
+    assert metadata["arg_names"] == ["in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr",
+                                     "phase_r_ptr", "phase_i_ptr", "input_distance", "output_distance", "nbatch"]
+    signature = [field.split(":")[0] for field in metadata["signature"].split(",")]
+    assert signature == ["*fp32"] * 6 + ["i64", "i64", "i32"]
+    assert (metadata["num_warps"], metadata["batch_per_block"]) == (4, 1)
+    with pytest.raises(ValueError):
+        emit_jit_kernel(**{**config, "direction": "inverse"})
+    with pytest.raises(ValueError):
+        emit_jit_kernel(**{**config, "dtype": "complex128"})
+
+
 def test_fp64_c2r48_from_columns_uses_the_raw_leaf_signature(tmp_path):
     config = dict(kernel="leaf", length=48, factors=(4, 4, 3), lanes=4,
                   num_warps=2, generic_radices=(), smem_size=64,

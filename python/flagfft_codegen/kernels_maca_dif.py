@@ -147,12 +147,12 @@ def build_maca_fp64_dif_leaf(
     return name, source
 
 
-def build_maca_fp64_packed_dif(direction: str, *, gather_reflection: bool = False) -> tuple[str, str]:
+def build_maca_packed_dif(direction: str, *, fp64: bool, gather_reflection: bool = False) -> tuple[str, str]:
     inverse = direction == "inverse"
     if gather_reflection and direction != "forward":
         raise ValueError("gather reflection requires the forward packed DIF kernel")
     kind = "c2r" if inverse else "r2c"
-    name = f"maca_fp64_packed_dif1024_{kind}"
+    name = f"maca_{'fp64' if fp64 else 'fp32'}_packed_dif1024_{kind}"
     reflection = "br, bi = _reflect(real), _reflect(imag)"
     if gather_reflection:
         name += "_gather"

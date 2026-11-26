@@ -755,6 +755,7 @@ def emit_jit_kernel(
         "maca_fp64_dif_terminal8": (2048, 2, 1),
         "maca_fp64_packed_dif1024": (1024, 4, 1),
         "maca_fp64_packed_dif1024_gather": (1024, 4, 1),
+        "maca_fp32_packed_dif1024_gather": (1024, 4, 1),
         "maca_fp64_dif_first64": (64, 8, 32),
         "maca_fp64_ct128_prepare": (128, 4, 4),
         "maca_fp64_ct128_finish": (128, 4, 8),
@@ -823,7 +824,10 @@ def emit_jit_kernel(
     elif maca_dif_layout:
         required_length, maca_warps, maca_pack = maca_dif_layout
         prime_axes = perm_form.startswith("maca_3d_prime_")
-        fp32_leaf = perm_form in {"maca_fp32_3d_c2r64", "maca_fp32_fft210_pfa", "maca_fp32_r2c48_to_columns"}
+        fp32_leaf = perm_form in {
+            "maca_fp32_3d_c2r64", "maca_fp32_fft210_pfa", "maca_fp32_r2c48_to_columns",
+            "maca_fp32_packed_dif1024_gather",
+        }
         required_dtypes = (("complex64", "complex128") if prime_axes else
                            ("complex64",) if fp32_leaf else ("complex128",))
         if not (_maca_backend_active() and current_profile().device_arch == "102"
@@ -866,11 +870,12 @@ def emit_jit_kernel(
                 raise ValueError(f"{perm_form} requires the {expected_direction} direction")
             kernel_name, kernel_source = build_maca_3d_real_boundary(
                 direction, fp64=dtype == "complex128", middle_length=997 if prime_axes else 2048)
-        elif perm_form in {"maca_fp64_packed_dif1024", "maca_fp64_packed_dif1024_gather"}:
-            from .kernels_maca_dif import build_maca_fp64_packed_dif
+        elif perm_form in {"maca_fp64_packed_dif1024", "maca_fp64_packed_dif1024_gather",
+                           "maca_fp32_packed_dif1024_gather"}:
+            from .kernels_maca_dif import build_maca_packed_dif
 
-            kernel_name, kernel_source = build_maca_fp64_packed_dif(
-                direction, gather_reflection=perm_form.endswith("_gather"),
+            kernel_name, kernel_source = build_maca_packed_dif(
+                direction, fp64=dtype == "complex128", gather_reflection=perm_form.endswith("_gather"),
             )
         else:
             from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
