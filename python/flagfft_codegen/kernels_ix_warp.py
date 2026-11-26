@@ -25,6 +25,42 @@ def strided_input_tile_shape(pack, output_major=False):
         outer *= 2
     return outer, pack // outer
 
+def _reverse_lane_bits(index, bits):
+    return "|".join(f"((({index} >> {bit}) & 1) << {bits - 1 - bit})" for bit in range(bits))
+
+
+def _emit_dif64(pack, radix, sign):
+    lines = []
+    for half in (32, 16, 8, 4, 2, 1):
+        lines.extend([
+            f"    peer = tl.broadcast_to(lane ^ {half}, ({pack}, 64))",
+            f"    high = (lane & {half}) != 0",
+        ])
+        if half > 2:
+            lines.extend([
+                f"    angle = tl.where(high, (lane & {half - 1}) * {sign * math.pi / half:.17g}, 0.0)",
+                "    wr = tl.cos(angle)",
+                "    wi = tl.sin(angle)",
+            ])
+        elif half == 2:
+            lines.append("    rotate = (lane & 3) == 3")
+        for j in range(radix):
+            lines.extend([
+                f"    pr = tl.gather(r{j}, peer, axis=1)",
+                f"    pi = tl.gather(i{j}, peer, axis=1)",
+                f"    sr = pr + tl.where(high, -r{j}, r{j})",
+                f"    si = pi + tl.where(high, -i{j}, i{j})",
+            ])
+            if half > 2:
+                lines.extend([f"    r{j} = sr * wr - si * wi", f"    i{j} = sr * wi + si * wr"])
+            elif half == 2:
+                lines.extend([f"    r{j} = tl.where(rotate, {-sign}.0 * si, sr)",
+                              f"    i{j} = tl.where(rotate, {sign}.0 * sr, si)"])
+            else:
+                lines.extend([f"    r{j} = sr", f"    i{j} = si"])
+    return lines
+
+
 def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = False) -> tuple[str, str]:
     return build_ix_warp_source(256, pack, mode, inverse)
 
@@ -38,7 +74,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          table_roots: bool = False, root_period: int = 0,
                          strided_input: bool = False,
                          strided_output_major: bool = False,
-                         packed_output_transpose: bool = False) -> tuple[str, str]:
+                         packed_output_transpose: bool = False,
+                         dif_store: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -73,6 +110,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("invalid IX warp FourStep geometry")
     if (mode in {"r2c","contiguous_r2c","packed_r2c","four_step_real_row","four_step_r2c_col"} and inverse) or (mode in {"c2r","packed_c2r","four_step_hermitian_row","four_step_c2r_col"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
+    if dif_store and (n != 256 or mode not in {"outer", "inner", "r2c"} or lane_width != 64
+                      or manual_store or strided_input or wide or table_roots or packed_gather):
+        raise ValueError("DIF store requires a dense FP32 256-point wave and a permuted store")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
     if four_step: name+=f'_other{four_step_other}'
@@ -89,6 +129,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if strided_input: name+='_stridedinput'
     if strided_output_major: name+='_outtile'
     if packed_output_transpose: name+='_transpose'
+    if dif_store: name+='_dif'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
        '    pid=tl.program_id(0)',f'    slot=tl.arange(0,{pack})',
@@ -279,40 +320,43 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                 '    wr=tl.cos(angle)','    wi=tl.sin(angle)']
             if recurrence: a+=['    base_wr=wr','    base_wi=wi']
         a+=[f'    tr=r{j}*wr-i{j}*wi',f'    ti=r{j}*wi+i{j}*wr',f'    r{j}=tr',f'    i{j}=ti']
-    if lane_width==64:
-        a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)']
+    if dif_store:
+        a += _emit_dif64(pack, radix, sign)
     else:
-        bits=lane_width.bit_length()-1
-        a+=['    rev='+'|'.join(f'(((lane>>{i})&1)<<{bits-1-i})' for i in range(bits))]
-    a += [f'    idx=tl.broadcast_to(rev,({pack},{lane_width}))']
-    def pair_source(j):
-        return f'tl.cast(tl.cast(r{j},tl.uint32,bitcast=True),tl.uint64)|(tl.cast(tl.cast(i{j},tl.uint32,bitcast=True),tl.uint64)<<32)'
-    for j in range(radix):
-        if packed_gather:
-            a += [f'    pair={pair_source(j)}','    pair=tl.gather(pair,idx,axis=1)',
-                  f'    r{j}=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
-                  f'    i{j}=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
-        else: a += [f'    r{j}=tl.gather(r{j},idx,axis=1)',f'    i{j}=tl.gather(i{j},idx,axis=1)']
-    for stage in range(lane_width.bit_length()-1):
-        half=1<<stage
-        a += [f'    idx=tl.broadcast_to(lane^{half},({pack},{lane_width}))',f'    high=(lane&{half})!=0']
-        if half==1: a += ['    wr=1.0','    wi=0.0']
-        elif half==2: a += ['    wr=tl.where((lane&1)==0,1.0,0.0)',f'    wi=tl.where((lane&1)==0,0.0,{float(sign)})']
-        elif wide or table_roots:
-            a += [f'    root_index=(lane&{half-1})*{n//(2*half)}',
-                  '    wr=tl.load(wave_tw_r_ptr+root_index)',
-                  '    wi=tl.load(wave_tw_i_ptr+root_index)']
-        else: a += [f'    angle=(lane&{half-1})*{sign*math.pi/half:.17g}','    wr=tl.cos(angle)','    wi=tl.sin(angle)']
+        if lane_width==64:
+            a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)']
+        else:
+            bits=lane_width.bit_length()-1
+            a+=['    rev='+'|'.join(f'(((lane>>{i})&1)<<{bits-1-i})' for i in range(bits))]
+        a += [f'    idx=tl.broadcast_to(rev,({pack},{lane_width}))']
+        def pair_source(j):
+            return f'tl.cast(tl.cast(r{j},tl.uint32,bitcast=True),tl.uint64)|(tl.cast(tl.cast(i{j},tl.uint32,bitcast=True),tl.uint64)<<32)'
         for j in range(radix):
             if packed_gather:
                 a += [f'    pair={pair_source(j)}','    pair=tl.gather(pair,idx,axis=1)',
-                      '    pr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
-                      '    pi=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
-            else: a += [f'    pr=tl.gather(r{j},idx,axis=1)',f'    pi=tl.gather(i{j},idx,axis=1)']
-            a += [f'    br=tl.where(high,r{j},pr)',f'    bi=tl.where(high,i{j},pi)',
-                  '    tr=br*wr-bi*wi','    ti=br*wi+bi*wr',
-                  f'    ar=tl.where(high,pr,r{j})',f'    ai=tl.where(high,pi,i{j})',
-                  f'    r{j}=tl.where(high,ar-tr,ar+tr)',f'    i{j}=tl.where(high,ai-ti,ai+ti)']
+                      f'    r{j}=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                      f'    i{j}=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+            else: a += [f'    r{j}=tl.gather(r{j},idx,axis=1)',f'    i{j}=tl.gather(i{j},idx,axis=1)']
+        for stage in range(lane_width.bit_length()-1):
+            half=1<<stage
+            a += [f'    idx=tl.broadcast_to(lane^{half},({pack},{lane_width}))',f'    high=(lane&{half})!=0']
+            if half==1: a += ['    wr=1.0','    wi=0.0']
+            elif half==2: a += ['    wr=tl.where((lane&1)==0,1.0,0.0)',f'    wi=tl.where((lane&1)==0,0.0,{float(sign)})']
+            elif wide or table_roots:
+                a += [f'    root_index=(lane&{half-1})*{n//(2*half)}',
+                      '    wr=tl.load(wave_tw_r_ptr+root_index)',
+                      '    wi=tl.load(wave_tw_i_ptr+root_index)']
+            else: a += [f'    angle=(lane&{half-1})*{sign*math.pi/half:.17g}','    wr=tl.cos(angle)','    wi=tl.sin(angle)']
+            for j in range(radix):
+                if packed_gather:
+                    a += [f'    pair={pair_source(j)}','    pair=tl.gather(pair,idx,axis=1)',
+                          '    pr=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                          '    pi=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+                else: a += [f'    pr=tl.gather(r{j},idx,axis=1)',f'    pi=tl.gather(i{j},idx,axis=1)']
+                a += [f'    br=tl.where(high,r{j},pr)',f'    bi=tl.where(high,i{j},pi)',
+                      '    tr=br*wr-bi*wi','    ti=br*wi+bi*wr',
+                      f'    ar=tl.where(high,pr,r{j})',f'    ai=tl.where(high,pi,i{j})',
+                      f'    r{j}=tl.where(high,ar-tr,ar+tr)',f'    i{j}=tl.where(high,ai-ti,ai+ti)']
     if mode=='packed_r2c':
         a += ['    nyquist_r=r0-i0']
         for j in range(radix):
@@ -384,7 +428,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             values=join(indices)
             a += [f'    z=tl.reshape({values},({pack},{lane_width*chunk}))']
         a += [f'    freq=tl.arange(0,{lane_width*chunk})']
-        if chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
+        if dif_store:
+            a += [f"    out_lane = freq // {chunk}",
+                  f"    out_rev = {_reverse_lane_bits('out_lane', 6)}",
+                  f"    freq = out_rev * {radix} + freq % {chunk} + {start}"]
+        elif chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
         if four_step:
             a += ['    ptr=out' if wide or mode=='four_step_c2r_col' else '    ptr=tl.cast(out,tl.pointer_type(tl.uint64))']
             if mode in row_modes:
@@ -470,17 +518,18 @@ def _finish_warp_source(name, lines, fast_math, codelet_radix, manual_store):
 def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: list[str],
                                  pack: int, permutation_span: int = 0) -> tuple[str,str]:
     """Retain the raw-leaf argument list, including unused twiddle pointers."""
+    dif_store = perm_form.endswith("_dif")
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
         "contiguous_r2c":"contiguous_r2c",
         "packed_r2c":"packed_r2c", "packed_c2r":"packed_c2r",
         "permuted_r2c":"r2c", "permuted_store_r2c":"r2c",
-    }.get(io_mode, perm_form)
+    }.get(io_mode, perm_form.removesuffix("_dif"))
     n=plan.length
     chunk=(2 if n==256 else 8 if n>=1024 else 0) if mode in {'outer','inner','r2c'} else 0
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
-                                    output_radix_chunk=chunk)
+                                    output_radix_chunk=chunk, dif_store=dif_store)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']
     if permutation_span:

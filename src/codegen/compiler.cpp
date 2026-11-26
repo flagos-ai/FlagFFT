@@ -1050,6 +1050,10 @@ namespace {
       if (inner ? request.batch % span != 0 || (request.batch / span) % pack != 0
                 : key.kind == KernelKind::LeafR2CPermutedStore && span % pack != 0) return;
       key.permutation_span = span;
+      if (request.ix_warp256_dif_store && key.length == 256 && pack == 16 &&
+          (inner || key.perm_form == "outer")) {
+        key.perm_form += "_dif";
+      }
     }
     key.ix_warp_fft_pack = pack;
   }
@@ -4409,6 +4413,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           fused_warps = std::strtoll(value, nullptr, 10);
         }
       }
+      const char *ix_policy = performance_env("FLAGFFT_EXECUTION_POLICY");
+      if (request.device_type == "ix" && request.device_arch == "71" &&
+          request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 && request.batch == batch &&
+          bluestein->length == 1009 && leaf->length == 2048 && request.requested_n == 1009 &&
+          request.fft_length == request.requested_n &&
+          !request.convolution_child && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+          request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+          (!ix_policy || std::string(ix_policy) == "balanced")) {
+        // The planner counts 32-thread warps, so eight translates to
+        // four physical waves for the fused Bluestein kernel on IX71.
+        fused_warps = 8;
+      }
       LeafPlanNode fused_leaf(leaf->length,
                               std::move(fused_factors),
                               leaf->remainder,
@@ -7320,6 +7336,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
   n2_request.ix_warp_fft_pack_default=n1_request.ix_warp_fft_pack_default=
       n0_request.ix_warp_fft_pack_default=ix_nd_pack;
   std::shared_ptr<CompiledRawNode> n2_real_fft;
+  // On the dense 256-cube R2C path, each fused store can apply the lane
+  // bit reversal directly in its output coordinates.
+  const bool dif_store = ix_nd_pack == 16 && request.real_transform_kind == "r2c" &&
+      n0 == 256 && n1 == 256 && n2 == 256 && fused_first && fused_middle && fused_n0 &&
+      flag_or_default("FLAGFFT_IX_3D_R2C_DIF_STORE", true);
+  n2_request.ix_warp256_dif_store = dif_store;
+  n1_request.ix_warp256_dif_store = dif_store;
+  n0_request.ix_warp256_dif_store = dif_store;
   std::vector<DeviceAllocation> npu_transpose_indices;
 #if defined(FLAGFFT_BACKEND_NPU)
   if (npu_real_native) {
