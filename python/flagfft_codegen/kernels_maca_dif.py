@@ -315,6 +315,82 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
     return name, source
 
 
+def build_maca_fp64_c2r48_from_columns() -> tuple[str, str]:
+    """Consume the column-major half spectrum of the C550 46189 × 48 inverse."""
+    name = "maca_fp64_c2r48_from_columns"
+    width, tile = 46189, 16
+    source = dedent(f"""
+        @triton.jit
+        def _split_fft8(values):
+            even, odd = tl.split(tl.reshape(tl.trans(values), ({tile}, 2, 2, 2)))
+            e0, e1 = tl.split(even)
+            o0, o1 = tl.split(odd)
+            x0, x4 = tl.split(e0)
+            x2, x6 = tl.split(e1)
+            x1, x5 = tl.split(o0)
+            x3, x7 = tl.split(o1)
+            return x0, x1, x2, x3, x4, x5, x6, x7
+
+        @triton.jit
+        def _join_fft8(a, b, c, d, e, f, g, h):
+            even = tl.join(tl.join(a, e), tl.join(c, g))
+            odd = tl.join(tl.join(b, f), tl.join(d, h))
+            return tl.trans(tl.reshape(tl.join(even, odd), ({tile}, 8)))
+
+        @triton.jit
+        def _inverse8(real, imag):
+            r0, r1, r2, r3, r4, r5, r6, r7 = _split_fft8(real)
+            i0, i1, i2, i3, i4, i5, i6, i7 = _split_fft8(-imag)
+            a, b, c, d, e, f, g, h, t0, t1, t2, t3, t4, t5, t6, t7 = _fwd_rad8_b1(
+                r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7)
+            return _join_fft8(a, b, c, d, e, f, g, h), -_join_fft8(t0, t1, t2, t3, t4, t5, t6, t7)
+
+        @triton.jit
+        def _reconstruct(in_ptr, phase_r_ptr, phase_i_ptr, base, valid, u, v: tl.constexpr):
+            k = (3 * u + 8 * v) % 24
+            pair = tl.arange(0, 2)[None, None, :]
+            src = base[None, :] + k[:, None] * {2 * width}
+            mirror = base[None, :] + (24 - k[:, None]) * {2 * width}
+            mask = valid[None, :, None]
+            ar, ai = tl.split(tl.load(in_ptr + src[:, :, None] + pair, mask, 0.0))
+            br, bi = tl.split(tl.load(in_ptr + mirror[:, :, None] + pair, mask, 0.0))
+            ai = tl.where(k[:, None] == 0, 0.0, ai)
+            bi = tl.where(k[:, None] == 0, 0.0, bi)
+            co = tl.load(phase_r_ptr + k)[:, None]
+            si = tl.load(phase_i_ptr + k)[:, None]
+            dr, di = ar - br, ai + bi
+            return ar + br - (di * co - dr * si), ai - bi + dr * co + di * si
+
+        @triton.jit
+        def _write_real(out_ptr, rows, valid, k8, k3: tl.constexpr, real, imag):
+            index = (9 * k8 + 16 * k3) % 24
+            target = rows[None, :].to(tl.int64) * 48 + index[:, None] * 2
+            offsets = tl.permute(target[:, :, None] + tl.arange(0, 2)[None, None, :], (1, 0, 2))
+            values = tl.permute(tl.join(real, imag), (1, 0, 2))
+            tl.store(out_ptr + offsets, values, valid[:, None, None])
+
+        @triton.jit
+        def {name}(in_ptr, out_ptr, phase_r_ptr, phase_i_ptr, nbatch):
+            # nbatch counts logical rows. One tile can span two input matrices.
+            rows = tl.program_id(0) * {tile} + tl.arange(0, {tile})
+            matrix, row = rows // {width}, rows % {width}
+            base = matrix.to(tl.int64) * {50 * width} + row * 2
+            valid = rows < nbatch
+            u = tl.arange(0, 8)
+            a, ai = _reconstruct(in_ptr, phase_r_ptr, phase_i_ptr, base, valid, u, 0)
+            b, bi = _reconstruct(in_ptr, phase_r_ptr, phase_i_ptr, base, valid, u, 1)
+            c, ci = _reconstruct(in_ptr, phase_r_ptr, phase_i_ptr, base, valid, u, 2)
+            r0, r1, r2, i0, i1, i2 = _fwd_rad3_b1(a, b, c, -ai, -bi, -ci)
+            r0, i0 = _inverse8(r0, -i0)
+            r1, i1 = _inverse8(r1, -i1)
+            r2, i2 = _inverse8(r2, -i2)
+            _write_real(out_ptr, rows, valid, u, 0, r0, i0)
+            _write_real(out_ptr, rows, valid, u, 1, r1, i1)
+            _write_real(out_ptr, rows, valid, u, 2, r2, i2)
+    """)
+    return name, source
+
+
 def build_maca_fp64_real32_plane(direction: str) -> tuple[str, str]:
     name = f"maca_real32_plane_dif_{direction}"
     inverse = direction == "inverse"

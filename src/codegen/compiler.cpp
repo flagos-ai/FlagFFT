@@ -8790,12 +8790,26 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
-    std::shared_ptr<CompiledRawNode> row_c2r =
-        compile_raw_c2r_node(node->row_plan, row_request, batch * n0,
-                            hcu_compact_rows ||
-                                maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
+    const auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+    const bool maca_fused_row = request.device_type == "maca" && request.device_arch == "102" &&
+        request.input_dtype == "complex128" && n0 == 46189 && n1 == 48 &&
+        (batch == 1 || batch == 4) && row_leaf &&
+        maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_C2R_ROW", false);
+    std::shared_ptr<CompiledRawNode> row_c2r;
+    if (maca_fused_row) {
+      auto key = KernelKey::leaf(triton_target_for_request(row_request), row_request.direction,
+          row_request.input_dtype, row_leaf->length, row_leaf->factors, row_leaf->lanes,
+          row_leaf->num_warps, row_leaf->generic_radices, row_leaf->smem_size);
+      key.perm_form = "maca_fp64_c2r48_from_columns";
+      row_c2r = std::make_shared<CompiledRawLeafNode>(n1, compile_kernel(key),
+          make_maca_dif_roots(n1, /*fp64=*/true, /*inverse=*/false));
+    } else {
+      row_c2r = compile_raw_c2r_node(
+          node->row_plan, row_request, batch * n0,
+          hcu_compact_rows || maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
+    }
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
-    auto transpose_inv = use_col_permuted_store
+    auto transpose_inv = use_col_permuted_store || maca_fused_row
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);

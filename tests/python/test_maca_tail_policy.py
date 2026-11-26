@@ -101,6 +101,22 @@ def test_2048_fp64_d2z_gather_keeps_the_packed_leaf_signature(tmp_path):
     assert "if indices.shape[0] == 1:" in source
 
 
+def test_fp64_c2r48_from_columns_uses_the_raw_leaf_signature(tmp_path):
+    config = dict(kernel="leaf", length=48, factors=(4, 4, 3), lanes=4,
+                  num_warps=2, generic_radices=(), smem_size=64,
+                  direction="inverse", dtype="complex128", prime_n=0,
+                  four_step_n1=0, four_step_n2=0, out_dir=tmp_path,
+                  perm_form="maca_fp64_c2r48_from_columns")
+    metadata = emit_jit_kernel(**config)
+    assert metadata["arg_names"] == ["in_ptr", "out_ptr", "phase_r_ptr", "phase_i_ptr", "nbatch"]
+    assert metadata["num_warps"] == 2
+    assert metadata["batch_per_block"] == 16
+    with pytest.raises(ValueError):
+        emit_jit_kernel(**{**config, "direction": "forward"})
+    with pytest.raises(ValueError):
+        emit_jit_kernel(**{**config, "dtype": "complex64"})
+
+
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
 def test_32_real_plane_dif_keeps_the_boundary_arguments(tmp_path, direction):
     from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel

@@ -758,6 +758,7 @@ def emit_jit_kernel(
         "maca_fp64_ct128_finish_dif": (128, 2, 4),
         "maca_fp64_3d_r2c64": (64, 2, 32),
         "maca_fp64_3d_c2r64": (64, 2, 32),
+        "maca_fp64_c2r48_from_columns": (48, 2, 16),
         "maca_fp32_3d_c2r64": (64, 2, 32),
         "maca_3d_prime_r2c64": (64, 4, 32),
         "maca_3d_prime_c2r64": (64, 4, 32),
@@ -826,6 +827,12 @@ def emit_jit_kernel(
             kernel_name, kernel_source = build_maca_3d_prime_real_outer(
                 direction, fp64=dtype == "complex128", wide=perm_form.endswith("_wide"),
             )
+        elif perm_form == "maca_fp64_c2r48_from_columns":
+            from .kernels_maca_dif import build_maca_fp64_c2r48_from_columns
+
+            if direction != "inverse":
+                raise ValueError(f"{perm_form} requires the inverse direction")
+            kernel_name, kernel_source = build_maca_fp64_c2r48_from_columns()
         elif perm_form.startswith("maca_fp64_ct128"):
             from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
 
@@ -955,6 +962,8 @@ def emit_jit_kernel(
     if maca_split_column:
         last_radix = 5 if maca_packed_column else 8
         radices = () if prepare_column else (last_radix,)
+    elif perm_form == "maca_fp64_c2r48_from_columns":
+        radices = (3, 8)
     elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(
