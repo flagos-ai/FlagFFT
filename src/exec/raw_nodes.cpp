@@ -4680,7 +4680,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(
       n2(n2),
       inverse(inverse),
       fused_store(layout == Layout::FusedStore),
-      n2_permuted(layout == Layout::R2CFirstStore || layout == Layout::FusedPrimeForward),
+      n2_permuted(layout == Layout::R2CFirstStore || layout == Layout::FusedPrimeAxes),
       n1_strided_input(false),
       layout(layout),
       n2_real_fft(std::move(n2_real_fft)),
@@ -4717,13 +4717,20 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n2_context {context.request, context.stream, batch * n0 * n1};
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
-    if (layout == Layout::FusedPrimeForward) {
+    flagfftResult result;
+    if (layout == Layout::FusedPrimeAxes) {
       // Keep the odd middle-axis tail in each physical plane. The outer
       // FFT uses 16 by 4 tiles over the half-spectrum and middle axis.
       n2_context.batch = batch * n0 * ceil_div(n1, 32) * 32;
       n0_context.batch = batch * ceil_div(half, 16) * ceil_div(n1, 4) * 64;
+      const auto &first = inverse ? n0_fft : n2_real_fft;
+      const auto &last = inverse ? n2_real_fft : n0_fft;
+      result = first->execute(input, temp1.get(), inverse ? n0_context : n2_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
+      if (result != FLAGFFT_SUCCESS) return result;
+      return last->execute(temp2.get(), output, inverse ? n2_context : n0_context);
     }
-    flagfftResult result;
 
     if (layout != Layout::Legacy) {
       if (!inverse) {

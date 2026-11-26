@@ -754,6 +754,7 @@ def emit_jit_kernel(
         "maca_fp64_3d_c2r64": (64, 2, 32),
         "maca_fp32_3d_c2r64": (64, 2, 32),
         "maca_3d_prime_r2c64": (64, 4, 32),
+        "maca_3d_prime_c2r64": (64, 4, 32),
         "maca_3d_prime_outer16": (16, 4, 64),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
@@ -794,16 +795,10 @@ def emit_jit_kernel(
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and dtype in required_dtypes and length == required_length):
             raise ValueError(f"{perm_form} requires a {required_length}-point C550 transform of {required_dtypes}")
-        if prime_axes:
-            from .kernels_maca_dif import build_maca_3d_prime_real_outer, build_maca_3d_real_boundary
+        if perm_form == "maca_3d_prime_outer16":
+            from .kernels_maca_dif import build_maca_3d_prime_real_outer
 
-            if direction != "forward":
-                raise ValueError("the fused 3D prime axes require the forward direction")
-            fp64 = dtype == "complex128"
-            if perm_form == "maca_3d_prime_outer16":
-                kernel_name, kernel_source = build_maca_3d_prime_real_outer(fp64=fp64)
-            else:
-                kernel_name, kernel_source = build_maca_3d_real_boundary(direction, fp64=fp64, middle_length=997)
+            kernel_name, kernel_source = build_maca_3d_prime_real_outer(direction, fp64=dtype == "complex128")
         elif perm_form.startswith("maca_fp64_ct128"):
             from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
 
@@ -816,7 +811,8 @@ def emit_jit_kernel(
             expected_direction = "inverse" if perm_form.endswith("_c2r64") else "forward"
             if direction != expected_direction:
                 raise ValueError(f"{perm_form} requires the {expected_direction} direction")
-            kernel_name, kernel_source = build_maca_3d_real_boundary(direction, fp64=dtype == "complex128")
+            kernel_name, kernel_source = build_maca_3d_real_boundary(
+                direction, fp64=dtype == "complex128", middle_length=997 if prime_axes else 2048)
         elif perm_form == "maca_fp64_packed_dif1024":
             from .kernels_maca_dif import build_maca_fp64_packed_dif
 

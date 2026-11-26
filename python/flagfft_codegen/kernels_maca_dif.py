@@ -396,10 +396,13 @@ def build_maca_3d_real_boundary(
     return name, source
 
 
-def build_maca_3d_prime_real_outer(*, fp64: bool) -> tuple[str, str]:
+def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool) -> tuple[str, str]:
     precision = "fp64" if fp64 else "fp32"
-    name = f"maca_{precision}_3d_prime_outer16_forward"
-    source = _dif_column_helpers(16, "forward", tile=64) + dedent(f"""
+    name = f"maca_{precision}_3d_prime_outer16_{direction}"
+    source_layout, target_layout = ("middle_major", "half_major") if direction == "inverse" else (
+        "half_major", "middle_major"
+    )
+    source = _dif_column_helpers(16, direction, tile=64) + dedent(f"""
         @triton.jit
         def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
             block = tl.program_id(0)
@@ -414,13 +417,13 @@ def build_maca_3d_prime_real_outer(*, fp64: bool) -> tuple[str, str]:
             k = tl.arange(0, 16)
             pair = tl.arange(0, 2)[None, None, :]
             base = (batch.to(tl.int64) * 16 + k) * 32901
-            src = (base[:, None] + h[None, :] * 997 + m[None, :]) * 2
-            dst = (base[:, None] + m[None, :] * 33 + h[None, :]) * 2
-            r, i = tl.split(tl.load(in_ptr + src[:, :, None] + pair, valid[None, :, None], 0.0))
+            half_major = (base[:, None] + h[None, :] * 997 + m[None, :]) * 2
+            middle_major = (base[:, None] + m[None, :] * 33 + h[None, :]) * 2
+            r, i = tl.split(tl.load(in_ptr + {source_layout}[:, :, None] + pair, valid[None, :, None], 0.0))
             for step in tl.static_range(2):
                 r, i = _first_axis_radix_four(r, i, roots_r_ptr, roots_i_ptr, step)
             r = tl.reshape(tl.permute(tl.reshape(r, (4, 4, 64)), (1, 0, 2)), (16, 64))
             i = tl.reshape(tl.permute(tl.reshape(i, (4, 4, 64)), (1, 0, 2)), (16, 64))
-            tl.store(out_ptr + dst[:, :, None] + pair, tl.join(r, i), valid[None, :, None])
+            tl.store(out_ptr + {target_layout}[:, :, None] + pair, tl.join(r, i), valid[None, :, None])
     """)
     return name, source
