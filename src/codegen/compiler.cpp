@@ -2722,14 +2722,18 @@ namespace {
   }
 
   bool maca_1d_fp64_2048_enabled(const FFTRequest &request, int64_t batch) {
-    return request.device_type == "maca" && request.device_arch == "102" &&
-        request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
-        (batch == 1 || batch == 64) && !request.convolution_child && !request.packed_real_child &&
-        request.fft_length == 2048 && request.requested_n == 2048 &&
-        request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
-        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
-        !request.input_strides.empty() && request.input_strides.back() == 1 &&
-        flag_or_default("FLAGFFT_MACA_1D_FP64_2048", false);
+    if (request.device_type != "maca" || request.device_arch != "102" ||
+        request.raw_dim != 1 || request.origin_rank > 1 || batch != request.batch ||
+        (batch != 1 && batch != 64) || request.convolution_child || request.packed_real_child ||
+        request.fft_length != 2048 || request.requested_n != 2048 ||
+        request.input_dtype != "complex128" || request.output_dtype != "complex128" ||
+        request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+        request.input_strides.empty() || request.input_strides.back() != 1) return false;
+    const char *setting = performance_env("FLAGFFT_MACA_1D_FP64_2048");
+    if (setting) return std::string(setting) == "1";
+    if (request.real_transform_kind != "d2z" || request.direction != "forward") return false;
+    return batch == 1 ? maca_tail_policy_enabled(request)
+                      : flag_or_default("FLAGFFT_MACA_1D_BATCH", true);
   }
 
   bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
