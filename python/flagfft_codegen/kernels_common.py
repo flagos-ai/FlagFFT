@@ -1114,12 +1114,13 @@ def _maca_four_step_inner_pack(plan: LeafPlan | None, n1: int, n2: int, stage: s
         # pack, while the P8 default is qualified only for FP32 leaves.
         override = ""
     override_name = "INNER_PACK"
+    stage_name = f"FOURSTEP_{stage}_PACK"
+    stage_default = resource_default(stage_name)
     if (_maca_backend_active() and current_profile().device_arch == "102"
-            and n1 * n2 in {331500, 663000}):
-        stage_name = f"FOURSTEP_{stage}_PACK"
+            and (n1 * n2 in {331500, 663000} or stage_default is not None)):
         stage_override = os.environ.get(f"FLAGFFT_MACA_{stage_name}")
         if stage_override is None and "FLAGFFT_MACA_INNER_PACK" not in os.environ:
-            stage_override = resource_default(stage_name)
+            stage_override = stage_default
         if stage_override is not None:
             override_name = stage_name
             override = stage_override.strip().lower()

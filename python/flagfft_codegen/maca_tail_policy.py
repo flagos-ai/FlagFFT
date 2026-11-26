@@ -32,7 +32,7 @@ def set_maca_tail_mode(mode):
     if mode not in {"off", "p4w4", "real-direct", "batch-vecio",
                     "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
                     "batch-c2c-tree", "batch-prime-rader-vecio", "c2c663000", "c2c663000-batch",
-                    "r2c663000", "batch-c2r663000", "batch-c2r663000-split", "c2c340200-split"}:
+                    "r2c663000", "batch-c2r663000", "batch-c2r663000-split", "c2c340200-split", "z2z340200-split"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -65,8 +65,10 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
                 return "r2c663000"
             if _root_mode.get() == "batch-c2r663000-split" and (n1, n2) == (340, 975):
                 return "batch-c2r663000-split"
-            if _root_mode.get() == "c2c340200-split" and (n1, n2) == (567, 600):
-                return "c2c340200-split"
+        if _root_mode.get() == "c2c340200-split" and (dtype, n1, n2) == ("complex64", 567, 600):
+            return "c2c340200-split"
+        if _root_mode.get() == "z2z340200-split" and (dtype, n1, n2) == ("complex128", 504, 675):
+            return "z2z340200-split"
         if (_root_mode.get() == "batch-c2r663000" and dtype in {"complex64", "complex128"}
                 and (n1, n2) == (300, 1105)):
             return "batch-c2r663000"
@@ -108,7 +110,12 @@ def resource_default(name):
     if _kernel_mode.get() == "batch-c2r663000-split":
         return {"RADER_CODELET": "1", "VEC_IO": "packed",
                 "FOURSTEP_ROW_PACK": "4", "FOURSTEP_COL_PACK": "2"}.get(name)
-    if _kernel_mode.get() in {"batch-c2r663000", "c2c340200-split"}:
+    if _kernel_mode.get() == "c2c340200-split":
+        return {"VEC_IO": "packed", "INNER_PACK": "2", "MAX_WARPS": "4"}.get(name)
+    if _kernel_mode.get() == "z2z340200-split":
+        return {"VEC_IO": "packed", "FOURSTEP_ROW_PACK": "2", "FOURSTEP_COL_PACK": "1",
+                "MAX_WARPS": "4"}.get(name)
+    if _kernel_mode.get() == "batch-c2r663000":
         return {"VEC_IO": "packed"}.get(name)
     if _kernel_mode.get() == "c2c663000-batch":
         return {"RADER_CODELET": "1", "VEC_IO": "packed",

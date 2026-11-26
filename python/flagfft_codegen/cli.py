@@ -286,7 +286,7 @@ def main() -> None:
                                  "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
                                  "batch-c2c-tree", "batch-prime-rader-vecio", "c2c663000",
                                  "c2c663000-batch", "r2c663000", "batch-c2r663000",
-                                 "batch-c2r663000-split", "c2c340200-split"),
+                                 "batch-c2r663000-split", "c2c340200-split", "z2z340200-split"),
                         default="off")
     parser.add_argument(
         "--maca-2d-single",

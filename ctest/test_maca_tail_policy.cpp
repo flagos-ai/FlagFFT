@@ -20,7 +20,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
                              "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
                              "FLAGFFT_MACA_663000_PACKED_C2R_SPLIT",
-                             "FLAGFFT_MACA_340200_FP32_BATCH_SPLIT",
+                             "FLAGFFT_MACA_340200_BATCH_SPLIT",
                              "FLAGFFT_MACA_RADER_CODELET",
                              "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
@@ -246,9 +246,9 @@ TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
   r.batch = 64;
   flagfft::PlanBuilder builder;
   const auto baseline = flagfft::PlanKey::from_node(builder.build(340200, r)).repr();
-  EXPECT_FALSE(flagfft::maca_340200_fp32_batch_split_enabled(r));
+  EXPECT_FALSE(flagfft::maca_340200_batch_split_enabled(r));
 
-  setenv("FLAGFFT_MACA_340200_FP32_BATCH_SPLIT", "1", 1);
+  setenv("FLAGFFT_MACA_340200_BATCH_SPLIT", "1", 1);
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
   ASSERT_NE(plan, nullptr);
   EXPECT_EQ(plan->n1, 567);
@@ -267,7 +267,21 @@ TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, r)).repr(), baseline);
   unsetenv("FLAGFFT_MACA_1D_BATCH");
   r.input_strides.front() += 5;
-  EXPECT_FALSE(flagfft::maca_340200_fp32_batch_split_enabled(r));
+  EXPECT_FALSE(flagfft::maca_340200_batch_split_enabled(r));
+
+  r.input_strides.front() = 340200;
+  r.input_dtype = r.output_dtype = "complex128";
+  const auto wide = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(wide, nullptr);
+  EXPECT_EQ(wide->n1, 504);
+  EXPECT_EQ(wide->n2, 675);
+  const auto wide_row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(wide->row_plan);
+  const auto wide_col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(wide->col_plan);
+  ASSERT_NE(wide_row, nullptr);
+  ASSERT_NE(wide_col, nullptr);
+  EXPECT_EQ(wide_row->factors, (std::vector<int64_t>{7, 8, 9}));
+  EXPECT_EQ(wide_col->factors, (std::vector<int64_t>{5, 15, 9}));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "z2z340200-split");
 }
 
 TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {

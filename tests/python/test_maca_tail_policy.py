@@ -104,14 +104,19 @@ def test_packed_663000_resources_match_manual_mode(tmp_path, monkeypatch, kernel
         assert candidate["inner_pack"] == (4 if row else 2)
 
 
-def test_340200_split_resources_are_local_to_its_fourstep_axes():
-    mode = "c2c340200-split"
+@pytest.mark.parametrize("mode,dtype,n1,n2", [
+    ("c2c340200-split", "complex64", 567, 600),
+    ("z2z340200-split", "complex128", 504, 675),
+])
+def test_340200_split_resources_are_local_to_its_fourstep_axes(mode, dtype, n1, n2):
+    other_dtype = "complex128" if dtype == "complex64" else "complex64"
     set_maca_tail_mode(mode)
-    for kernel, length in (("four_step_row", 567), ("four_step_col", 600)):
-        with maca_tail_kernel_scope(kernel, length, "complex64", 567, 600):
+    for kernel, length in (("four_step_row", n1), ("four_step_col", n2)):
+        with maca_tail_kernel_scope(kernel, length, dtype, n1, n2):
             assert resource_default("VEC_IO") == "packed"
-        assert eligible_kernel_mode(kernel, length, "complex128", 567, 600) == "off"
-        assert eligible_kernel_mode(kernel, length, "complex64", 378, 900) == "off"
+            assert resource_default("MAX_WARPS") == "4"
+        assert eligible_kernel_mode(kernel, length, other_dtype, n1, n2) == "off"
+        assert eligible_kernel_mode(kernel, length, dtype, 378, 900) == "off"
     assert resource_default("VEC_IO") is None
 
 
