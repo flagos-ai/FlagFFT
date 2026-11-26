@@ -153,10 +153,9 @@ def build_maca_prime_dif(n: int, mode: str) -> tuple[str, str]:
     return name, source
 
 
-def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
-    name = f"maca_fp64_dif_first64_{direction}"
+def _dif_column_helpers(length: int, direction: str) -> str:
     sign = 1 if direction == "inverse" else -1
-    source = dedent(
+    return dedent(
         f"""
         @triton.jit
         def _first_axis_split(values, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
@@ -170,7 +169,7 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
         @triton.jit
         def _first_axis_join(a, b, c, d, GROUPS: tl.constexpr, QUARTER: tl.constexpr):
             digits = tl.reshape(tl.join(tl.join(a, c), tl.join(b, d)), (GROUPS, QUARTER, 32, 4))
-            return tl.reshape(tl.permute(digits, (0, 3, 1, 2)), (64, 32))
+            return tl.reshape(tl.permute(digits, (0, 3, 1, 2)), ({length}, 32))
 
         @triton.jit
         def _first_axis_rotate(real, imag, roots_r, roots_i, phase):
@@ -181,7 +180,7 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
         @triton.jit
         def _first_axis_radix_four(real, imag, roots_r, roots_i, STAGE: tl.constexpr):
             GROUPS: tl.constexpr = 1 << (2 * STAGE)
-            QUARTER: tl.constexpr = 64 // (4 * GROUPS)
+            QUARTER: tl.constexpr = {length} // (4 * GROUPS)
             ar, br, cr, dr = _first_axis_split(real, GROUPS, QUARTER)
             ai, bi, ci, di = _first_axis_split(imag, GROUPS, QUARTER)
             even_r, even_i = ar + cr, ai + ci
@@ -202,7 +201,14 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
                 _first_axis_join(even_r + odd_r, r1, r2, r3, GROUPS, QUARTER),
                 _first_axis_join(even_i + odd_i, i1, i2, i3, GROUPS, QUARTER),
             )
+        """
+    )
 
+
+def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
+    name = f"maca_fp64_dif_first64_{direction}"
+    source = _dif_column_helpers(64, direction) + dedent(
+        f"""
         @triton.jit
         def _first_axis_natural(values):
             digits = tl.reshape(values, (4, 4, 4, 32))
@@ -226,6 +232,67 @@ def build_maca_fp64_dif_first_axis(direction: str) -> tuple[str, str]:
             values = tl.join(_first_axis_natural(real), _first_axis_natural(imag))
             dst = (short[:, None] * 2048 + middle[None, :]) * 2
             tl.store((out_ptr + base) + dst[:, :, None] + pair, values)
+        """
+    )
+    return name, source
+
+
+def build_maca_fp64_3d_real_boundary(direction: str) -> tuple[str, str]:
+    inverse = direction == "inverse"
+    mode = "c2r" if inverse else "r2c"
+    name = f"maca_fp64_3d_{mode}64"
+    source = _dif_column_helpers(32, direction) + dedent(
+        f"""
+        @triton.jit
+        def _packed_natural(values):
+            pairs = tl.permute(tl.reshape(values, (16, 2, 32)), (0, 2, 1))
+            a, b = tl.split(pairs)
+            values = tl.permute(tl.join(a + b, a - b), (0, 2, 1))
+            digits = tl.reshape(values, (4, 4, 2, 32))
+            return tl.reshape(tl.permute(digits, (2, 1, 0, 3)), (32, 32))
+
+        @triton.jit
+        def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, phase_r_ptr, phase_i_ptr, nbatch):
+            block = tl.program_id(0)
+            if block * 32 >= nbatch:
+                return
+            INVERSE: tl.constexpr = {inverse}
+            plane = (block // 64).to(tl.int64)
+            middle = (block % 64) * 32 + tl.arange(0, 32)
+            k = tl.arange(0, 32)
+            pair = tl.arange(0, 2)[None, None, :]
+            real_base = plane * 131072
+            compact_base = plane * 135168
+            real_off = real_base + middle[None, :] * 64 + k[:, None] * 2
+            compact_off = compact_base + (k[:, None] * 2048 + middle[None, :]) * 2
+            co = tl.load(phase_r_ptr + k)[:, None]
+            si = tl.load(phase_i_ptr + k)[:, None]
+            if INVERSE:
+                rev_off = compact_base + ((32 - k[:, None]) * 2048 + middle[None, :]) * 2
+                ar, ai = tl.split(tl.load(in_ptr + compact_off[:, :, None] + pair))
+                br, bi = tl.split(tl.load(in_ptr + rev_off[:, :, None] + pair))
+                dr, di = ar - br, ai + bi
+                real = ar + br - (dr * si + di * co)
+                imag = ai - bi + (dr * co - di * si)
+            else:
+                real, imag = tl.split(tl.load(in_ptr + real_off[:, :, None] + pair))
+            for stage in tl.static_range(2):
+                real, imag = _first_axis_radix_four(real, imag, roots_r_ptr, roots_i_ptr, stage)
+            real, imag = _packed_natural(real), _packed_natural(imag)
+            if INVERSE:
+                tl.store(out_ptr + real_off[:, :, None] + pair, tl.join(real, imag))
+            else:
+                mirror = tl.broadcast_to(((32 - k) & 31)[:, None], (32, 32))
+                br = tl.gather(real, mirror, axis=0)
+                bi = tl.gather(imag, mirror, axis=0)
+                dr, di = real - br, imag + bi
+                out_r = (real + br + dr * si + di * co) * 0.5
+                out_i = (imag - bi - dr * co + di * si) * 0.5
+                tl.store(out_ptr + compact_off[:, :, None] + pair, tl.join(out_r, out_i))
+                nyquist = compact_base + (32 * 2048 + middle) * 2
+                nyquist_off = tl.broadcast_to(nyquist[None, :], (32, 32))
+                tl.store(out_ptr + nyquist_off, real - imag, k[:, None] == 0)
+                tl.store(out_ptr + nyquist + 1, 0.0)
         """
     )
     return name, source

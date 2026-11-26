@@ -5218,11 +5218,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::FirstAxis64: key.perm_form = "maca_fp64_dif_first64"; break;
     case MacaLeafLayout::OuterPrepare128: key.perm_form = "maca_fp64_ct128_prepare"; break;
     case MacaLeafLayout::OuterFinish128: key.perm_form = "maca_fp64_ct128_finish"; break;
+    case MacaLeafLayout::RealForward64: key.perm_form = "maca_fp64_3d_r2c64"; break;
+    case MacaLeafLayout::RealInverse64: key.perm_form = "maca_fp64_3d_c2r64"; break;
   }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
+  const bool packed_boundary = maca_layout == MacaLeafLayout::RealForward64 ||
+                               maca_layout == MacaLeafLayout::RealInverse64;
+  const bool inverse = request.direction == "inverse";
   auto tables = maca_layout != MacaLeafLayout::Auto
-      ? make_maca_dif_roots(leaf.length, true, request.direction == "inverse")
+      ? make_maca_dif_roots(packed_boundary ? leaf.length / 2 : leaf.length, true, inverse)
       : build_raw_leaf_tables(leaf, request);
+  if (packed_boundary) {
+    auto boundary_roots = make_maca_dif_roots(leaf.length, true, inverse);
+    tables.push_back(std::move(boundary_roots[0]));
+    tables.push_back(std::move(boundary_roots[1]));
+  }
   return std::make_shared<CompiledRawLeafNode>(leaf.length,
                                                std::move(kernel),
                                                std::move(tables));
@@ -6836,15 +6846,20 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   }
 
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
-  const bool maca_real_middle_dif = maca_real_compact && request.device_arch == "102" &&
+  const bool maca_long_fp64 = maca_real_compact && request.device_arch == "102" &&
       request.input_dtype == "complex128" && n0 == 128 && n1 == 2048 && n2 == 64 &&
-      (batch == 1 || batch == 4) && maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", true);
+      (batch == 1 || batch == 4);
+  const bool maca_real_middle_dif = maca_long_fp64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", true);
+  const bool maca_real_boundary_dif = maca_long_fp64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_BOUNDARY_DIF", false);
   const auto middle_dif_layout = maca_real_middle_dif
       ? MacaLeafLayout::Contiguous : MacaLeafLayout::Auto;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
-  const bool maca_r2c_first_store = maca_real_compact &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default);
+  const bool maca_r2c_first_store = maca_real_compact && !inverse &&
+      (maca_real_boundary_dif ||
+       maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default));
   const char *c2r_fused32_setting = performance_env("FLAGFFT_HCU_3D_C2R_FUSED32");
   if (c2r_fused32_setting != nullptr && std::string(c2r_fused32_setting) != "0" &&
       std::string(c2r_fused32_setting) != "1") {
@@ -7159,11 +7174,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                      ? r2c_permute_default
                                      : std::string(r2c_permute_override) != "0");
   const int64_t n2_batch = batch * n0 * n1;
-  auto n2_real_fft = !inverse && !small && n1_leaf
-      ? compile_raw_hcu_packed_r2c_store(n2_request, n2_batch, n2, n1) : nullptr;
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  if (maca_real_boundary_dif) {
+    n2_real_fft = compile_raw_leaf(*n2_leaf, n2_request,
+        inverse ? MacaLeafLayout::RealInverse64 : MacaLeafLayout::RealForward64);
+  } else if (!inverse && !small && n1_leaf) {
+    n2_real_fft = compile_raw_hcu_packed_r2c_store(n2_request, n2_batch, n2, n1);
+  }
   const bool n2_permuted = n2_real_fft != nullptr || hcu_n2_permuted || maca_r2c_first_store;
   if (n2_real_fft) {
-    // The half-length FFT reconstructs directly into the next axis layout.
+    // The packed boundary handles its own permutation.
   } else if (n2_permuted) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                         n2_request.direction, n2_request.input_dtype,
@@ -7220,7 +7240,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       if (inverse) {
         perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "120");
         perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210");
-        perm_201 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+        if (!maca_real_boundary_dif) {
+          perm_201 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+        }
       } else {
         perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
         perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");

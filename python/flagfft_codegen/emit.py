@@ -727,6 +727,8 @@ def emit_jit_kernel(
         "maca_fp64_dif_first64": (64, 8, 32),
         "maca_fp64_ct128_prepare": (128, 4, 4),
         "maca_fp64_ct128_finish": (128, 4, 8),
+        "maca_fp64_3d_r2c64": (64, 2, 32),
+        "maca_fp64_3d_c2r64": (64, 2, 32),
     }.get(perm_form) if kernel == "leaf" else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
     if maca_prime_dif:
@@ -751,6 +753,13 @@ def emit_jit_kernel(
             kernel_name, kernel_source = build_maca_fp64_outer_ct(
                 direction, prepare=perm_form == "maca_fp64_ct128_prepare",
             )
+        elif perm_form.startswith("maca_fp64_3d_"):
+            from .kernels_maca_dif import build_maca_fp64_3d_real_boundary
+
+            expected_direction = "inverse" if perm_form == "maca_fp64_3d_c2r64" else "forward"
+            if direction != expected_direction:
+                raise ValueError(f"{perm_form} requires the {expected_direction} direction")
+            kernel_name, kernel_source = build_maca_fp64_3d_real_boundary(direction)
         else:
             from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
 

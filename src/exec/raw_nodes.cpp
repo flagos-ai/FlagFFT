@@ -4760,6 +4760,7 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
                       complex_element_bytes(context.request.input_dtype));
         result = n1_fft->execute(temp1.get(), temp2.get(), n1_context);
         if (result != FLAGFFT_SUCCESS) return result;
+        if (!perm_third) return n2_real_fft->execute(temp2.get(), output, n2_context);
         launch_perm3d(perm_third, context.stream, temp2.get(), temp1.get(), packed, batch,
                       complex_element_bytes(context.request.input_dtype));
         return n2_real_fft->execute(temp1.get(), output, n2_context);
