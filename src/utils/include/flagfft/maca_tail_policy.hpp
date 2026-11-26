@@ -72,7 +72,7 @@ inline bool maca_prime_dif_requested(const FFTRequest& request) {
   const char* setting = std::getenv("FLAGFFT_MACA_PRIME_DIF");
   if (setting) return std::string(setting) == "1";
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  if (request.requested_n != 1009 || (plan && *plan)) return false;
+  if (plan && *plan) return false;
   if (request.batch == 1) return maca_tail_policy_enabled(request);
   const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
   return batch_policy == nullptr || std::string(batch_policy) != "0";

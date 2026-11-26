@@ -120,17 +120,20 @@ TEST_F(TailPolicy, FusedC550PrimeDefaultScopeAndFallback) {
   r.device_arch = "102";
   r.input_layout = "contiguous";
   r.input_strides = {1009, 1};
-  for (int64_t batch : {1, 64}) {
-    r.batch = batch;
-    EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
-    EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");
-    const char* root_policy = batch == 1 ? "FLAGFFT_MACA_TAIL_POLICY" : "FLAGFFT_MACA_1D_BATCH";
-    setenv(root_policy, "0", 1);
-    EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
-    unsetenv(root_policy);
-    setenv("FLAGFFT_MACA_PRIME_DIF", "0", 1);
-    EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
-    unsetenv("FLAGFFT_MACA_PRIME_DIF");
+  for (int64_t n : {1009, 997}) {
+    r.requested_n = r.fft_length = r.input_strides.front() = n;
+    for (int64_t batch : {1, 64}) {
+      r.batch = batch;
+      EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+      EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");
+      const char* root_policy = batch == 1 ? "FLAGFFT_MACA_TAIL_POLICY" : "FLAGFFT_MACA_1D_BATCH";
+      setenv(root_policy, "0", 1);
+      EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+      unsetenv(root_policy);
+      setenv("FLAGFFT_MACA_PRIME_DIF", "0", 1);
+      EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+      unsetenv("FLAGFFT_MACA_PRIME_DIF");
+    }
   }
   setenv("FLAGFFT_MACA_TAIL_PLAN", "default", 1);
   EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
@@ -141,12 +144,12 @@ TEST_F(TailPolicy, FusedC550PrimeDefaultScopeAndFallback) {
   r.real_transform_kind.clear();
   EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
   r.real_transform = false;
-  r.requested_n = r.fft_length = 997;
-  r.input_strides.front() = 997;
-  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
   setenv("FLAGFFT_MACA_PRIME_DIF", "1", 1);
   EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
   r.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  r.origin_rank = 1;
+  r.requested_n = r.fft_length = r.input_strides.front() = 8191;
   EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
 }
 
