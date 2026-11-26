@@ -6875,7 +6875,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       (batch == 1 || batch == 4) &&
       (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
       request.input_dtype == request.output_dtype &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", request.input_dtype == "complex128");
   // HCU can keep an elongated Bluestein middle axis in the compact real
   // layout; the real_hybrid shape gate below decides whether that route applies.
   if (!n2_leaf || !n0_leaf ||
