@@ -750,6 +750,7 @@ def emit_jit_kernel(
     maca_dif_layout = {
         "maca_fp64_dif": (2048, 2, 1),
         "maca_fp64_dif_w4": (2048, 4, 1),
+        "maca_fp64_dif_terminal8": (2048, 2, 1),
         "maca_fp64_packed_dif1024": (1024, 4, 1),
         "maca_fp64_packed_dif1024_gather": (1024, 4, 1),
         "maca_fp64_dif_first64": (64, 8, 32),
@@ -862,6 +863,7 @@ def emit_jit_kernel(
             else:
                 kernel_name, kernel_source = build_maca_fp64_dif_leaf(
                     direction, four_warps=perm_form == "maca_fp64_dif_w4",
+                    terminal8=perm_form == "maca_fp64_dif_terminal8",
                 )
         n1 = n2 = 0
     elif spec.is_leaf_like:
@@ -965,6 +967,8 @@ def emit_jit_kernel(
         radices = () if prepare_column else (last_radix,)
     elif perm_form == "maca_fp64_c2r48_from_columns":
         radices = (3, 8)
+    elif perm_form == "maca_fp64_dif_terminal8":
+        radices = (8,)
     elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(

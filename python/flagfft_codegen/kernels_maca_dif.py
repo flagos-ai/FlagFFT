@@ -81,10 +81,52 @@ def _dif2048_helpers(direction: str | None, *, length: int = 2048, skip_unit_rot
     )
 
 
-def build_maca_fp64_dif_leaf(direction: str, *, four_warps: bool = False) -> tuple[str, str]:
-    suffix = "_w4" if four_warps else ""
+def _dif_terminal8_helpers(direction: str) -> str:
+    conjugate = 1 if direction == "forward" else -1
+    return dedent(f"""
+        @triton.jit
+        def _split_terminal8(values):
+            even, odd = tl.split(tl.reshape(values, (256, 2, 2, 2)))
+            e0, e1 = tl.split(even)
+            o0, o1 = tl.split(odd)
+            a, e = tl.split(e0)
+            c, g = tl.split(e1)
+            b, f = tl.split(o0)
+            d, h = tl.split(o1)
+            return a, b, c, d, e, f, g, h
+
+        @triton.jit
+        def _join_terminal8(a, b, c, d, e, f, g, h):
+            even = tl.join(tl.join(a, e), tl.join(c, g))
+            odd = tl.join(tl.join(b, f), tl.join(d, h))
+            values = tl.reshape(tl.join(even, odd), (4, 4, 4, 4, 8))
+            return tl.reshape(tl.permute(values, (4, 3, 2, 1, 0)), (2048,))
+
+        @triton.jit
+        def _dif_terminal8(real, imag):
+            r0, r1, r2, r3, r4, r5, r6, r7 = _split_terminal8(real)
+            i0, i1, i2, i3, i4, i5, i6, i7 = _split_terminal8(({conjugate}) * imag)
+            a, b, c, d, e, f, g, h, j, k, l, m, n, p, q, s = _fwd_rad8_b1(
+                r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7)
+            return (_join_terminal8(a, b, c, d, e, f, g, h),
+                    ({conjugate}) * _join_terminal8(j, k, l, m, n, p, q, s))
+    """)
+
+
+def build_maca_fp64_dif_leaf(
+    direction: str, *, four_warps: bool = False, terminal8: bool = False,
+) -> tuple[str, str]:
+    suffix = "_terminal8" if terminal8 else ("_w4" if four_warps else "")
     name = f"maca_fp64_dif2048{suffix}_{direction}"
-    source = _dif2048_helpers(direction) + dedent(
+    helpers = _dif2048_helpers(direction)
+    if terminal8:
+        helpers += _dif_terminal8_helpers(direction)
+        stage_count = 4
+        finish = "real, imag = _dif_terminal8(real, imag)\n            value = tl.join(real, imag)"
+    else:
+        stage_count = 5
+        finish = "value = tl.join(_dif_natural_output(real), _dif_natural_output(imag))"
+    source = helpers + dedent(
         f"""
         @triton.jit
         def {name}(in_ptr, out_ptr, roots_r_ptr, roots_i_ptr, nbatch):
@@ -96,9 +138,9 @@ def build_maca_fp64_dif_leaf(direction: str, *, four_warps: bool = False) -> tup
             pair = tl.arange(0, 2)[None, :]
             offset = k[:, None] * 2 + pair
             real, imag = tl.split(tl.load((in_ptr + base) + offset))
-            for stage in tl.static_range(5):
+            for stage in tl.static_range({stage_count}):
                 real, imag = _dif_radix_four(real, imag, roots_r_ptr, roots_i_ptr, stage)
-            value = tl.join(_dif_natural_output(real), _dif_natural_output(imag))
+            {finish}
             tl.store((out_ptr + base) + offset, value)
         """
     )

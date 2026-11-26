@@ -117,6 +117,22 @@ def test_fp64_c2r48_from_columns_uses_the_raw_leaf_signature(tmp_path):
         emit_jit_kernel(**{**config, "dtype": "complex64"})
 
 
+def test_fp64_dif_terminal8_uses_the_existing_middle_axis_arguments(tmp_path):
+    config = dict(kernel="leaf", length=2048, factors=(16, 8, 16), lanes=128,
+                  num_warps=2, generic_radices=(), smem_size=2048, direction="inverse",
+                  dtype="complex128", prime_n=0, four_step_n1=0, four_step_n2=0, out_dir=tmp_path)
+    base = emit_jit_kernel(**config, perm_form="maca_fp64_dif")
+    candidate = emit_jit_kernel(**config, perm_form="maca_fp64_dif_terminal8")
+    assert candidate["arg_names"] == base["arg_names"]
+    assert candidate["signature"] == base["signature"]
+    assert candidate["num_warps"] == 2
+    assert candidate["batch_per_block"] == 1
+    assert candidate["module_path"] != base["module_path"]
+    source = Path(candidate["module_path"]).read_text()
+    assert "for stage in tl.static_range(4)" in source
+    assert "def _fwd_rad8_b1(" in source
+
+
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
 def test_32_real_plane_dif_keeps_the_boundary_arguments(tmp_path, direction):
     from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel

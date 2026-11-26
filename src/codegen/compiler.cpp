@@ -5375,6 +5375,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::Auto: break;
     case MacaLeafLayout::Contiguous: key.perm_form = "maca_fp64_dif"; break;
     case MacaLeafLayout::ContiguousFourWarps: key.perm_form = "maca_fp64_dif_w4"; break;
+    case MacaLeafLayout::TerminalEight: key.perm_form = "maca_fp64_dif_terminal8"; break;
     case MacaLeafLayout::FirstAxis64: key.perm_form = "maca_fp64_dif_first64"; break;
     case MacaLeafLayout::OuterPrepare128: key.perm_form = "maca_fp64_ct128_prepare"; break;
     case MacaLeafLayout::OuterFinish128: key.perm_form = "maca_fp64_ct128_finish"; break;
@@ -6588,8 +6589,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
     const bool maca_middle_dif = maca_dif_shape &&
         maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF", true);
+    const auto middle_layout = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_TERMINAL8", false)
+        ? MacaLeafLayout::TerminalEight : MacaLeafLayout::Contiguous;
     auto n1_fft = maca_middle_dif
-        ? compile_raw_leaf(*n1_leaf, n1_request, MacaLeafLayout::Contiguous)
+        ? compile_raw_leaf(*n1_leaf, n1_request, middle_layout)
         : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     const bool maca_outer_ct = maca_dif_shape &&
         maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_CT", true);

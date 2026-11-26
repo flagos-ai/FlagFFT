@@ -210,6 +210,7 @@ def main() -> None:
             "outer_last",
             "maca_fp64_dif",
             "maca_fp64_dif_w4",
+            "maca_fp64_dif_terminal8",
             "maca_fp64_packed_dif1024",
             "maca_fp64_packed_dif1024_gather",
             "maca_fp64_dif_first64",

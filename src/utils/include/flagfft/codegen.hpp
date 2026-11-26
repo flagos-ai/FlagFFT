@@ -1948,7 +1948,7 @@ class TritonCompiler {
   bool npu_stockham_tle_allowed_ = true;
 
   enum class MacaLeafLayout {
-    Auto, Contiguous, ContiguousFourWarps, FirstAxis64, OuterPrepare128, OuterFinish128,
+    Auto, Contiguous, ContiguousFourWarps, TerminalEight, FirstAxis64, OuterPrepare128, OuterFinish128,
     OuterPrepareDif128, OuterFinishDif128, RealForward64, RealInverse64,
     RealPrimeForward64, RealPrimeInverse64, RealPrimeOuter16, RealPrimeOuter16Wide
   };
