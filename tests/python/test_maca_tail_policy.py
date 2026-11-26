@@ -288,6 +288,23 @@ def test_340200_single_split_matches_the_screened_axes(tmp_path, monkeypatch, ax
     assert Path(candidate["module_path"]).read_text() == Path(manual["module_path"]).read_text()
 
 
+@pytest.mark.parametrize("axis,length,factors,lanes,pack", [
+    ("row", 900, (10, 9, 10), 10, 1),
+    ("col", 378, (7, 6, 9), 3, 2),
+])
+def test_340200_single_inverse_pack_matches_the_screen(tmp_path, monkeypatch, axis, length, factors, lanes, pack):
+    request = dict(kernel=f"four_step_{axis}", length=length, factors=factors, lanes=lanes,
+                   num_warps=2, generic_radices=(), smem_size=1 << (length - 1).bit_length(),
+                   direction="inverse", dtype="complex64", prime_n=0, four_step_n1=900, four_step_n2=378)
+    set_maca_tail_mode("c2c340200-inverse-pack")
+    candidate = emit_jit_kernel(**request, out_dir=tmp_path / "scoped")
+    assert (candidate["num_warps"], candidate["inner_pack"]) == (2, pack)
+    set_maca_tail_mode("c2c340200-single")
+    monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", str(pack))
+    manual = emit_jit_kernel(**request, out_dir=tmp_path / "manual")
+    assert Path(candidate["module_path"]).read_bytes() == Path(manual["module_path"]).read_bytes()
+
+
 @pytest.mark.parametrize("axis,length,factors,lanes,pack,max_warps", [
     ("row", 900, (10, 10, 9), 10, 2, 4),
     ("col", 378, (9, 7, 6), 3, 4, 8),

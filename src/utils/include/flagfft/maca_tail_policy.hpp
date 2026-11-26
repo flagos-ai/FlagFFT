@@ -375,7 +375,10 @@ inline bool maca_tail_real_direct_dft(const FFTRequest& request) {
 inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
   if (maca_340200_single_split_enabled(request)) {
-    return request.input_dtype == "complex128" ? "z2z340200-single" : "c2c340200-single";
+    if (request.input_dtype == "complex128") return "z2z340200-single";
+    const char* inverse_pack = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK");
+    return request.direction == "inverse" && inverse_pack && std::string_view(inverse_pack) == "1"
+        ? "c2c340200-inverse-pack" : "c2c340200-single";
   }
   if (maca_340200_batch_split_enabled(request)) {
     if (request.input_dtype == "complex128") return "z2z340200-split";
@@ -480,7 +483,8 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "batch-prime-vecio" &&
       (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
-  if (((dtype == "complex64" && (root == "c2c340200-single" || root == "c2c340200-batch-900x378")) ||
+  if (((dtype == "complex64" && (root == "c2c340200-single" || root == "c2c340200-inverse-pack" ||
+                               root == "c2c340200-batch-900x378")) ||
        (dtype == "complex128" && root == "z2z340200-single")) && n1 == 900 && n2 == 378 &&
       ((kind == KernelKind::FourStepRow && length == n1) ||
        (kind == KernelKind::FourStepCol && length == n2))) return root;
