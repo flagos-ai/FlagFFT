@@ -192,6 +192,20 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         )
         assert long_fp64["kernel_name"].endswith("_t16_tile_vec")
 
+        for shape, order, warps in (
+            ((128, 64, 2048), "210", 8),
+            ((2048, 64, 128), "201", 4),
+        ):
+            long_warp = emit._emit_tiled_transpose3d_jit_kernel(
+                n0=shape[0], n1=shape[1], n2=shape[2], order=order, dtype="complex64", out_dir=tmp_path
+            )
+            assert long_warp["kernel_name"].endswith(f"_warp8_g{warps}")
+            assert long_warp["num_warps"] == warps
+        compact = emit._emit_tiled_transpose3d_jit_kernel(
+            n0=128, n1=33, n2=2048, order="210", dtype="complex64", out_dir=tmp_path
+        )
+        assert "warp8" not in compact["kernel_name"]
+
         with monkeypatch.context() as explicit:
             explicit.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "8")
             explicit_warps = emit._emit_tiled_transpose3d_jit_kernel(
