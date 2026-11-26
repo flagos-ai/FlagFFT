@@ -611,10 +611,21 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 1024, 2048));
   request.input_dtype = request.output_dtype = "complex128";
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 1024));
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 50));
+  request.batch = 2;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 2, 46189, 48));
+  request.batch = 4;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 3072));
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
   request.device_arch = "other";
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.device_arch = "102";
+  request.batch = 1;
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+  unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
 }
 
 TEST(Plan2D, MacaDensePolicyIsScopedToC550DenseMatrices) {
