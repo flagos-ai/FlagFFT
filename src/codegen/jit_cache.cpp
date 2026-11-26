@@ -439,6 +439,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                                      std::string(pair_store) == "1" ? "1" : "0");
     cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
   }
+  if (key.kind == KernelKind::FourStepCol && adaptor::backend_name() == "ix" &&
+      key.four_step_n1 == 1024 && key.four_step_n2 == 512) {
+    if (const char *setting = performance_env("FLAGFFT_IX_FOURSTEP_COL_TWIDDLE_RECURRENCE")) {
+      cache_key += ";ix-fourstep-col-recurrence=" + std::string(setting);
+    }
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "npu") {
     const char *transpose_store = performance_env("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
     const char *portable_leaf = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");

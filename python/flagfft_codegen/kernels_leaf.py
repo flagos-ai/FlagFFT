@@ -1558,6 +1558,12 @@ def _emit_stage_block(
     ) and vector_io_allowed and (
         not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io(dtype)
     )
+    ix_column_twiddle_recurrence = (
+        _ix_backend_active() and dtype == "complex64"
+        and stage == 0 and io_mode == "four_step_col" and not fuse_twiddle_into_row
+        and (four_step_n1, four_step_n2) == (1024, 512)
+        and _maca_knob("FOURSTEP_COL_TWIDDLE_RECURRENCE", "0") == "1"
+    )
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
         and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
@@ -1657,6 +1663,11 @@ def _emit_stage_block(
             f"(compact_rows < nbatch) & (compact_cols < {2*(n//2+1)}), 0.0)",
             f"{indent}compact_input = tl.reshape(compact_input,({smem_pack*compact_row},))",
         ]
+    if ix_column_twiddle_recurrence:
+        twiddle_stride = _time_major_stride(factors, 0) * four_step_n1
+        lines.extend(_emit_complex_boundary_load(
+            indent, f"twiddle_ptr + 2 * ({twiddle_stride} + four_step_inner)",
+            "lane_mask", "col_step_r", "col_step_i", dtype, vectorized_complex_io))
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
@@ -2132,7 +2143,22 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
-                if fuse_twiddle_into_row:
+                if ix_column_twiddle_recurrence:
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                        "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io))
+                    # Reload the exact table value every four digits to keep
+                    # the complex multiplication chain short.
+                    if j % 4 == 0:
+                        lines.extend(_emit_complex_boundary_load(
+                            indent, f"twiddle_ptr + src_idx{j} * 2",
+                            "lane_mask", "col_tw_r", "col_tw_i", dtype, vectorized_complex_io))
+                    else:
+                        lines.append(
+                            f"{indent}col_tw_r, col_tw_i = _cmul(col_tw_r, col_tw_i, col_step_r, col_step_i)"
+                        )
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, col_tw_r, col_tw_i)")
+                elif fuse_twiddle_into_row:
                     if vectorized_complex_io:
                         lines.extend(
                             _emit_vectorized_complex_load(

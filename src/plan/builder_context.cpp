@@ -166,13 +166,16 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     int64_t n1 = 0;
     const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
     const char *axes = std::getenv("FLAGFFT_IX_FOURSTEP_C2C_AXES");
-    if (n == 663000 && request.batch == 1 && request.fft_length == n &&
+    const bool power2_axes = n == 524288 && request.ix_fourstep_preset == 14 &&
+        request_context().max_dynamic_smem_bytes >= 128 * 1024;
+    if ((n == 663000 || power2_axes) &&
+        request.batch == 1 && request.fft_length == n &&
         request.real_transform_kind.empty() &&
         request.origin_real_transform_kind.empty() && request.input_layout == "contiguous" &&
         !request.requires_contiguous_copy && request.input_strides.size() == 2 &&
         request.input_strides.front() == n && request.input_strides.back() == 1 &&
         (!policy || std::string(policy) == "balanced") && (!axes || std::string(axes) == "1")) {
-      n1 = 1560;
+      n1 = n == 663000 ? 1560 : 1024;
     }
     // The override also covers a packed real child. Bluestein convolution
     // children use build_auto_node and retain their independently chosen split.

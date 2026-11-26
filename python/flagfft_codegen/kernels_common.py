@@ -380,6 +380,9 @@ def _maca_knob(name: str, default: str = "") -> str:
         elif preset==11 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", PORTABLE_LEAF="1", RECURRENCE="1",
                             WARPS="2", BATCH_PACK="1")
+        elif preset==14 and current_profile().policy=="balanced":
+            if ix_large_fourstep_default_enabled():
+                defaults.update(FOURSTEP_COL_TWIDDLE_RECURRENCE="1")
         elif preset and current_profile().policy == "balanced":
             defaults.update(RECURRENCE="1", VEC_IO="packed")
             if preset >= 7:
