@@ -398,8 +398,13 @@ def build_maca_3d_real_boundary(
 
 def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool) -> tuple[str, str]:
     precision = "fp64" if fp64 else "fp32"
-    name = f"maca_{precision}_3d_prime_outer16_{direction}"
-    source_layout, target_layout = ("middle_major", "half_major") if direction == "inverse" else (
+    inverse = direction == "inverse"
+    half_tile, middle_tile = (4, 16) if inverse else (16, 4)
+    middle_tiles = (997 + middle_tile - 1) // middle_tile
+    tiles_per_batch = ((33 + half_tile - 1) // half_tile) * middle_tiles
+    suffix = "_4x16" if inverse else ""
+    name = f"maca_{precision}_3d_prime_outer16_{direction}{suffix}"
+    source_layout, target_layout = ("middle_major", "half_major") if inverse else (
         "half_major", "middle_major"
     )
     source = _dif_column_helpers(16, direction, tile=64) + dedent(f"""
@@ -408,11 +413,11 @@ def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool) -> tuple[str, 
             block = tl.program_id(0)
             if block * 64 >= nbatch:
                 return
-            batch = block // 750
-            local = block % 750
+            batch = block // {tiles_per_batch}
+            local = block % {tiles_per_batch}
             lane = tl.arange(0, 64)
-            h = (local // 250) * 16 + lane // 4
-            m = (local % 250) * 4 + lane % 4
+            h = (local // {middle_tiles}) * {half_tile} + lane // {middle_tile}
+            m = (local % {middle_tiles}) * {middle_tile} + lane % {middle_tile}
             valid = (h < 33) & (m < 997)
             k = tl.arange(0, 16)
             pair = tl.arange(0, 2)[None, None, :]

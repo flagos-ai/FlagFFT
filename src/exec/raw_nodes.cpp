@@ -4719,10 +4719,11 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
     flagfftResult result;
     if (layout == Layout::FusedPrimeAxes) {
-      // Keep the odd middle-axis tail in each physical plane. The outer
-      // FFT uses 16 by 4 tiles over the half-spectrum and middle axis.
+      // Account for partial tiles separately in each physical plane or batch.
       n2_context.batch = batch * n0 * ceil_div(n1, 32) * 32;
-      n0_context.batch = batch * ceil_div(half, 16) * ceil_div(n1, 4) * 64;
+      const int64_t half_tile = inverse ? 4 : 16;
+      const int64_t middle_tile = inverse ? 16 : 4;
+      n0_context.batch = batch * ceil_div(half, half_tile) * ceil_div(n1, middle_tile) * 64;
       const auto &first = inverse ? n0_fft : n2_real_fft;
       const auto &last = inverse ? n2_real_fft : n0_fft;
       result = first->execute(input, temp1.get(), inverse ? n0_context : n2_context);
