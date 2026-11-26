@@ -970,7 +970,7 @@ def emit_jit_kernel(
         perm_form=perm_form,
     )
     if (spec.family == STOCKHAM or maca_dif_layout or maca_prime_dif or maca_split_column
-            or perm_form == "maca_packed_c2r_row"):
+            or perm_form == "maca_packed_c2r_row" or perm_form.startswith("maca_rader_four_step_")):
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):

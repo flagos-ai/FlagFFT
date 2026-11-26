@@ -57,9 +57,10 @@ def test_maca_rader_compact_indices_preserve_launch_order(tmp_path, axis, phase,
                   num_warps=2, generic_radices=(), smem_size=128, direction="forward",
                   dtype="complex64", prime_n=8191, four_step_n1=n1, four_step_n2=n2)
     prefix = f"maca_rader_four_step_{phase}"
-    wide = emit_jit_kernel(**config, perm_form=prefix, out_dir=tmp_path / "wide")
-    narrow = emit_jit_kernel(**config, perm_form=prefix + "_i16", out_dir=tmp_path / "narrow")
+    wide = emit_jit_kernel(**config, perm_form=prefix, out_dir=tmp_path)
+    narrow = emit_jit_kernel(**config, perm_form=prefix + "_i16", out_dir=tmp_path)
 
+    assert wide["module_path"] != narrow["module_path"]
     assert wide["arg_names"][0] == "idx_ptr"
     assert narrow["arg_names"] == ["idx16_ptr", *wide["arg_names"][1:]]
     assert wide["signature"].split(",")[0] == "*i32:16"
@@ -76,9 +77,10 @@ def test_maca_rader_sorted_scatter_keeps_the_int32_table_abi(tmp_path):
                   num_warps=2, generic_radices=(), smem_size=256, direction="forward",
                   dtype="complex64", prime_n=16381, four_step_n1=91, four_step_n2=180)
     phase = "maca_rader_four_step_scatter"
-    base = emit_jit_kernel(**config, perm_form=phase, out_dir=tmp_path / "base")
-    sorted_indices = emit_jit_kernel(**config, perm_form=phase + "_sorted", out_dir=tmp_path / "sorted")
+    base = emit_jit_kernel(**config, perm_form=phase, out_dir=tmp_path)
+    sorted_indices = emit_jit_kernel(**config, perm_form=phase + "_sorted", out_dir=tmp_path)
 
+    assert sorted_indices["module_path"] != base["module_path"]
     assert sorted_indices["arg_names"] == base["arg_names"]
     assert sorted_indices["signature"] == base["signature"]
     source = Path(sorted_indices["module_path"]).read_text()
