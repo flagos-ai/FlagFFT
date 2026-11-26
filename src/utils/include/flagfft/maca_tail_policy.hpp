@@ -186,6 +186,10 @@ inline bool maca_524288_packed_real_split_enabled(const FFTRequest& request) {
       maca_batch_packed_real_option_enabled(request, 262144, "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
 }
 
+inline bool maca_185640_packed_real_split_enabled(const FFTRequest& request) {
+  return maca_batch_packed_real_option_enabled(request, 92820, "FLAGFFT_MACA_185640_PACKED_REAL_SPLIT");
+}
+
 inline bool maca_16384_fp64_batch_split_enabled(const FFTRequest& request) {
   return request.input_dtype == "complex128" &&
       maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT", true);
@@ -306,6 +310,9 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_340200_packed_real_split_enabled(request)) return "batch-real340200-split";
   if (maca_16384_packed_real_split_enabled(request)) return "batch-real16384-split";
   if (maca_524288_packed_real_split_enabled(request)) return "batch-real524288-split";
+  if (maca_185640_packed_real_split_enabled(request)) {
+    return request.input_dtype == "complex128" ? "batch-real185640-p4" : "batch-real185640-p2";
+  }
   if (maca_16384_fp64_batch_split_enabled(request)) return "z2z16384-split";
   if (maca_524288_fp64_register_pack_enabled(request)) return "z2z524288-pack4";
   if (request.input_dtype == "complex128" &&
@@ -416,6 +423,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
       return kind == KernelKind::FourStepRow ? root : "batch-vecio";
     }
     if (root == "batch-real524288-split" && dtype == "complex64" && n1 == 256 && n2 == 1024) return root;
+    if (n1 == 420 && n2 == 221 &&
+        ((root == "batch-real185640-p2" && dtype == "complex64") ||
+         (root == "batch-real185640-p4" && dtype == "complex128"))) return root;
     if (root == "z2z16384-split" && dtype == "complex128" && n1 == 256 && n2 == 64) return root;
     if (root == "batch-vecio" && (dtype == "complex64" || dtype == "complex128") &&
         ((n1 == 256 && n2 == 64) || (n1 == 128 && n2 == 128) ||

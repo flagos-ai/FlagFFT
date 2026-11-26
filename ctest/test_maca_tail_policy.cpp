@@ -29,6 +29,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
                              "FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4",
                              "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_185640_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16_FP64_BATCH_PACK16",
                              "FLAGFFT_MACA_210_BATCH_RADIX6",
                              "FLAGFFT_MACA_RADER_CODELET",
@@ -479,6 +480,35 @@ TEST_F(TailPolicy, C550BatchedPackedReal524288AlternativesAreScoped) {
   r.input_dtype = r.output_dtype = "complex128";
   r.real_transform_kind = "d2z";
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
+}
+
+TEST_F(TailPolicy, C550BatchedPackedReal185640UsesTwoMeasuredLeafPacks) {
+  using flagfft::KernelKind;
+  auto r = request(92820, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {92820, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.direction = "inverse";
+  r.real_transform_kind = "c2r";
+  EXPECT_FALSE(flagfft::maca_185640_packed_real_split_enabled(r));
+
+  setenv("FLAGFFT_MACA_185640_PACKED_REAL_SPLIT", "1", 1);
+  flagfft::PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(92820, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 420);
+  EXPECT_EQ(plan->n2, 221);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-real185640-p2");
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "z2d";
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-real185640-p4");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex128", 221, 420, 221), mode);
+  r.batch = 1;
+  EXPECT_FALSE(flagfft::maca_185640_packed_real_split_enabled(r));
 }
 
 TEST_F(TailPolicy, C550ShortBatchedComplexOptionsStayLocal) {

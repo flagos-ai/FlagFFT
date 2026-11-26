@@ -164,6 +164,8 @@ def test_packed_663000_resources_match_manual_mode(tmp_path, monkeypatch, kernel
     ("c2c340200-split", "complex64", 567, 600, "packed", "4"),
     ("z2z340200-split", "complex128", 504, 675, "packed", "4"),
     ("batch-real340200-split", "complex64", 405, 420, "packed", "8"),
+    ("batch-real185640-p2", "complex64", 420, 221, "packed", "4"),
+    ("batch-real185640-p4", "complex128", 420, 221, "packed", "8"),
     ("z2z16384-split", "complex128", 256, 64, "1", "4"),
 ])
 def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n2, vec_io, max_warps):

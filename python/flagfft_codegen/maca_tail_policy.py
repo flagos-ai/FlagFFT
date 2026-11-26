@@ -35,6 +35,7 @@ def set_maca_tail_mode(mode):
                     "r2c663000", "batch-c2r663000", "batch-c2r663000-split", "c2c340200-split",
                     "z2z340200-split", "batch-real340200-split", "batch-real16384-split",
                     "batch-real524288-row4", "batch-real524288-split",
+                    "batch-real185640-p2", "batch-real185640-p4",
                     "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
@@ -85,6 +86,10 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
             return "batch-real524288-row4" if kernel == "four_step_row" else "batch-vecio"
         if _root_mode.get() == "batch-real524288-split" and (dtype, n1, n2) == ("complex64", 256, 1024):
             return "batch-real524288-split"
+        if (n1, n2) == (420, 221) and (_root_mode.get(), dtype) in {
+            ("batch-real185640-p2", "complex64"), ("batch-real185640-p4", "complex128"),
+        }:
+            return _root_mode.get()
         if _root_mode.get() == "z2z16384-split" and (dtype, n1, n2) == ("complex128", 256, 64):
             return "z2z16384-split"
         if (_root_mode.get() == "batch-c2r663000" and dtype in {"complex64", "complex128"}
@@ -147,6 +152,10 @@ def resource_default(name):
         return {"VEC_IO": "1", "FOURSTEP_ROW_PACK": "4"}.get(name)
     if _kernel_mode.get() == "batch-real524288-split":
         return {"VEC_IO": "1", "FOURSTEP_ROW_PACK": "4", "FOURSTEP_COL_PACK": "8"}.get(name)
+    if _kernel_mode.get() == "batch-real185640-p2":
+        return {"VEC_IO": "packed", "INNER_PACK": "2", "MAX_WARPS": "4"}.get(name)
+    if _kernel_mode.get() == "batch-real185640-p4":
+        return {"VEC_IO": "packed", "INNER_PACK": "4", "MAX_WARPS": "8"}.get(name)
     if _kernel_mode.get() == "z2z16384-split":
         return {"VEC_IO": "1", "EXCHANGE": "direct_all", "FOURSTEP_ROW_PACK": "4",
                 "FOURSTEP_COL_PACK": "8", "MAX_WARPS": "4"}.get(name)
