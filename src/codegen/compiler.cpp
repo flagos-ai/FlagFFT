@@ -4479,13 +4479,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
         }
       }
       const char *ix_policy = performance_env("FLAGFFT_EXECUTION_POLICY");
-      if (request.device_type == "ix" && request.device_arch == "71" &&
-          request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 && request.batch == batch &&
+      const bool ix_short_prime = request.device_type == "ix" && request.device_arch == "71" &&
+          request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == batch &&
           bluestein->length == 1009 && leaf->length == 2048 && request.requested_n == 1009 &&
           request.fft_length == request.requested_n &&
           !request.convolution_child && request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
           request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
-          (!ix_policy || std::string(ix_policy) == "balanced")) {
+          (!ix_policy || std::string(ix_policy) == "balanced");
+      if (ix_short_prime && batch == 64) {
         // The planner counts 32-thread warps, so eight translates to
         // four physical waves for the fused Bluestein kernel on IX71.
         fused_warps = 8;
@@ -4507,7 +4508,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                        fused_leaf.num_warps,
                                                        fused_leaf.generic_radices,
                                                        fused_leaf.smem_size);
-      if (!real_kind.empty()) fused_key.perm_form = real_kind;
+      if (!real_kind.empty()) {
+        fused_key.perm_form = real_kind;
+      } else if (ix_short_prime && batch == 1 && request.real_transform_kind.empty() &&
+                 request.origin_real_transform_kind.empty()) {
+        fused_key.perm_form = "ix_bluestein_recurrence";
+      }
       return std::make_shared<CompiledRawBluesteinFullLeafNode>(
           bluestein->length,
           bluestein->conv_length,
