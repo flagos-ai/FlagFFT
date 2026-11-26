@@ -159,8 +159,6 @@ TEST_F(TailPolicy, C550Packed663000ResourcesMatchMeasuredRequests) {
   r.real_transform = true;
   r.real_transform_kind = "r2c";
   r.direction = "forward";
-  EXPECT_FALSE(flagfft::maca_663000_real_enabled(r));
-  setenv("FLAGFFT_MACA_663000_REAL", "1", 1);
   EXPECT_TRUE(flagfft::maca_663000_real_enabled(r));
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
   r.packed_real_child = true;

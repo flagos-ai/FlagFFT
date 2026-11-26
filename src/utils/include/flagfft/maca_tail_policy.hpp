@@ -46,7 +46,7 @@ inline bool maca_663000_real_enabled(const FFTRequest& request) {
       request.requires_contiguous_copy || request.input_strides.empty() ||
       request.input_strides.back() != 1) return false;
   const char* setting = std::getenv("FLAGFFT_MACA_663000_REAL");
-  if (setting == nullptr || std::string(setting) != "1") return false;
+  if (setting && std::string(setting) != "1") return false;
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   if (plan && *plan) return false;
   const auto& kind = request.real_transform_kind;
