@@ -38,11 +38,15 @@ RUN python3 -m pip install --no-cache-dir --index-url "${TORCH_INDEX}" -r /tmp/f
         -r /tmp/flagfft-requirements.txt
 
 # Ubuntu 22.04 ships nlohmann-json3-dev 3.10.5 (< 3.11.3 required by bundled
-# libtriton_jit); Ubuntu 24.04 already ships >= 3.11.3.
-ARG NLOHMANN_JSON_DEB=nlohmann-json3-dev_3.11.3-2_all.deb
-ARG NLOHMANN_JSON_POOL=https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/n/nlohmann-json3
+# libtriton_jit); Ubuntu 24.04 LTS already ships 3.11.3-1 (SHA-256 from
+# Ubuntu 24.04 noble GPG-signed Packages index).
+ARG NLOHMANN_JSON_DEB=nlohmann-json3-dev_3.11.3-1_all.deb
+ARG NLOHMANN_JSON_SHA256=85e4e95dc4bdc6034d593e1933ee88e085319fee36cae83c178e8ddc1a66e8fd
+ARG NLOHMANN_JSON_POOL=https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/universe/n/nlohmann-json3
 RUN if dpkg --compare-versions "$(dpkg-query -W -f='${Version}' nlohmann-json3-dev)" lt "3.11.3"; then \
-        curl -fsSL -o "/tmp/${NLOHMANN_JSON_DEB}" "${NLOHMANN_JSON_POOL}/${NLOHMANN_JSON_DEB}" \
+        (curl -fsSL --connect-timeout 15 -o "/tmp/${NLOHMANN_JSON_DEB}" "${NLOHMANN_JSON_POOL}/${NLOHMANN_JSON_DEB}" \
+         || curl -fsSL -o "/tmp/${NLOHMANN_JSON_DEB}" "https://archive.ubuntu.com/ubuntu/pool/universe/n/nlohmann-json3/${NLOHMANN_JSON_DEB}") \
+        && echo "${NLOHMANN_JSON_SHA256}  /tmp/${NLOHMANN_JSON_DEB}" | sha256sum -c - \
         && dpkg -i "/tmp/${NLOHMANN_JSON_DEB}" && rm -f "/tmp/${NLOHMANN_JSON_DEB}"; \
     fi
 
@@ -60,7 +64,7 @@ RUN cp -r packaging/debian debian && \
     else suffix="${DEB_VERSION_SUFFIX}"; fi && \
     if [ -n "${suffix}" ]; then \
         base="$(dpkg-parsechangelog -l debian/changelog -SVersion)" && \
-        clean_base="${base%+ubuntu*}" && \
+        clean_base="$(printf '%s' "${base}" | sed -E 's/\+ubuntu[0-9]+\.[0-9]+$//')" && \
         if [ "${base}" != "${clean_base}${suffix}" ]; then \
             DEBFULLNAME="FlagOS Contributors" DEBEMAIL="contact@flagos.io" \
             dch -b -v "${clean_base}${suffix}" -D unstable --force-distribution \
