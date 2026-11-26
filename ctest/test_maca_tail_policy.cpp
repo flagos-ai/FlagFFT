@@ -310,14 +310,16 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow, "complex64", 900, 900, 378), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 900, 900, 378), "off");
-  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "1", 1);
-  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode);
   auto inverse = r;
   inverse.direction = "inverse";
   const auto inverse_mode = flagfft::maca_tail_codegen_root(inverse);
   EXPECT_EQ(inverse_mode, "c2c340200-inverse-pack");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378),
             inverse_mode);
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(inverse), mode);
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode);
   auto other = r;
   other.batch = 64;
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));

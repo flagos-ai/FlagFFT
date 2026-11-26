@@ -420,7 +420,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_340200_single_split_enabled(request)) {
     if (request.input_dtype == "complex128") return "z2z340200-single";
     const char* inverse_pack = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK");
-    return request.direction == "inverse" && inverse_pack && std::string_view(inverse_pack) == "1"
+    return request.direction == "inverse" && (!inverse_pack || std::string_view(inverse_pack) == "1")
         ? "c2c340200-inverse-pack" : "c2c340200-single";
   }
   if (maca_340200_batch_split_enabled(request)) {
