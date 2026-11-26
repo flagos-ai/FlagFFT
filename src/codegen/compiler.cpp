@@ -5097,7 +5097,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
           flag_or_default("FLAGFFT_IX_PACKED_C2R_TLE", true) &&
           adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
       if (ix_packed_tle) {
-        leaf = std::make_shared<LeafPlanNode>(packed, std::vector<int64_t>{16, 16, 16, 2}, 1,
+        leaf = std::make_shared<LeafPlanNode>(packed, std::vector<int64_t>{2, 16, 16, 16}, 1,
                                              packed / 16, 8, std::vector<int64_t>{}, packed);
       }
       if (leaf) {

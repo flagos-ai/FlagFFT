@@ -1276,60 +1276,61 @@ def _emit_portable_exchange(
 _IX_DISJOINT_MIXED_LENGTHS = {221, 425, 504, 675, 780, 1500, 1560}
 
 
-def _emit_ix_packed_c2r_prepare(n: int) -> list[str]:
-    # Reconstruct both packed frequencies from their shared Hermitian pair.
-    # This uses one boundary twiddle and one complex product for both.
+def _emit_ix_packed_c2r_radix2(n: int) -> list[str]:
+    # Fuse the Hermitian reconstruction with the first radix-two stage.
+    # The fixed Stockham route places its two digits at 2*k and 2*k+1.
+    half = n // 2
     shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
     swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
     packed_io = _packed_maca_fp32_complex_io("complex64")
     lines = [
-        f"    prepare_k = tl.arange(0, {n // 2}) + 1",
-        f"    prepare_q = {n} - prepare_k",
+        f"    prepare_k = tl.arange(0, {half // 2}) + 1",
+        f"    prepare_q = {half} - prepare_k",
         "    prepare_mask = batch_id < nbatch",
+        "    prepare_partner_mask = prepare_mask & (prepare_k != prepare_q)",
     ]
-    for ptr, real, imag in (
-        ("in_ptr + 2 * (input_batch_base + prepare_k)", "ar", "ai"),
-        ("in_ptr + 2 * (input_batch_base + prepare_q)", "br", "bi"),
-        ("packed_twiddle_ptr + 2 * prepare_k", "wr", "wi"),
+    for frequency, name in (
+        ("prepare_k", "a"),
+        (f"prepare_k + {half}", "b"),
+        ("prepare_q", "c"),
+        (f"prepare_q + {half}", "d"),
     ):
         lines.extend(_emit_complex_boundary_load(
-            "    ", ptr, "prepare_mask", real, imag, "complex64", packed_io))
+            "    ", f"in_ptr + 2 * (input_batch_base + {frequency})",
+            "prepare_mask", f"{name}r", f"{name}i", "complex64", packed_io))
+    lines.extend(_emit_complex_boundary_load(
+        "    ", "packed_twiddle_ptr + 2 * prepare_k", "prepare_mask", "wr", "wi",
+        "complex64", packed_io))
     lines.extend([
-        "    sum_r, sum_i = ar + br, ai - bi",
-        "    prod_r, prod_i = _cmul(ar - br, ai + bi, wr, -wi)",
-        "    prepare_r, prepare_i = sum_r - prod_i, sum_i + prod_r",
-        "    partner_r, partner_i = sum_r + prod_i, -sum_i + prod_r",
-        "    prepare_partner_mask = prepare_mask & (prepare_q != prepare_k)",
+        "    t_r, t_i = _cmul(ar - dr, ai + di, wr, -wi)",
+        "    u_r, u_i = _cmul(br - cr, bi + ci, wi, wr)",
+        "    k0_r, k0_i = ar + dr - t_i, ai - di + t_r",
+        "    k1_r, k1_i = br + cr - u_i, bi - ci + u_r",
+        "    q0_r, q0_i = br + cr + u_i, ci - bi + u_r",
+        "    q1_r, q1_i = ar + dr + t_i, di - ai + t_r",
     ])
-    for frequency, value, mask in (
-        ("prepare_k", "prepare", "prepare_mask"),
-        ("prepare_q", "partner", "prepare_partner_mask"),
-    ):
-        address = f"{frequency} ^ ({frequency} >> {shift})" if swizzle else frequency
-        for component in ("r", "i"):
-            lines.append(
-                f"    tl.store(tle.gpu.local_ptr(smem_b_{component}, ({address},)), "
-                f"{value}_{component}, {mask})"
-            )
+    for variant, mask in (("k", "prepare_mask"), ("q", "prepare_partner_mask")):
+        for digit, op in ((0, "+"), (1, "-")):
+            index = f"prepare_{variant}_address{digit}"
+            lines.append(f"    {index} = 2 * prepare_{variant} + {digit}")
+            address = f"{index} ^ ({index} >> {shift})" if swizzle else index
+            for component in ("r", "i"):
+                lines.append(
+                    f"    tl.store(tle.gpu.local_ptr(smem_b_{component}, ({address},)), "
+                    f"{variant}0_{component} {op} {variant}1_{component}, {mask})"
+                )
     lines.extend([
         "    dc = tl.load(in_ptr + 2 * input_batch_base, prepare_mask, 0.0)",
         f"    nyquist = tl.load(in_ptr + 2 * (input_batch_base + {n}), prepare_mask, 0.0)",
-        "    tl.store(tle.gpu.local_ptr(smem_b_r, (0,)), dc + nyquist, prepare_mask)",
-        "    tl.store(tle.gpu.local_ptr(smem_b_i, (0,)), dc - nyquist, prepare_mask)",
+        f"    middle_r = 2.0 * tl.load(in_ptr + 2 * (input_batch_base + {half}), prepare_mask, 0.0)",
+        f"    middle_i = -2.0 * tl.load(in_ptr + 2 * (input_batch_base + {half}) + 1, prepare_mask, 0.0)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_r, (0,)), dc + nyquist + middle_r, prepare_mask)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_i, (0,)), dc - nyquist + middle_i, prepare_mask)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_r, (1,)), dc + nyquist - middle_r, prepare_mask)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_i, (1,)), dc - nyquist - middle_i, prepare_mask)",
         "    tl.debug_barrier()",
     ])
     return lines
-
-
-def _emit_ix_twiddle_tree(indent: str, stage: int, digit: int) -> list[str]:
-    if digit == 1:
-        return [
-            f"{indent}tw_r{digit} = tl.load(tw{stage}_r_ptr + logical_phys{digit}, lane_mask, 0.0)",
-            f"{indent}tw_i{digit} = tl.load(tw{stage}_i_ptr + logical_phys{digit}, lane_mask, 0.0)",
-        ]
-    left = digit // 2
-    right = digit - left
-    return [f"{indent}tw_r{digit}, tw_i{digit} = _cmul(tw_r{left}, tw_i{left}, tw_r{right}, tw_i{right})"]
 
 
 def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
@@ -1480,7 +1481,6 @@ def _emit_stage_block(
     packed_smem_alias: bool = False,
     ix_split_frequency: bool = False,
     ix_split_c2r: bool = False,
-    ix_packed_c2r_prepare: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1970,9 +1970,6 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}i{j} = tl.load(in_ptr + input_batch_base + 2 * in{j} + 1, mask=lane_mask, other={zero})"
                     )
-            elif ix_packed_c2r_prepare:
-                index = f"in{j} ^ (in{j} >> {swizzle_shift})" if smem_swizzle else f"in{j}"
-                lines.extend(_emit_exchange_load(indent, "smem_b", index, j, False))
             elif io_mode == "packed_c2r":
                 lines.extend(
                     [
@@ -2405,11 +2402,7 @@ def _emit_stage_block(
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
             )
-            if recurrence and ix_packed_c2r_prepare:
-                if j:
-                    lines.extend(_emit_ix_twiddle_tree(indent, stage, j))
-                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
-            elif recurrence:
+            if recurrence:
                 # Each butterfly consumes powers of the digit-one root. The
                 # digit-zero root is exactly one, so it needs neither a load
                 # nor a multiply. Keep the recurrence scoped to measured FP32.
@@ -2455,8 +2448,7 @@ def _emit_stage_block(
                 lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
 
     smem_tail = permuted_smem_store and is_last
-    shared_read = stage > 0 or ix_packed_c2r_prepare or (
-        io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 1)
+    shared_read = stage > 0 or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 1)
     shared_write = not is_last or (io_mode in {"bluestein_full_leaf", "rader_full_leaf"} and bluestein_pass == 0)
     if ((single_smem_buffer and shared_read and shared_write) or smem_tail
             or (packed_smem_alias and is_last)):
@@ -3953,8 +3945,8 @@ def _build_leaf_kernel_source_for_io(
     )
     ix_packed_r2c_finish = (io_mode == "packed_r2c" and ix_packed_tle
                             and single_smem_buffer and batch_pack == 1)
-    ix_packed_c2r_prepare = (io_mode == "packed_c2r" and ix_packed_tle
-                             and single_smem_buffer and batch_pack == 1)
+    ix_c2r_radix2 = (io_mode == "packed_c2r" and ix_packed_tle
+                     and single_smem_buffer and batch_pack == 1)
     packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
                          and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
@@ -4110,8 +4102,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_c2r"
     if ix_packed_r2c_finish:
         kernel_name += "_tle_finish"
-    if ix_packed_c2r_prepare:
-        kernel_name += "_paired_prepare"
+    if ix_c2r_radix2:
+        kernel_name += "_radix2_prepare"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
@@ -4382,10 +4374,10 @@ def _build_leaf_kernel_source_for_io(
         last_source = "smem_b" if (len(factors) - 1) % 2 == 1 else "smem_a"
         intermediate_buffer = "smem_b" if single_smem_buffer else ("smem_a" if last_source == "smem_b" else "smem_b")
 
-    if ix_packed_c2r_prepare:
-        body.extend(_emit_ix_packed_c2r_prepare(n))
-
     for stage in range(len(factors)):
+        if ix_c2r_radix2 and stage == 0:
+            body.extend(_emit_ix_packed_c2r_radix2(n))
+            continue
         if ix_packed_r2c_finish and stage == len(factors) - 1:
             body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage))
             break
@@ -4421,7 +4413,6 @@ def _build_leaf_kernel_source_for_io(
                 packed_smem_alias=packed_smem_alias,
                 ix_split_frequency=ix_split_frequency,
                 ix_split_c2r=ix_split_c2r,
-                ix_packed_c2r_prepare=ix_packed_c2r_prepare,
             )
         )
 
