@@ -46,6 +46,7 @@ from .kernels_common import (
 from .kernels_layout import (
     _build_complex_pair_transpose_kernel_source,
     _build_flat_fp64_transpose3d_kernel_source,
+    _build_maca_warp_transpose3d_kernel_source,
     _build_packed_transpose_kernel_source,
     _build_paired_fp64_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
@@ -1175,12 +1176,22 @@ def _emit_tiled_transpose3d_jit_kernel(
         maca_mode = "tile32"
     if maca_mode not in {
         "tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "pair64x16",
-        "pair16rg2", "pair16sg2rg2", "v1",
+        "pair16rg2", "pair16sg2rg2", "warp8", "v1",
     }:
         raise ValueError(
             "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
-            "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2 or v1"
+            "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2, warp8 or v1"
         )
+    maca_warp_groups = 0
+    if maca_mode == "warp8":
+        if dtype == "complex64" and current_profile().device_arch == "102":
+            if (n0, n1, n2, order) in {(128, 64, 2048, "210"), (128, 33, 2048, "210")}:
+                maca_warp_groups = 8
+            elif ((n0, n1, n2) == (256, 256, 256) and order in {"021", "210", "201", "120"}
+                  or (n0, n1, n2, order) == (2048, 64, 128, "201")):
+                maca_warp_groups = 4
+        if not maca_warp_groups:
+            maca_mode = maca_mode_default
     if maca_mode == "pair16sg2rg2" and (
         dtype != "complex64"
         or tuple(sorted((n0, n1, n2)))
@@ -1277,7 +1288,12 @@ def _emit_tiled_transpose3d_jit_kernel(
         }
         if current_profile().device_arch != "102" or maca_warps != "4" or not (long_complex or long_real):
             fp64_mode = "tile16vec"
-    if maca_mode == "pair64x16" and _portable_transpose3d_supported():
+    if maca_warp_groups:
+        kernel_name, kernel_source, arg_names, grid_x = _build_maca_warp_transpose3d_kernel_source(
+            n0, n1, n2, order, maca_warp_groups,
+        )
+        maca_warps = str(maca_warp_groups)
+    elif maca_mode == "pair64x16" and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
             raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")
         if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
@@ -1518,6 +1534,8 @@ def _emit_tiled_transpose3d_jit_kernel(
         )
         kernel_name = kernel_name_with_warps
     module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}{warp_suffix}"
+    if maca_warp_groups:
+        module_name += f"_warp8_g{maca_warp_groups}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))

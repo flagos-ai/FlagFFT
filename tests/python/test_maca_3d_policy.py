@@ -203,6 +203,44 @@ def test_maca_3d_transpose_defaults(tmp_path, monkeypatch):
         set_codegen_target("")
 
 
+def test_maca_warp_transpose_uses_scoped_tile_groups(tmp_path, monkeypatch):
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+    from flagfft_codegen.target import set_codegen_target
+
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D", raising=False)
+    set_codegen_target("maca:102:64")
+    profile = set_profile(BackendProfile.from_device(
+        {"backend": "maca", "device_arch": "102", "warp_size": 64, "max_threads_per_block": 1024},
+        "legacy",
+    ))
+
+    def emit(shape, order, dtype="complex64"):
+        return _emit_tiled_transpose3d_jit_kernel(
+            n0=shape[0], n1=shape[1], n2=shape[2], order=order, dtype=dtype, out_dir=tmp_path,
+        )
+
+    try:
+        base = emit((256, 256, 256), "120")
+        monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D", "warp8")
+        for shape, order, warps in (
+            ((256, 256, 256), "120", 4),
+            ((128, 64, 2048), "210", 8),
+            ((128, 33, 2048), "210", 8),
+            ((2048, 64, 128), "201", 4),
+        ):
+            meta = emit(shape, order)
+            assert meta["kernel_name"].endswith(f"_warp8_g{warps}")
+            assert meta["num_warps"] == warps
+            assert meta["grid_x_override"] * warps * 64 == shape[0] * shape[1] * shape[2]
+            assert meta["arg_names"] == base["arg_names"]
+            assert meta["module_path"] != base["module_path"]
+        assert "warp8" not in emit((64, 64, 64), "210")["kernel_name"]
+        assert "warp8" not in emit((256, 256, 256), "120", "complex128")["kernel_name"]
+    finally:
+        reset_profile(profile)
+        set_codegen_target("")
+
+
 def test_maca_leaf_warp_override_is_validated(monkeypatch):
     from pathlib import Path
 

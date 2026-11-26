@@ -363,6 +363,51 @@ def _build_tiled_transpose3d_v2_kernel_source(
     )
 
 
+def _transpose3d_sliced_layout(s0: int, s1: int, s2: int, order: str) -> tuple[int, ...]:
+    # Slices, rows, columns, source slice/column strides, destination slice/row strides.
+    return {
+        "021": (s0, s2, s1, s1 * s2, s2, s2 * s1, s1),
+        "210": (s1, s2, s0, s2, s1 * s2, s0, s1 * s0),
+        "201": (s0, s2, s1, s1 * s2, s2, s1, s0 * s1),
+        "120": (s1, s2, s0, s2, s1 * s2, s2 * s0, s0),
+    }[order]
+
+
+def _build_maca_warp_transpose3d_kernel_source(
+    s0: int, s1: int, s2: int, order: str, groups: int,
+) -> tuple[str, str, list[str], int]:
+    """Use a warp-sized 8 × 8 tile for each group of complex FP32 pairs."""
+    slices, rows, cols, src_slice, src_col, dst_slice, dst_row = _transpose3d_sliced_layout(s0, s1, s2, order)
+    row_tiles, col_tiles = rows // 8, cols // 8
+    tiles_per_slice = row_tiles * col_tiles
+    total_tiles = slices * tiles_per_slice
+    if rows % 8 or cols % 8 or total_tiles % groups:
+        raise ValueError("MACA warp transpose requires whole 8 × 8 tiles and groups")
+    name = f"_maca_transpose3d_{order}_n{s0}_{s1}_{s2}_warp8_g{groups}"
+    source = dedent(f"""
+        @triton.jit
+        def {name}(in_ptr, out_ptr, nbatch):
+            tile = tl.program_id(0) * {groups} + tl.arange(0, {groups})
+            batch = tl.program_id(2).to(tl.int64)
+            slice_id = tile // {tiles_per_slice}
+            row_tile = tile % {row_tiles}
+            col_tile = (tile // {row_tiles}) % {col_tiles}
+            lane = tl.arange(0, 64)
+            src_r = row_tile[:, None] * 8 + (lane % 8)[None, :]
+            src_c = col_tile[:, None] * 8 + (lane // 8)[None, :]
+            base = batch * {s0 * s1 * s2}
+            src = base + slice_id[:, None] * {src_slice} + src_c * {src_col} + src_r
+            values = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.int64)) + src)
+            tiles = tl.reshape(values, ({groups}, 8, 8))
+            permuted = tl.reshape(tl.permute(tiles, (0, 2, 1)), ({groups}, 64))
+            dst_r = row_tile[:, None] * 8 + (lane // 8)[None, :]
+            dst_c = col_tile[:, None] * 8 + (lane % 8)[None, :]
+            dst = base + slice_id[:, None] * {dst_slice} + dst_r * {dst_row} + dst_c
+            tl.store(tl.cast(out_ptr, tl.pointer_type(tl.int64)) + dst, permuted)
+    """)
+    return name, source, ["in_ptr", "out_ptr", "nbatch"], total_tiles // groups
+
+
 def _build_tiled_transpose3d_tile_kernel_source(
     s0: int,
     s1: int,
@@ -412,52 +457,8 @@ def _build_tiled_transpose3d_tile_kernel_source(
     total_float = total_complex * 2
     scalar_width = 1 if pair else 2
     total_scalar = total_complex * scalar_width
-    transpose_descs = {
-        "021": dict(
-            num_slices=s0,
-            rows=s2,
-            cols=s1,
-            src_slice_stride=s1 * s2,
-            src_col_stride=s2,
-            dst_slice_stride=s2 * s1,
-            dst_row_stride=s1,
-        ),
-        "210": dict(
-            num_slices=s1,
-            rows=s2,
-            cols=s0,
-            src_slice_stride=s2,
-            src_col_stride=s1 * s2,
-            dst_slice_stride=s0,
-            dst_row_stride=s1 * s0,
-        ),
-        "201": dict(
-            num_slices=s0,
-            rows=s2,
-            cols=s1,
-            src_slice_stride=s1 * s2,
-            src_col_stride=s2,
-            dst_slice_stride=s1,
-            dst_row_stride=s0 * s1,
-        ),
-        "120": dict(
-            num_slices=s1,
-            rows=s2,
-            cols=s0,
-            src_slice_stride=s2,
-            src_col_stride=s1 * s2,
-            dst_slice_stride=s2 * s0,
-            dst_row_stride=s0,
-        ),
-    }
-    desc = transpose_descs[order]
-    num_slices = desc["num_slices"]
-    rows = desc["rows"]
-    cols = desc["cols"]
-    src_slice_stride = desc["src_slice_stride"]
-    src_col_stride = desc["src_col_stride"]
-    dst_slice_stride = desc["dst_slice_stride"]
-    dst_row_stride = desc["dst_row_stride"]
+    (num_slices, rows, cols, src_slice_stride, src_col_stride,
+     dst_slice_stride, dst_row_stride) = _transpose3d_sliced_layout(s0, s1, s2, order)
     num_tile_cols = (cols + tile_cols - 1) // tile_cols
     num_tile_rows = (rows + tile_rows - 1) // tile_rows
     tiles_per_slice = num_tile_cols * num_tile_rows
