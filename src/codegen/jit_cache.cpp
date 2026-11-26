@@ -37,9 +37,10 @@ namespace {
       {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
   };
 
-  constexpr std::pair<const char *, const char *> kIxPackedR2CTleDefaults[] = {
+  constexpr std::pair<const char *, const char *> kIxPackedRealTleDefaults[] = {
       {"FLAGFFT_IX_PACKED_R2C_TLE", "1"},
       {"FLAGFFT_IX_PACKED_R2C_INPUT", "1"},
+      {"FLAGFFT_IX_PACKED_C2R_TLE", "1"},
       {"FLAGFFT_IX_PORTABLE_LEAF", "0"},
       {"FLAGFFT_IX_BATCH_PACK", "1"},
       {"FLAGFFT_IX_SMEM_SWIZZLE", "1"},
@@ -272,15 +273,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
   const bool ix_bluestein_cta = key.perm_form == "ix_bluestein_cta";
-  const bool ix_packed_r2c_tle = key.perm_form == "ix_r2c_tle";
+  const bool ix_packed_real_tle = key.perm_form == "ix_r2c_tle" || key.perm_form == "ix_c2r_tle";
   if (ix_bluestein_cta) {
     for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
       const char *value = performance_env(name);
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
   }
-  if (ix_packed_r2c_tle) {
-    for (const auto &[name, default_value] : kIxPackedR2CTleDefaults) {
+  if (ix_packed_real_tle) {
+    for (const auto &[name, default_value] : kIxPackedRealTleDefaults) {
       const char *value = performance_env(name);
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
@@ -802,8 +803,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
   }
-  if (ix_packed_r2c_tle) {
-    for (const auto &[name, value] : kIxPackedR2CTleDefaults) {
+  if (ix_packed_real_tle) {
+    for (const auto &[name, value] : kIxPackedRealTleDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
     if (!performance_env("FLAGFFT_IX_WARPS")) jit_command << "FLAGFFT_IX_WARPS=" << key.num_warps << " ";

@@ -5088,6 +5088,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
         leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
       leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
+      const char *ix_batch_pack = performance_env("FLAGFFT_IX_BATCH_PACK");
+      const bool ix_packed_tle = leaf && n == 16384 && batch == 64 && request.ix_fourstep_preset == 7 &&
+          !performance_env("FLAGFFT_IX_PORTABLE_LEAF") && !performance_env("FLAGFFT_IX_LEAF_FACTORS") &&
+          !performance_env("FLAGFFT_IX_WARPS") && !performance_env("FLAGFFT_IX_CTA_RADIX_ORDER") &&
+          (!ix_batch_pack || std::string(ix_batch_pack) == "1") &&
+          !flag_or_default("FLAGFFT_IX_WARP_FFT", false) &&
+          flag_or_default("FLAGFFT_IX_PACKED_C2R_TLE", true) &&
+          adaptor::max_dynamic_smem_bytes(request.device_index) >= 128 * 1024;
+      if (ix_packed_tle) {
+        leaf = std::make_shared<LeafPlanNode>(packed, std::vector<int64_t>{16, 16, 16, 2}, 1,
+                                             packed / 16, 8, std::vector<int64_t>{}, packed);
+      }
       if (leaf) {
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),
@@ -5100,13 +5112,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             leaf->generic_radices,
             leaf->smem_size);
         key.kind = KernelKind::LeafPackedC2R;
+        if (ix_packed_tle) key.perm_form = "ix_c2r_tle";
         mark_hcu_packed_grid(key, packed_child->request, batch, *leaf);
         mark_ix_warp_fft(key,request);
         return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(
             n,
             compile_kernel(key),
             build_raw_packed_real_twiddle(request, n),
-            build_raw_leaf_tables(*leaf, packed_child->request,request.ix_fourstep_preset==7 || request.ix_fourstep_preset==8),
+            build_raw_leaf_tables(*leaf, packed_child->request,
+                                  request.ix_fourstep_preset == 7 || request.ix_fourstep_preset == 8,
+                                  ix_packed_tle),
             [node, request, batch]() {
               TritonCompiler compiler;
               return compiler.compile_raw_c2r_node(node, request, batch, false);

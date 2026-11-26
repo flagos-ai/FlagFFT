@@ -1442,12 +1442,14 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     )
 
 
-def ix_packed_r2c_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
-    return (_ix_backend_active() and current_profile().device_arch == "71"
-            and io_mode == "packed_r2c"
-            and ((n == 1024 and factors == (8, 8, 8, 2))
-                 or (n == 8192 and factors == (16, 16, 16, 2)))
-            and _maca_knob("PACKED_R2C_TLE", "0") == "1")
+def ix_packed_real_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
+    if not _ix_backend_active() or current_profile().device_arch != "71":
+        return False
+    large = n == 8192 and factors == (16, 16, 16, 2)
+    if io_mode == "packed_c2r":
+        return large and _maca_knob("PACKED_C2R_TLE", "0") == "1"
+    short = n == 1024 and factors == (8, 8, 8, 2)
+    return io_mode == "packed_r2c" and (short or large) and _maca_knob("PACKED_R2C_TLE", "0") == "1"
 
 
 def _leaf_single_smem_buffer_eligible(
@@ -1486,7 +1488,7 @@ def _leaf_single_smem_buffer_eligible(
         and 64 <= plan.length <= 4096 and plan.length & (plan.length - 1) == 0
         and all(radix in {2,4,8} for radix in plan.factors)
     )
-    ix_packed = ix_packed_r2c_tle(plan.length, plan.factors, io_mode)
+    ix_packed = ix_packed_real_tle(plan.length, plan.factors, io_mode)
     if io_mode not in {"contiguous", "strided"} and not (ix_boundary or ix_packed):
         return False
     stage_lanes = cooperative_stage_lanes_for(plan)
