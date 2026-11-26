@@ -190,7 +190,8 @@ inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
   const char* setting = std::getenv(fp64 ? "FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT"
                                          : "FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return (setting ? std::string_view(setting) == "1" : !fp64) && (!plan || !*plan) &&
+  const bool default_enabled = !fp64 || request.direction == "inverse";
+  return (setting ? std::string_view(setting) == "1" : default_enabled) && (!plan || !*plan) &&
       maca_tail_policy_enabled(request);
 }
 

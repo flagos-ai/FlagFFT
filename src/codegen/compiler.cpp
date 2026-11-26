@@ -4082,6 +4082,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                      adaptor::Memory(bytes));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    // The public Z2Z handle starts with the forward root. Select the measured
+    // inverse split when that root still uses the original 378 by 900 axes.
+    if (four_step->n1 == 378 && four_step->n2 == 900 && request.direction == "inverse" &&
+        request.input_dtype == "complex128" && maca_340200_single_split_enabled(request)) {
+      PlanBuilder builder;
+      if (auto inverse = std::dynamic_pointer_cast<FourStepPlanNode>(builder.build(four_step->length, request))) {
+        four_step = std::move(inverse);
+      }
+    }
     const int64_t n1 = four_step->n1, n2 = four_step->n2;
     if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
         request.input_dtype=="complex64" && request.output_dtype=="complex64" &&

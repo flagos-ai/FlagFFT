@@ -315,7 +315,7 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   other = r;
   other.input_dtype = other.output_dtype = "complex128";
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
-  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "1", 1);
+  other.direction = "inverse";
   EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
             flagfft::PlanKey::from_node(plan).repr());
@@ -324,6 +324,11 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepRow, "complex128", 900, 900, 378),
             fp64_mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), "off");
+  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "1", 1);
+  other.direction = "forward";
+  EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
   other = r;
   other.input_strides.front() += 1;
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
