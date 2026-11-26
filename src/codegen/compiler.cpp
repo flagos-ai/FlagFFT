@@ -1071,6 +1071,20 @@ namespace {
            adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
   }
 
+  int64_t ix_short_frequency_bands(const FFTRequest &request, int64_t n) {
+    if ((n != 1024 && n != 2048) || request.raw_dim != 1 || request.origin_rank > 1 ||
+        request.requested_n != n || request.fft_length != n || request.convolution_child ||
+        request.requires_contiguous_copy || request.input_layout != "contiguous" ||
+        !ix_real_single_pack_policy_enabled(request)) return 0;
+    const char *setting = performance_env("FLAGFFT_IX_CT_WAVE_BANDS");
+    if (!setting || std::string(setting) == "0") return 0;
+    const std::string value(setting);
+    if (value != "2" && value != "4" && value != "8" && value != "16")
+      throw std::runtime_error("FLAGFFT_IX_CT_WAVE_BANDS must be 0, 2, 4, 8 or 16");
+    const int64_t bands = std::stoll(value);
+    return n / bands <= 512 ? bands : 0;
+  }
+
   void mark_ix_warp_fourstep(KernelKey &key, const FFTRequest &request) {
     if (request.device_type!="ix" || request.device_arch!="71" || key.dtype!="complex64" ||
         !flag_or_default("FLAGFFT_IX_WARP_FOURSTEP",qualified_ix_short_real_warp(request)) ||
@@ -4964,9 +4978,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     }
   }
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
-    return std::make_shared<CompiledRawR2CLeafNode>(n,
-                                                    compile_leaf_r2c_kernel(*leaf, request),
-                                                    build_raw_leaf_tables(*leaf, request));
+    auto original = std::make_shared<CompiledRawR2CLeafNode>(n,
+        compile_leaf_r2c_kernel(*leaf, request), build_raw_leaf_tables(*leaf, request));
+    if (const auto bands = ix_short_frequency_bands(request, n); batch == 1 && bands > 0)
+      return compile_ix_wave_bands(n, bands, request, std::move(original));
+    return original;
   }
   DeviceAllocation complex_input = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
   DeviceAllocation full_output = adaptor::Memory(static_cast<std::size_t>(batch * n * element_bytes));
@@ -5186,6 +5202,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
           leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
     auto original = std::make_shared<CompiledRawC2RLeafNode>(
         n, compile_leaf_c2r_kernel(*leaf, request), build_raw_leaf_tables(*leaf, request));
+    if (const auto bands = ix_short_frequency_bands(request, n); batch == 1 && bands > 0)
+      return compile_ix_wave_bands(n, bands, request, std::move(original));
     if (n == 2048 && batch == 1 && request.real_transform_kind == "c2r" &&
         ix_real_single_pack_ && flag_or_default("FLAGFFT_IX_C2R_SPLIT_SINGLE", true)) {
       return compile_ix_split_leaf(n, request, "ix_split_c2r_frequency", std::move(original));
@@ -5226,6 +5244,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   auto original = std::make_shared<CompiledRawLeafNode>(leaf.length, std::move(kernel),
                                                         build_raw_leaf_tables(leaf, request));
+  if (const auto bands = ix_short_frequency_bands(request, leaf.length);
+      bands > 0 && request.real_transform_kind.empty())
+    return compile_ix_wave_bands(leaf.length, bands, request, std::move(original));
   if (request.device_type != "ix" || request.device_arch != "71" || leaf.length != 2048 ||
       request.requested_n != leaf.length || request.convolution_child ||
       !request.real_transform_kind.empty() || !ix_real_single_pack_policy_enabled(request) ||
@@ -5258,6 +5279,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_split_leaf(
   tables.push_back(build_raw_four_step_twiddle(request, half, 2));
   return std::make_shared<CompiledRawLeafNode>(
       length, compile_kernel(split_key), std::move(tables), std::move(fallback));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_wave_bands(
+    int64_t length, int64_t bands, const FFTRequest &request,
+    std::shared_ptr<CompiledRawNode> fallback) {
+  const auto axis = length / bands;
+  FFTRequest child = request;
+  child.fft_length = child.requested_n = child.n = axis;
+  child.input_shape = {1, axis};
+  child.input_strides = {axis, 1};
+  child.real_transform = false;
+  child.real_transform_kind.clear();
+  PlanBuilder builder;
+  const auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(builder.build(axis, child));
+  if (!leaf) return fallback;
+  auto key = KernelKey::leaf(triton_target_for_request(request), request.direction, request.input_dtype,
+      axis, leaf->factors, leaf->lanes, 1, leaf->generic_radices, leaf->smem_size);
+  key.perm_form = request.real_transform_kind.empty() ? "ix_band_c2c" : "ix_band_" + request.real_transform_kind;
+  key.ix_warp_fft_pack = 1;
+  key.permutation_span = bands;
+  return std::make_shared<CompiledRawLeafNode>(
+      length, compile_kernel(key), std::vector<DeviceAllocation>{}, std::move(fallback));
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,

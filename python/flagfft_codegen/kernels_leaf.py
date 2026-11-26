@@ -3748,6 +3748,12 @@ def _build_leaf_kernel_source_for_io(
     permutation_batch: int = 0,
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
+    ix_band_modes = {"ix_band_c2c": "contiguous",
+                     "ix_band_r2c": "contiguous_r2c",
+                     "ix_band_c2r": "c2r"}
+    if _ix_backend_active() and perm_form in ix_band_modes and io_mode == "contiguous":
+        from .kernels_ix_warp import build_ix_warp_bands
+        return build_ix_warp_bands(plan, permutation_span, ix_band_modes[perm_form])
     if (_ix_backend_active() and perm_form == "ix_prime_r2c_last" and
             io_mode == "strided_permuted_store" and plan.length == 16 and
             plan.direction == "forward" and plan.dtype == "complex64"):

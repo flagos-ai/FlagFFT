@@ -816,6 +816,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
       (key.perm_form == "ix_split_frequency" || key.perm_form == "ix_split_c2r_frequency");
+  const bool ix_wave_bands = key.kind == KernelKind::Leaf && key.perm_form.rfind("ix_band_", 0) == 0;
   if (npu_performance_defaults_active) {
     for (const auto &setting : kNpuPerformanceDefaults) {
       jit_command << setting.name << "=" << shell_quote(performance_env(setting.name)) << " ";
@@ -905,7 +906,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --npu-portable-leaf";
     }
   }
-  if (ix_split_frequency || key.kind == KernelKind::LeafPermutedStore ||
+  if (ix_split_frequency || ix_wave_bands || key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
@@ -1254,6 +1255,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
         kernel->kernel_name.find("_split_frequency") == std::string::npos)
       throw std::runtime_error("invalid IX split-frequency leaf");
     kernel->grid_x_override = 2;
+  }
+  if (ix_wave_bands) {
+    if (kernel->batch_per_block != 1 || kernel->num_warps != 1 ||
+        kernel->kernel_name.find("_frequency_bands") == std::string::npos)
+      throw std::runtime_error("invalid IX wave frequency-band leaf");
+    kernel->grid_x_override = key.perm_form == "ix_band_r2c" ? key.permutation_span / 2 + 1
+                                                            : key.permutation_span;
   }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
       (kernel->kernel_name == "ix_prime_r2c_last" ||

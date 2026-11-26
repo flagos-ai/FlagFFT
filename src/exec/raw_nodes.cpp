@@ -366,13 +366,16 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
     if (layout_fallback) {
       const auto separation = input < output ? output - input : input - output;
       const bool real_inverse = context.request.real_transform_kind == "c2r";
+      const bool real_forward = context.request.real_transform_kind == "r2c";
       const auto in_elements = real_inverse ? length / 2 + 1 : length;
+      const auto out_elements = real_forward ? length / 2 + 1 : length;
       const auto complex_bytes = complex_element_bytes(context.request.input_dtype);
+      const auto input_bytes = real_forward ? complex_bytes / 2 : complex_bytes;
       const auto output_bytes = real_inverse ? complex_bytes / 2 : complex_bytes;
-      const auto bytes = input < output ? in_elements * complex_bytes : length * output_bytes;
+      const auto bytes = input < output ? in_elements * input_bytes : out_elements * output_bytes;
       if (context.batch != 1 || separation < static_cast<adaptor::DevicePtr>(bytes) ||
           (context.input_distance > 0 && context.input_distance != in_elements) ||
-          (context.output_distance > 0 && context.output_distance != length)) {
+          (context.output_distance > 0 && context.output_distance != out_elements)) {
         return layout_fallback->execute(input, output, context);
       }
     }

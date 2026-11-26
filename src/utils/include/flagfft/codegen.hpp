@@ -1909,6 +1909,9 @@ class TritonCompiler {
   std::shared_ptr<CompiledRawNode> compile_ix_split_leaf(
       int64_t length, const FFTRequest &request, const std::string &form,
       std::shared_ptr<CompiledRawNode> fallback);
+  std::shared_ptr<CompiledRawNode> compile_ix_wave_bands(
+      int64_t length, int64_t bands, const FFTRequest &request,
+      std::shared_ptr<CompiledRawNode> fallback);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                     const FFTRequest &request,
                                                                     int64_t perm_span,

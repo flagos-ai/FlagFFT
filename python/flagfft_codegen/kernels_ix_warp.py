@@ -115,6 +115,61 @@ def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = 
     return build_ix_warp_source(256, pack, mode, inverse)
 
 
+def _emit_band_input(n, bands, mode, sign, digit):
+    """Fold the time groups for one residue class of the output frequency."""
+    length = n * bands
+    lines = []
+    for group in range(bands // 2):
+        for half in (0, 1):
+            address = (group + half * (bands // 2)) * n
+            lines += [f"    k=pos+{address}"]
+            if mode == "contiguous_r2c":
+                lines += [f"    r{half}t=tl.load(inp+k)"]
+            else:
+                if mode == "c2r":
+                    lines += [f"    pair=tl.load(ip+tl.minimum(k,{length}-k))"]
+                else:
+                    lines += ["    pair=tl.load(ip+k)"]
+                lines += [
+                    f"    r{half}t=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)",
+                    f"    i{half}t=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)",
+                ]
+                if mode == "c2r":
+                    lines += [
+                        f"    i{half}t=tl.where(k<={length//2},i{half}t,-i{half}t)",
+                        f"    i{half}t=tl.where((k==0)|(k=={length//2}),0.0,i{half}t)",
+                    ]
+        lines += ["    vr=r0t+pair_sign*r1t"]
+        if mode == "contiguous_r2c":
+            lines += ["    vi=tl.full((1,64),0.0,tl.float32)"]
+        else:
+            lines += ["    vi=i0t+pair_sign*i1t"]
+        if group == 0:
+            lines += ["    sum_r=vr", "    sum_i=vi"]
+        else:
+            lines += [
+                f"    sum_r=sum_r+vr*group_r{group}-vi*group_i{group}",
+                f"    sum_i=sum_i+vr*group_i{group}+vi*group_r{group}",
+            ]
+    lines += [
+        f"    angle=pos*band*{sign*2*math.pi/length:.17g}",
+        "    wr=tl.cos(angle)",
+        "    wi=tl.sin(angle)",
+        f"    x{digit}r=sum_r*wr-sum_i*wi",
+        f"    x{digit}i=sum_r*wi+sum_i*wr",
+    ]
+    return lines
+
+
+def build_ix_warp_bands(plan, bands, mode):
+    name, source = build_ix_warp_source(plan.length, 1, mode, plan.direction == "inverse",
+                                        fast_math=True, local_codelet=True, frequency_bands=bands)
+    leaf_name = "ix_" + name + "_leaf"
+    header = f"def {name}(inp,out,span,nbatch,input_distance,output_distance):"
+    return leaf_name, source.replace(header,
+        f"def {leaf_name}(in_ptr,out_ptr,nbatch):\n    inp=in_ptr\n    out=out_ptr", 1)
+
+
 def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bool = False,
                          *, recurrence: bool = False, fast_math: bool = False,
                          local_codelet: bool = False, manual_store: bool = False,
@@ -126,7 +181,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          strided_output_major: bool = False,
                          packed_output_transpose: bool = False,
                          dif_store: bool = False,
-                         ragged_r2c: bool = False) -> tuple[str, str]:
+                         ragged_r2c: bool = False,
+                         frequency_bands: int = 0) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -169,6 +225,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             raise ValueError("DIF store requires a supported FP32 wave with a permuted output")
     if ragged_r2c and (mode != "r2c" or manual_store):
         raise ValueError("ragged tiles require a regular R2C permuted store")
+    if frequency_bands and (frequency_bands not in {2,4,8,16}
+            or n * frequency_bands not in {1024,2048} or not 64 <= n <= 512
+            or pack != 1 or wide or lane_width != 64
+            or mode not in {"contiguous", "contiguous_r2c", "c2r"}):
+        raise ValueError("frequency bands require one FP32 1024- or 2048-point FFT")
     sign=1 if inverse else -1
     name=f'warp{n}_{mode}_p{pack}_{"inv" if inverse else "fwd"}'
     if four_step: name+=f'_other{four_step_other}'
@@ -178,6 +239,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if manual_store: name+='_manual'
     if output_radix_chunk: name+=f'_chunk{chunk}'
     if ragged_r2c: name+='_ragged'
+    if frequency_bands: name+=f'_frequency_bands{frequency_bands}'
     if lane_width!=64: name+=f'_lanes{lane_width}'
     if packed_gather: name+='_pairgather'
     if wide: name+='_f64'
@@ -213,7 +275,18 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         if mode in {'outer','r2c'}:
             outn=n//2+1 if mode=='r2c' else n
             a+=[f'    gbase=(row_base//span)*({outn}*span)+(row_base%span)+slot']
-    a+= ['    valid=row[:,None]<nbatch']
+    if frequency_bands:
+        a += ["    band=pid", "    pair_sign=tl.where((band&1)==0,1.0,-1.0)"]
+        if mode != "contiguous_r2c":
+            a += ["    ip=tl.cast(inp,tl.pointer_type(tl.uint64))"]
+        for group in range(1, frequency_bands // 2):
+            a += [
+                f"    angle=band*{sign*2*math.pi*group/frequency_bands:.17g}",
+                f"    group_r{group}=tl.cos(angle)",
+                f"    group_i{group}=tl.sin(angle)",
+            ]
+    else:
+        a += ['    valid=row[:,None]<nbatch']
     if packed_output_transpose:
         a += [f'    gbase=(row//span)*({n+1}*span)+row%span']
     if strided_input:
@@ -226,7 +299,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
     for j in range(radix):
         a+=[f'    pos=lane+{j*lane_width}']
-        if four_step:
+        if frequency_bands:
+            a += _emit_band_input(n, frequency_bands, mode, sign, j)
+        elif four_step:
             # Read adjacent columns together before routing each FFT to a warp.
             a += [f'    position=(tl.arange(0,64)[:,None]+{j*64})*{four_step_other}+row[None,:]']
             if mode=='four_step_real_row':
@@ -492,7 +567,26 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   f"    out_rev = {_reverse_lane_bits('out_lane', 6)}",
                   f"    freq = out_rev * {radix} + freq % {chunk} + {start}"]
         elif chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
-        if four_step:
+        if frequency_bands:
+            length = n * frequency_bands
+            a += [f"    target=freq[None,:]*{frequency_bands}+band"]
+            if mode == "c2r":
+                a += ["    tl.store(out+target,z)"]
+            elif mode == "contiguous_r2c":
+                a += [
+                    f"    negative=target>{length//2}",
+                    f"    independent=(band!=0)&(band!={frequency_bands//2})",
+                    "    imag_sign=tl.full((),0x8000000000000000,tl.uint64)",
+                    "    z=tl.where(negative,z^imag_sign,z)",
+                    f"    target=tl.where(negative,{length}-target,target)",
+                    f"    z=tl.where((target==0)|(target=={length//2}),z&0xffffffff,z)",
+                    "    out_pairs=tl.cast(out,tl.pointer_type(tl.uint64))",
+                    "    tl.store(out_pairs+target,z,~negative|independent)",
+                ]
+            else:
+                a += ["    out_pairs=tl.cast(out,tl.pointer_type(tl.uint64))",
+                      "    tl.store(out_pairs+target,z)"]
+        elif four_step:
             a += ['    ptr=out' if wide or mode=='four_step_c2r_col' else '    ptr=tl.cast(out,tl.pointer_type(tl.uint64))']
             if mode in row_modes:
                 a += [f'    address=matrix_base+row[:,None]*{n}+freq[None,:]']
