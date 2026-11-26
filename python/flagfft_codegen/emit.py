@@ -1118,7 +1118,7 @@ def _emit_tiled_transpose3d_jit_kernel(
         and maca_slice_group == "2"
     )
     fp64_mode = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "flat")
         if _declared_backend() == "maca"
         else "v1"
     )

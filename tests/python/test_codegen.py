@@ -2204,11 +2204,16 @@ def _maca_profile():
         ((2048, 64, 128), "021", False),
     ],
 )
-def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, flat):
+@pytest.mark.parametrize("mode", (None, "flat", "tile16vec"))
+def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, flat, mode):
     from flagfft_codegen.backend_profile import reset_profile, set_profile
     from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
 
-    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", "flat")
+    if mode is None:
+        monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
+    else:
+        monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", mode)
+    flat = flat and mode != "tile16vec"
     monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
     token = set_profile(_maca_profile())
     try:
