@@ -3131,12 +3131,20 @@ namespace {
   const char* maca_paired_real_boundary_form(const FFTRequest &request, int64_t n,
                                              int64_t batch, bool inverse) {
     if (request.device_type != "maca" || request.device_arch != "102" ||
-        request.origin_rank > 1 || request.raw_dim != 1 || n != 663000 ||
+        request.origin_rank > 1 || request.raw_dim != 1 ||
         request.fft_length != n || request.requested_n != n || batch != request.batch ||
-        (batch != 1 && batch != 64) || request.requires_contiguous_copy ||
-        !maca_flag_or_default("FLAGFFT_MACA_663000_PAIRED_REAL", true)) return nullptr;
-    const bool use_two_warps = batch == 1 && (inverse || request.input_dtype == "complex128");
-    return use_two_warps ? "maca_paired_real_boundary_w2" : "maca_paired_real_boundary_w4";
+        request.requires_contiguous_copy) return nullptr;
+    if (n == 663000 && (batch == 1 || batch == 64) &&
+        maca_flag_or_default("FLAGFFT_MACA_663000_PAIRED_REAL", true)) {
+      const bool use_two_warps = batch == 1 && (inverse || request.input_dtype == "complex128");
+      return use_two_warps ? "maca_paired_real_boundary_w2" : "maca_paired_real_boundary_w4";
+    }
+    const bool measured_batch = batch == 64 &&
+        (n == 185640 || n == 524288 || (n == 340200 && request.input_dtype == "complex64"));
+    const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+    return measured_batch && (!batch_policy || std::string(batch_policy) != "0") &&
+        maca_flag_or_default("FLAGFFT_MACA_BATCH_PAIRED_REAL", false)
+        ? "maca_paired_real_boundary_w4" : nullptr;
   }
 
   bool real_direct_dft_enabled(const PlanNodePtr &node,

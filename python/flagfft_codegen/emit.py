@@ -577,10 +577,14 @@ def _emit_r2c_pointwise_jit_kernel(
         elements_per_program *= rows_per_program
     maca_paired = perm_form in {"maca_paired_real_boundary_w2", "maca_paired_real_boundary_w4"}
     if maca_paired:
-        if not (_maca_backend_active() and current_profile().device_arch == "102" and n == 663000
+        measured_batch = perm_form == "maca_paired_real_boundary_w4" and (
+            n in {185640, 524288} or (n == 340200 and dtype == "complex64")
+        )
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and (n == 663000 or measured_batch)
                 and dtype in {"complex64", "complex128"}
                 and kernel in {"r2c_packed_postprocess", "c2r_packed_preprocess"}):
-            raise ValueError("the paired real boundary requires a packed 663000-point C550 FFT")
+            raise ValueError("the paired real boundary requires a supported packed C550 FFT")
         from .kernels_real import _build_maca_paired_real_boundary
 
         kernel_name, kernel_source, arg_names, elements_per_program = _build_maca_paired_real_boundary(

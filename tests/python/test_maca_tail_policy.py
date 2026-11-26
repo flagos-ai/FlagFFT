@@ -1,13 +1,15 @@
 """CPU-only checks of the precise native-request-scoped tail policy."""
+from inspect import signature
 from pathlib import Path
 import os
 import json
 import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
-from flagfft_codegen.emit import _rader_kernel_source, emit_jit_kernel
+from flagfft_codegen.emit import _emit_r2c_pointwise_jit_kernel, _rader_kernel_source, emit_jit_kernel
 from flagfft_codegen.maca_tail_policy import (
     ENV_NAMES, eligible_kernel_mode, maca_tail_kernel_scope, resource_default,
     reset_maca_tail_mode, set_maca_tail_mode, variant_suffix,
@@ -46,6 +48,25 @@ def emit(path, kernel="four_step_col", dtype="complex128", length=1024, n1=1024,
         direction="inverse" if kernel == "direct_dft_c2r" else "forward",
         dtype=dtype, prime_n=0, four_step_n1=n1, four_step_n2=n2, out_dir=path,
     )
+
+
+@pytest.mark.parametrize("length,dtype", [(185640, "complex128"), (340200, "complex64"), (524288, "complex64")])
+@pytest.mark.parametrize("inverse", [False, True])
+def test_paired_batch_real_boundary_keeps_distance_and_grid(tmp_path, monkeypatch, length, dtype, inverse):
+    triton = ModuleType("triton")
+    triton.language = ModuleType("triton.language")
+    triton.jit = lambda function: SimpleNamespace(arg_names=list(signature(function).parameters))
+    monkeypatch.setitem(sys.modules, "triton", triton)
+    monkeypatch.setitem(sys.modules, "triton.language", triton.language)
+    metadata = _emit_r2c_pointwise_jit_kernel(
+        kernel="c2r_packed_preprocess" if inverse else "r2c_packed_postprocess",
+        n=length, dtype=dtype, target="maca:102:64", out_dir=tmp_path,
+        perm_form="maca_paired_real_boundary_w4",
+    )
+    distance = "input_distance" if inverse else "output_distance"
+    assert metadata["arg_names"] == ["in_ptr", "twiddle_ptr", "out_ptr", distance, "nbatch"]
+    assert metadata["num_warps"] == 4
+    assert metadata["grid_x_override"] == (length // 4 + 256) // 256
 
 
 @pytest.mark.parametrize("kernel", ["four_step_row", "four_step_col"])
