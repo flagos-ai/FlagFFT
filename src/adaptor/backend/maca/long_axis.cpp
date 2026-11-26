@@ -226,6 +226,38 @@ __global__ void fft64_fp32_first(const float* input, float2* output, const float
   }
 }
 
+constexpr unsigned middle_tile_rows = 32;
+constexpr unsigned middle_tile_cols = 32;
+constexpr unsigned middle_warps = 4;
+constexpr unsigned middle_tiles_per_plane = (128 / middle_tile_rows) * (2048 / middle_tile_cols);
+
+__global__ void transpose_fp32_middle(const float2* input, float2* output) {
+  constexpr unsigned col_tiles = 2048 / middle_tile_cols;
+  constexpr unsigned tile_elements = middle_tile_rows * middle_tile_cols;
+  constexpr unsigned threads = middle_warps * wave;
+  __shared__ float2 tile[middle_tile_rows][middle_tile_cols + 1];
+  const unsigned batch_plane = blockIdx.x / middle_tiles_per_plane;
+  const unsigned plane = batch_plane % 64;
+  const unsigned block = blockIdx.x % middle_tiles_per_plane;
+  const unsigned row_start = (block / col_tiles) * middle_tile_rows;
+  const unsigned col_start = (block % col_tiles) * middle_tile_cols;
+  const auto base = static_cast<std::size_t>(batch_plane / 64) * 128 * 64 * 2048;
+
+  for (unsigned i = threadIdx.x; i < tile_elements; i += threads) {
+    const unsigned row = i / middle_tile_cols;
+    const unsigned col = i % middle_tile_cols;
+    const auto index = base + ((row_start + row) * 64 + plane) * 2048 + col_start + col;
+    tile[row][col] = input[index];
+  }
+  __syncthreads();
+  for (unsigned i = threadIdx.x; i < tile_elements; i += threads) {
+    const unsigned col = i / middle_tile_rows;
+    const unsigned row = i % middle_tile_rows;
+    const auto index = base + ((col_start + col) * 64 + plane) * 128 + row_start + row;
+    output[index] = tile[row][col];
+  }
+}
+
 }  // namespace
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis(
@@ -245,4 +277,12 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_ax
   return mcLaunchKernel(reinterpret_cast<const void*>(kernel),
                         dim3(batch * 128 * first_rows_per_plane / first_tile_rows),
                         dim3(first_warps * wave), args, 0, reinterpret_cast<mcStream_t>(stream));
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_middle(
+    const void* input, void* output, unsigned batch, void* stream) {
+  void* args[] = {&input, &output};
+  return mcLaunchKernel(reinterpret_cast<const void*>(transpose_fp32_middle),
+                        dim3(batch * 64 * middle_tiles_per_plane), dim3(middle_warps * wave), args,
+                        0, reinterpret_cast<mcStream_t>(stream));
 }

@@ -44,6 +44,8 @@ extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, co
                                              unsigned batch, bool innermost_fp64, void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_first(const void* input, void* output, const void* roots,
                                                         unsigned batch, bool inverse, void* stream);
+extern "C" int flagfft_maca_launch_long_axis_fp32_middle(const void* input, void* output, unsigned batch,
+                                                         void* stream);
 
 namespace {
 
@@ -131,10 +133,15 @@ std::string CompiledRawMacaFp32R2C2048Node::describe() const {
 flagfftResult CompiledRawMacaLongAxisNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                  const RawExecutionContext &context) const {
   // The hybrid plan passes the number of axis transforms, including all cubes.
-  const int64_t rows_per_cube = stage == Stage::LastFp32 ? 2048 * 64 : 128 * 2048;
+  const bool outer_axis_input = stage == Stage::LastFp32 || stage == Stage::MiddleFp32;
+  const int64_t rows_per_cube = outer_axis_input ? 2048 * 64 : 128 * 2048;
   const auto batch = static_cast<unsigned>(context.batch / rows_per_cube);
   const auto* src = reinterpret_cast<const void*>(input);
   auto* dst = reinterpret_cast<void*>(output);
+  if (stage == Stage::MiddleFp32) {
+    return flagfft_maca_launch_long_axis_fp32_middle(src, dst, batch, context.stream) == 0
+        ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+  }
   const int status = stage == Stage::FirstFp32
       ? flagfft_maca_launch_long_axis_fp32_first(src, dst, roots.data(), batch, inverse, context.stream)
       : flagfft_maca_launch_long_axis(src, dst, roots.data(), batch, stage == Stage::FirstFp64, context.stream);
@@ -147,6 +154,8 @@ std::string CompiledRawMacaLongAxisNode::describe() const {
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp64_first64_transpose, tile=32, warps=8)";
     case Stage::FirstFp32:
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_first64_transpose, tile=32, warps=4)";
+    case Stage::MiddleFp32:
+      return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_middle_transpose210, tile=32x32, warps=4)";
     case Stage::LastFp32:
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_last128_transpose, tile=16, warps=4)";
   }

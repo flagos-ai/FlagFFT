@@ -258,7 +258,7 @@ struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
 };
 
 struct CompiledRawMacaLongAxisNode final : CompiledRawNode {
-  enum class Stage { FirstFp64, FirstFp32, LastFp32 };
+  enum class Stage { FirstFp64, FirstFp32, MiddleFp32, LastFp32 };
 
   CompiledRawMacaLongAxisNode(DeviceAllocation roots, Stage stage, bool inverse = false)
       : roots(std::move(roots)), stage(stage), inverse(inverse) {}

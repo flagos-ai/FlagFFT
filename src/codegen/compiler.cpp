@@ -6718,6 +6718,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     const bool maca_first_dif = maca_dif_shape &&
         maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_FIRST", true);
     std::shared_ptr<CompiledRawNode> n2_fft;
+    std::shared_ptr<CompiledRawNode> sdk_middle;
     std::shared_ptr<CompiledRawNode> sdk_last;
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
     const bool maca_sdk_shape = maca_first_store_default && request.device_type == "maca" &&
@@ -6745,6 +6746,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         std::getenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL") ||
         std::getenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP");
     if (maca_sdk_shape && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_MIDDLE", false)) {
+      sdk_middle = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation{},
+          CompiledRawMacaLongAxisNode::Stage::MiddleFp32);
+    }
+    if (maca_sdk_shape && request.input_dtype == "complex64" &&
         maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_LAST", !maca_transpose_override)) {
       auto roots = make_maca_sdk_roots<float>(n0, request.direction == "inverse");
       sdk_last = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots),
@@ -6766,10 +6772,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
     const bool maca_outer_ct = maca_dif_shape &&
         maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_CT", true);
-    auto perm_210 = maca_outer_ct ? nullptr : compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    auto perm_210 = (maca_outer_ct || sdk_middle) ? nullptr
+        : compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
     const bool needs_final_transpose = maca_long_axis && !maca_outer_ct && !sdk_last;
-    std::shared_ptr<CompiledRawNode> n0_first;
+    auto n0_first = std::move(sdk_middle);
     std::shared_ptr<CompiledRawNode> n0_fft;
     if (maca_outer_ct) {
       const bool outer_dif = maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_DIF", true);
