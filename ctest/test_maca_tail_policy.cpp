@@ -16,7 +16,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
                              "FLAGFFT_MACA_BATCH_C2C_PACK2",
                              "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
-                             "FLAGFFT_MACA_BATCH_C2C_TREE"}) {
+                             "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -112,6 +112,41 @@ TEST_F(TailPolicy, ScopeExclusionsAndOverride) {
   EXPECT_EQ(flagfft::maca_tail_automatic_plan(real), "");
   setenv("FLAGFFT_MACA_TAIL_POLICY", "yes", 1);
   EXPECT_THROW(flagfft::maca_tail_automatic_plan(base), std::runtime_error);
+}
+
+TEST_F(TailPolicy, FusedC550PrimeDefaultScopeAndFallback) {
+  auto r = request(1009, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {1009, 1};
+  for (int64_t batch : {1, 64}) {
+    r.batch = batch;
+    EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+    EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");
+    const char* root_policy = batch == 1 ? "FLAGFFT_MACA_TAIL_POLICY" : "FLAGFFT_MACA_1D_BATCH";
+    setenv(root_policy, "0", 1);
+    EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+    unsetenv(root_policy);
+    setenv("FLAGFFT_MACA_PRIME_DIF", "0", 1);
+    EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+    unsetenv("FLAGFFT_MACA_PRIME_DIF");
+  }
+  setenv("FLAGFFT_MACA_TAIL_PLAN", "default", 1);
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  unsetenv("FLAGFFT_MACA_TAIL_PLAN");
+  r.real_transform = true;
+  r.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+  r.real_transform_kind.clear();
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  r.real_transform = false;
+  r.requested_n = r.fft_length = 997;
+  r.input_strides.front() = 997;
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  setenv("FLAGFFT_MACA_PRIME_DIF", "1", 1);
+  EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+  r.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
 }
 
 TEST_F(TailPolicy, NativeDescriptorKeepsOriginalApiAndRank) {

@@ -37,17 +37,23 @@ inline bool maca_663000_c2c_enabled(const FFTRequest& request) {
 }
 
 inline bool maca_prime_dif_requested(const FFTRequest& request) {
+  if (request.device_type != "maca" || request.device_arch != "102" ||
+      request.raw_dim != 1 || request.origin_rank > 1 ||
+      (request.batch != 1 && request.batch != 64) || request.convolution_child ||
+      request.packed_real_child || request.fft_length != request.requested_n ||
+      (request.requested_n != 997 && request.requested_n != 1009) ||
+      (request.input_dtype != "complex64" && request.input_dtype != "complex128") ||
+      request.output_dtype != request.input_dtype || request.input_layout != "contiguous" ||
+      request.requires_contiguous_copy || request.input_strides.empty() ||
+      request.input_strides.back() != 1 ||
+      (request.real_transform && request.real_transform_kind.empty())) return false;
   const char* setting = std::getenv("FLAGFFT_MACA_PRIME_DIF");
-  return setting && std::string(setting) == "1" &&
-      request.device_type == "maca" && request.device_arch == "102" &&
-      request.raw_dim == 1 && request.origin_rank <= 1 &&
-      (request.batch == 1 || request.batch == 64) && !request.convolution_child &&
-      !request.packed_real_child && request.fft_length == request.requested_n &&
-      (request.requested_n == 997 || request.requested_n == 1009) &&
-      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
-      request.output_dtype == request.input_dtype && request.input_layout == "contiguous" &&
-      !request.requires_contiguous_copy && !request.input_strides.empty() &&
-      request.input_strides.back() == 1;
+  if (setting) return std::string(setting) == "1";
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  if (request.requested_n != 1009 || (plan && *plan)) return false;
+  if (request.batch == 1) return maca_tail_policy_enabled(request);
+  const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+  return batch_policy == nullptr || std::string(batch_policy) != "0";
 }
 
 // An explicit old root experiment, including 'default', wins over the policy.
