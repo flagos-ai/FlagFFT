@@ -13,7 +13,6 @@
 // limitations under the License.
 #include <cstdio>
 #include <cstdlib>
-#include <string_view>
 
 #include "adaptor/adaptor.h"
 #include "c_api_internal.hpp"
@@ -437,25 +436,6 @@ flagfftResult build_plan(flagfftHandle *out, FlagFFTPlanDesc desc) {
     }
     const auto &request = plan->executable.forward_request;
     const auto kind = plan->executable.root->kind;
-    const char* maca_340200_graph = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_GRAPH");
-    const bool maca_single_graph = maca_340200_graph && std::string_view(maca_340200_graph) == "1" &&
-        maca_340200_single_split_enabled(request);
-    const bool maca_four_step_graph = kind == PlanNodeKind::FourStep && request.input_dtype == "complex64" &&
-        (maca_single_graph ||
-         maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_GRAPH", false));
-    const char* maca_prime_graph = std::getenv("FLAGFFT_MACA_BATCH_PRIME_RADER_GRAPH");
-    const bool maca_rader_graph = maca_prime_graph && std::string_view(maca_prime_graph) == "1" &&
-        std::dynamic_pointer_cast<CompiledRawMacaRaderFourStepNode>(plan->executable.forward) != nullptr;
-    if ((maca_four_step_graph || maca_rader_graph) &&
-        std::getenv("FLAGFFT_PROFILE_KERNELS") == nullptr) {
-      const auto wrap = [](std::shared_ptr<CompiledRawNode>& node) {
-        if (node && !node->is_single_kernel()) {
-          node = std::make_shared<CompiledRawGraphNode>(node);
-        }
-      };
-      wrap(plan->executable.forward);
-      wrap(plan->executable.inverse);
-    }
     const bool multi_launch_1d = !is_2d && !is_3d &&
         (kind == PlanNodeKind::FourStep || kind == PlanNodeKind::Bluestein || kind == PlanNodeKind::Rader);
     const bool real_2d = is_2d && (plan->desc.type == FLAGFFT_R2C || plan->desc.type == FLAGFFT_C2R);
