@@ -361,10 +361,11 @@ TEST_F(TailPolicy, C550BatchedPackedReal340200UsesTheMeasuredSplit) {
   r.real_transform_kind = "r2c";
   r.direction = "forward";
   flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_340200_PACKED_REAL_SPLIT", "0", 1);
   const auto baseline = flagfft::PlanKey::from_node(builder.build(170100, r)).repr();
   EXPECT_FALSE(flagfft::maca_340200_packed_real_split_enabled(r));
 
-  setenv("FLAGFFT_MACA_340200_PACKED_REAL_SPLIT", "1", 1);
+  unsetenv("FLAGFFT_MACA_340200_PACKED_REAL_SPLIT");
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(170100, r));
   ASSERT_NE(plan, nullptr);
   EXPECT_EQ(plan->n1, 405);

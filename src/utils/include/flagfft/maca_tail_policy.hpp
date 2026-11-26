@@ -152,7 +152,7 @@ inline bool maca_340200_batch_split_enabled(const FFTRequest& request) {
 }
 
 inline bool maca_batch_packed_real_option_enabled(const FFTRequest& request, int64_t length,
-                                                  const char* option) {
+                                                  const char* option, bool default_value = false) {
   if (request.device_type != "maca" || request.device_arch != "102" ||
       request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
       request.requested_n != length || request.fft_length != length ||
@@ -168,13 +168,13 @@ inline bool maca_batch_packed_real_option_enabled(const FFTRequest& request, int
   const char* setting = std::getenv(option);
   const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return setting && std::string(setting) == "1" &&
+  return (setting ? std::string(setting) == "1" : default_value) &&
       (!batch_policy || std::string(batch_policy) != "0") && (!plan || !*plan);
 }
 
 inline bool maca_340200_packed_real_split_enabled(const FFTRequest& request) {
   return request.input_dtype == "complex64" &&
-      maca_batch_packed_real_option_enabled(request, 170100, "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT");
+      maca_batch_packed_real_option_enabled(request, 170100, "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT", true);
 }
 
 inline bool maca_16384_packed_real_split_enabled(const FFTRequest& request) {
