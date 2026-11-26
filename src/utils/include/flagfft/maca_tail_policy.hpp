@@ -91,10 +91,13 @@ inline bool maca_663000_packed_column_pfa_enabled(const FFTRequest& request) {
     return false;
   }
   const char* setting = std::getenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA");
+  const bool legacy_inverse_override = request.batch == 64 && kind == "c2r" &&
+      std::getenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT");
   const char* real = std::getenv("FLAGFFT_MACA_663000_REAL");
   const char* batch = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  return setting && std::string(setting) == "1" && (!real || std::string(real) == "1") &&
+  return (setting ? std::string(setting) == "1" : !legacy_inverse_override) &&
+      (!real || std::string(real) == "1") &&
       (!plan || !*plan) && (request.batch == 1 ? maca_tail_policy_enabled(request) :
                            (!batch || std::string(batch) != "0"));
 }

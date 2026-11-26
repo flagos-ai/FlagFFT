@@ -204,6 +204,7 @@ TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
   r.real_transform_kind = "c2r";
   r.direction = "inverse";
   flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA", "0", 1);
   setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "0", 1);
   EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
   const auto baseline = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
@@ -240,7 +241,7 @@ TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
   r.real_transform_kind = "z2d";
   EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
   EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
-  setenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA", "1", 1);
+  unsetenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA");
   EXPECT_TRUE(flagfft::maca_663000_packed_column_pfa_enabled(r));
   r.batch = 1;
   EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
@@ -252,6 +253,14 @@ TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
   ASSERT_NE(packed, nullptr);
   EXPECT_EQ(packed->n1, 300);
   EXPECT_EQ(packed->n2, 1105);
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "1", 1);
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct340x975");
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  setenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA", "1", 1);
+  EXPECT_TRUE(flagfft::maca_663000_packed_column_pfa_enabled(r));
   r.input_strides.front() += 1;
   EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
 }
