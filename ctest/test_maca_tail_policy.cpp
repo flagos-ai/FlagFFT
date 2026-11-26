@@ -30,6 +30,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_340200_FP32_RADIX_ORDER",
                              "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE",
                              "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
                              "FLAGFFT_MACA_524288_FP64_SINGLE_Z2D",
@@ -526,6 +527,30 @@ TEST_F(TailPolicy, C550BatchedPackedReal16384UsesTheMeasuredSplit) {
   EXPECT_TRUE(flagfft::maca_16384_packed_real_split_enabled(r));
   r.input_strides.front() += 5;
   EXPECT_FALSE(flagfft::maca_16384_packed_real_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
+  using flagfft::KernelKind;
+  auto r = request(16384, "complex64");
+  r.device_arch = "102";
+  r.batch = 64;
+  r.input_layout = "contiguous";
+  r.input_strides = {16384, 1};
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), "c2c16384-row-twiddle");
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "1", 1);
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  ASSERT_EQ(mode, "c2c16384-row-twiddle");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex64", 256, 256, 64), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex64", 64, 256, 64), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex64", 128, 128, 128), "off");
+  r.batch = 1;
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex128";
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
 }
 
 TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {

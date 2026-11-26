@@ -261,6 +261,28 @@ def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n
     assert resource_default("VEC_IO") is None
 
 
+@pytest.mark.parametrize("direction", ["forward", "inverse"])
+def test_16384_fp32_row_twiddle_preserves_the_fourstep_launch_abi(tmp_path, direction):
+    set_maca_tail_mode("c2c16384-row-twiddle")
+    for axis, length, pack, warps in (("row", 256, 4, 4), ("col", 64, 8, 2)):
+        metadata = emit_jit_kernel(
+            kernel=f"four_step_{axis}", length=length, factors=(4,) * (4 if axis == "row" else 3),
+            lanes=length // 4, num_warps=2, generic_radices=(), smem_size=length,
+            direction=direction, dtype="complex64", prime_n=0, four_step_n1=256,
+            four_step_n2=64, out_dir=tmp_path,
+        )
+        assert metadata["tle_fused_twiddle"]
+        assert (metadata["inner_pack"], metadata["num_warps"]) == (pack, warps)
+        assert ("twiddle_ptr" in metadata["arg_names"]) == (axis == "row")
+        expected = ["in_ptr", "twiddle_ptr", "out_ptr"] if axis == "row" else ["in_ptr", "out_ptr"]
+        assert metadata["arg_names"][:len(expected)] == expected
+        source = Path(metadata["module_path"]).read_text()
+        assert ("tl.cos(outer_angle0)" in source) == (axis == "row")
+        assert "sin.approx.f32" not in source
+    assert eligible_kernel_mode("four_step_row", 128, "complex64", 128, 128) == "off"
+    assert eligible_kernel_mode("four_step_row", 256, "complex128", 256, 64) == "off"
+
+
 @pytest.mark.parametrize("axis,length,factors,lanes,pack", [
     ("row", 900, (10, 9, 10), 10, 2),
     ("col", 378, (7, 6, 9), 3, 4),

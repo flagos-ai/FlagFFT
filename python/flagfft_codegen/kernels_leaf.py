@@ -1392,7 +1392,8 @@ def _emit_stage_block(
         raise ValueError("FLAGFFT_CUDA_SMEM_SWIZZLE must be 0, 3, 4 or 5")
     cuda_smem_swizzle = (current_profile().backend == "cuda" and cuda_swizzle != "0" and
                         not portable_exchange and n & (n - 1) == 0)
-    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or cuda_smem_swizzle or (
+    maca_row_twiddle = fuse_twiddle_into_row and _maca_backend_active()
+    smem_swizzle = (fuse_twiddle_into_row and not maca_row_twiddle) or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1477,7 +1478,7 @@ def _emit_stage_block(
     # Gate both sides identically so fallback never reads undefined registers.
     mixed_direct_layout = (
         portable_exchange
-        and not fuse_twiddle_into_row
+        and (not fuse_twiddle_into_row or maca_row_twiddle)
         and tuple(stage_lanes or (lanes,) * len(factors))
         == tuple(n // factor for factor in factors)
     )
@@ -2743,14 +2744,18 @@ def _emit_stage_block(
                             f"{indent}outer_angle{j} = four_step_inner * out_idx{j} * "
                             f"{outer_twiddle_scale:.17g}"
                         )
-                        lines.append(
-                            f"{indent}tw_i{j}, tw_r{j} = "
-                            "tl.inline_asm_elementwise("
-                            '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
-                            f'"=f,=f,f", [outer_angle{j}], '
-                            "dtype=(tl.float32, tl.float32), "
-                            "is_pure=True, pack=1)"
-                        )
+                        if maca_row_twiddle:
+                            lines.append(f"{indent}tw_r{j} = tl.cos(outer_angle{j})")
+                            lines.append(f"{indent}tw_i{j} = tl.sin(outer_angle{j})")
+                        else:
+                            lines.append(
+                                f"{indent}tw_i{j}, tw_r{j} = "
+                                "tl.inline_asm_elementwise("
+                                '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                                f'"=f,=f,f", [outer_angle{j}], '
+                                "dtype=(tl.float32, tl.float32), "
+                                "is_pure=True, pack=1)"
+                            )
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )

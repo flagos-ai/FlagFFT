@@ -268,7 +268,8 @@ def _metadata(
             if override not in {"1", "2", "4"}:
                 raise ValueError("FLAGFFT_CUDA_DIRECT_DFT_WARPS must be auto, 1, 2 or 4")
             num_warps = int(override)
-    if tle_fused_twiddle and not (profile.backend == "hcu" and dtype == "complex64"):
+    if (tle_fused_twiddle and profile.backend != "maca"
+            and not (profile.backend == "hcu" and dtype == "complex64")):
         num_warps = min(8, num_warps * inner_pack)
     work_pack = max(batch_per_block, inner_pack)
     maca_backend = _portable_leaf_backend_active()

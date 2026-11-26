@@ -1439,7 +1439,7 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
             and n1 in {256,512,1024} and n2 in {256,512,1024}):
         return True
     if _portable_leaf_backend_active():
-        return False
+        return resource_default("ROW_TWIDDLE") == "1"
     if _hcu_backend_active():
         setting = os.getenv("FLAGFFT_HCU_FP32_ROW_TWIDDLE", "0")
         if setting not in {"0", "1"}:

@@ -441,6 +441,10 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_185640_packed_real_split_enabled(request)) {
     return request.input_dtype == "complex128" ? "batch-real185640-p4" : "batch-real185640-p2";
   }
+  if (request.input_dtype == "complex64" &&
+      maca_batch_c2c_option_enabled(request, 16384, "FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", false)) {
+    return "c2c16384-row-twiddle";
+  }
   if (maca_16384_fp64_batch_split_enabled(request)) return "z2z16384-split";
   if (maca_524288_fp64_register_pack_enabled(request)) return "z2z524288-pack4";
   if (request.packed_real_child && !maca_524288_fp64_single_z2d_mode(request).empty()) return "batch-vecio";
@@ -534,6 +538,9 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "batch-prime-vecio" &&
       (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
+  if (root == "c2c16384-row-twiddle" && dtype == "complex64" && n1 == 256 && n2 == 64 &&
+      ((kind == KernelKind::FourStepRow && length == n1) ||
+       (kind == KernelKind::FourStepCol && length == n2))) return root;
   if (((dtype == "complex64" && (root == "c2c340200-single" || root == "c2c340200-inverse-pack" ||
                                root == "c2c340200-batch-900x378")) ||
        (dtype == "complex128" && root == "z2z340200-single")) && n1 == 900 && n2 == 378 &&
