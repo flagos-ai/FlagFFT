@@ -129,6 +129,7 @@ def build_ix_ct_packed_inverse_source(plan, params):
     n = plan.length
     inner = 256
     groups = n // inner
+    reuse_inverse_root = n == 1024
     radix = inner // 64
     sign = 1
     name = f"ix_ct_two_wave_{n}_{inner}_inverse_packed_c2r"
@@ -144,6 +145,9 @@ def build_ix_ct_packed_inverse_source(plan, params):
         f"    op = tl.cast(out_ptr, tl.pointer_type(tl.uint64)) + row * {n}",
         "    roots = tl.cast(packed_twiddle_ptr, tl.pointer_type(tl.uint64))",
     ]
+    if reuse_inverse_root:
+        lines += [f"    shift = sample * {-math.pi / n:.17g}",
+                  "    inverse_wr = ld.fast_cosf(shift)", "    inverse_wi = ld.fast_sinf(shift)"]
     for group in range(groups):
         lines.extend([
             f"    k = sample + {group * inner}",
@@ -155,9 +159,25 @@ def build_ix_ct_packed_inverse_source(plan, params):
             f"    peer = tl.load(ip + {n} - k, row < nbatch, 0)",
             "    pr = tl.cast(tl.cast(peer, tl.uint32), tl.float32, bitcast=True)",
             "    pi = tl.cast(tl.cast(peer >> 32, tl.uint32), tl.float32, bitcast=True)",
-            "    root = tl.load(roots + k, row < nbatch, 0)",
-            "    wr = tl.cast(tl.cast(root, tl.uint32), tl.float32, bitcast=True)",
-            "    wi = tl.cast(tl.cast(root >> 32, tl.uint32), tl.float32, bitcast=True)",
+        ])
+        if not reuse_inverse_root:
+            lines += [
+                "    root = tl.load(roots + k, row < nbatch, 0)",
+                "    wr = tl.cast(tl.cast(root, tl.uint32), tl.float32, bitcast=True)",
+                "    wi = tl.cast(tl.cast(root >> 32, tl.uint32), tl.float32, bitcast=True)",
+            ]
+        elif group == 0:
+            lines += ["    wr = inverse_wr", "    wi = inverse_wi"]
+        else:
+            # Each input segment differs from the first by a constant phase.
+            phase = -math.pi * group / groups
+            cosine, sine = math.cos(phase), math.sin(phase)
+            cosine = 0.0 if abs(cosine) < 1e-14 else cosine
+            lines += [
+                f"    wr = inverse_wr * {cosine:.17g} - inverse_wi * ({sine:.17g})",
+                f"    wi = inverse_wr * {sine:.17g} + inverse_wi * ({cosine:.17g})",
+            ]
+        lines.extend([
             f"    xi = tl.where(k == 0, 0.0, i{group})",
             "    pi = tl.where(k == 0, 0.0, pi)",
             f"    dr = r{group} - pr",
