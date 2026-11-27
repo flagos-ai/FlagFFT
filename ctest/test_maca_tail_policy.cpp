@@ -547,22 +547,17 @@ TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
   r.batch = 64;
   r.input_layout = "contiguous";
   r.input_strides = {16384, 1};
-  const auto mode = flagfft::maca_tail_codegen_root(r);
-  ASSERT_EQ(mode, "c2c16384-row-twiddle");
-  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "0", 1);
-  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
-  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE");
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
-                                         "complex64", 256, 256, 64), mode);
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
-                                         "complex64", 64, 256, 64), mode);
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
-                                         "complex64", 128, 128, 128), "off");
-  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE", "1", 1);
   const auto phase_mode = flagfft::maca_tail_codegen_root(r);
-  EXPECT_EQ(phase_mode, "c2c16384-tiled-row-phase");
+  ASSERT_EQ(phase_mode, "c2c16384-tiled-row-phase");
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "0", 1);
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
+  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow,
+                                         "complex64", 256, 256, 64), phase_mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepCol,
                                          "complex64", 64, 256, 64), phase_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow,
+                                         "complex64", 128, 128, 128), "off");
   flagfft::PlanBuilder builder;
   const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(16384, r));
   ASSERT_NE(plan, nullptr);
@@ -571,15 +566,13 @@ TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
   const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
   ASSERT_NE(col, nullptr);
   EXPECT_EQ(col->factors, (std::vector<int64_t>{8, 8}));
-  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "0", 1);
-  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
-  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE");
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c16384-row-twiddle");
+  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE");
   r.batch = 1;
-  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
   EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
   r.batch = 64;
   r.input_dtype = r.output_dtype = "complex128";
-  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
   EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
 }
 

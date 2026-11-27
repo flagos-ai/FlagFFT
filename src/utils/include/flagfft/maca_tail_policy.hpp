@@ -299,7 +299,7 @@ inline bool maca_16384_fp32_batch_row_twiddle_enabled(const FFTRequest& request)
 
 inline bool maca_16384_fp32_batch_row_phase_enabled(const FFTRequest& request) {
   const char* setting = std::getenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE");
-  return setting && std::string_view(setting) == "1" && maca_16384_fp32_batch_row_twiddle_enabled(request);
+  return (!setting || std::string_view(setting) == "1") && maca_16384_fp32_batch_row_twiddle_enabled(request);
 }
 
 inline bool maca_524288_packed_real_split_enabled(const FFTRequest& request) {
