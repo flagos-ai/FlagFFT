@@ -5237,17 +5237,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     if (row_leaf != nullptr && col_leaf != nullptr) {
+      const char *plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+      const bool half_columns = four_step->n1 == 512 && four_step->n2 == 1024 &&
+          request.device_type == "maca" && request.device_arch == "102" &&
+          maca_1d_single_policy_ && batch == 1 && request.origin_rank <= 1 &&
+          request.requested_n == n && request.input_dtype == "complex64" &&
+          request.real_transform_kind == "r2c" && request.direction == "forward" &&
+          !request.convolution_child && !request.packed_real_child &&
+          (!plan || !*plan) && maca_tail_policy_enabled(request) &&
+          maca_flag_or_default("FLAGFFT_MACA_524288_FP32_R2C_HALF_COLUMNS", false);
+      const int64_t column_count = half_columns ? four_step->n1 / 2 + 1 : four_step->n1;
+      const int64_t scratch_pitch = half_columns ? (column_count + 7) / 8 * 8 : four_step->n1;
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
       DeviceAllocation stage1 =
-          adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));
+          adaptor::Memory(static_cast<std::size_t>(batch * four_step->n2 * scratch_pitch * element_bytes));
       return std::make_shared<CompiledRawR2CFourStepRealInHalfOutNode>(
           n,
           four_step->n1,
           four_step->n2,
-          compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+          column_count,
+          compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2, half_columns),
           build_raw_leaf_tables(*row_leaf, request,
               ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
-          compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
+          compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2, half_columns),
           build_raw_leaf_tables(*col_leaf, request,
               ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
@@ -5948,7 +5960,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_strided_kernel(
 std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(const LeafPlanNode &leaf,
                                                                              const FFTRequest &request,
                                                                              int64_t n1,
-                                                                             int64_t n2) {
+                                                                             int64_t n2,
+                                                                             bool half_columns) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_real_row(target,
@@ -5964,6 +5977,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(con
                                                 leaf.smem_size);
   mark_npu_portable_leaf(key, request);
   mark_ix_warp_fourstep(key, request);
+  if (half_columns) key.perm_form = "maca_r2c_half_columns";
   return compile_kernel(key);
 }
 
@@ -6035,7 +6049,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_strided_kernel(
 std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(const LeafPlanNode &leaf,
                                                                             const FFTRequest &request,
                                                                             int64_t n1,
-                                                                            int64_t n2) {
+                                                                            int64_t n2,
+                                                                            bool half_columns) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_r2c_col(target,
@@ -6051,6 +6066,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(cons
                                                leaf.smem_size);
   mark_npu_portable_leaf(key, request);
   mark_ix_warp_fourstep(key, request);
+  if (half_columns) key.perm_form = "maca_r2c_half_columns";
   return compile_kernel(key);
 }
 

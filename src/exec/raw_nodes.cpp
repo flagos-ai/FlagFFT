@@ -2462,6 +2462,7 @@ CompiledRawR2CFourStepRealInHalfOutNode::CompiledRawR2CFourStepRealInHalfOutNode
     int64_t length,
     int64_t n1,
     int64_t n2,
+    int64_t column_count,
     std::shared_ptr<JitKernel> row_kernel,
     std::vector<DeviceAllocation> row_tables,
     std::shared_ptr<JitKernel> col_kernel,
@@ -2471,6 +2472,7 @@ CompiledRawR2CFourStepRealInHalfOutNode::CompiledRawR2CFourStepRealInHalfOutNode
     : length(length),
       n1(n1),
       n2(n2),
+      column_count(column_count),
       row_kernel(std::move(row_kernel)),
       row_tables(std::move(row_tables)),
       col_kernel(std::move(col_kernel)),
@@ -2515,7 +2517,7 @@ flagfftResult CompiledRawR2CFourStepRealInHalfOutNode::execute(adaptor::DevicePt
                                            col_tables,
                                            output_distance,
                                            context.batch);
-    col_kernel->launch(context.stream, col_args, ceil_div(n1, col_kernel->inner_pack), context.batch, 1);
+    col_kernel->launch(context.stream, col_args, ceil_div(column_count, col_kernel->inner_pack), context.batch, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] R2CFourStepRealInHalfOut execute failed: %s\n", e.what());

@@ -245,6 +245,7 @@ def main() -> None:
             "maca_paired_real_boundary_w2",
             "maca_paired_real_boundary_w4",
             "maca_packed_c2r_row",
+            "maca_r2c_half_columns",
             "maca_real32_plane_dif",
             "maca_rader_four_step_plain",
             "maca_rader_four_step_gather",

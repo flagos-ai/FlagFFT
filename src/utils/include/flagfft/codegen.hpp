@@ -978,6 +978,7 @@ struct CompiledRawR2CFourStepRealInHalfOutNode final : CompiledRawNode {
   CompiledRawR2CFourStepRealInHalfOutNode(int64_t length,
                                           int64_t n1,
                                           int64_t n2,
+                                          int64_t column_count,
                                           std::shared_ptr<JitKernel> row_kernel,
                                           std::vector<DeviceAllocation> row_tables,
                                           std::shared_ptr<JitKernel> col_kernel,
@@ -992,6 +993,7 @@ struct CompiledRawR2CFourStepRealInHalfOutNode final : CompiledRawNode {
   int64_t length;
   int64_t n1;
   int64_t n2;
+  int64_t column_count;
   std::shared_ptr<JitKernel> row_kernel;
   std::vector<DeviceAllocation> row_tables;
   std::shared_ptr<JitKernel> col_kernel;
@@ -2113,7 +2115,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_four_step_real_row_kernel(const LeafPlanNode &leaf,
                                                                const FFTRequest &request,
                                                                int64_t n1,
-                                                               int64_t n2);
+                                                               int64_t n2,
+                                                               bool half_columns);
   std::shared_ptr<JitKernel> compile_four_step_hermitian_row_kernel(const LeafPlanNode &leaf,
                                                                     const FFTRequest &request,
                                                                     int64_t n1,
@@ -2133,7 +2136,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_four_step_r2c_col_kernel(const LeafPlanNode &leaf,
                                                               const FFTRequest &request,
                                                               int64_t n1,
-                                                              int64_t n2);
+                                                              int64_t n2,
+                                                              bool half_columns);
   std::shared_ptr<JitKernel> compile_four_step_c2r_col_kernel(const LeafPlanNode &leaf,
                                                               const FFTRequest &request,
                                                               int64_t n1,

@@ -1290,6 +1290,7 @@ def _emit_stage_block(
     prime_n: int = 0,
     four_step_n1: int = 0,
     four_step_n2: int = 0,
+    r2c_scratch_pitch: int = 0,
     smem_pack: int = 1,
     inner_pack: int = 1,
     fuse_twiddle_into_row: bool = False,
@@ -1404,7 +1405,7 @@ def _emit_stage_block(
     recurrent_col_twiddle = (
         io_mode == "four_step_col" and resource_default("COL_TWIDDLE_RECURRENCE") == "1"
     )
-    scratch_tile = int(resource_default("FOURSTEP_SCRATCH_TILE") or 0)
+    scratch_tile = 0 if r2c_scratch_pitch else int(resource_default("FOURSTEP_SCRATCH_TILE") or 0)
 
     def tiled_scratch_offset(row: str, col: str) -> str:
         # Both passes address scratch by column tile, row, then column within the tile.
@@ -1539,6 +1540,8 @@ def _emit_stage_block(
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
             width = four_step_n2 if io_mode in {"four_step_row","four_step_real_row","four_step_hermitian_row"} else four_step_n1
+            if r2c_scratch_pitch and io_mode == "four_step_r2c_col":
+                width = four_step_n1 // 2 + 1
             lines += [f"    inner_slot = lane_vec % {inner_pack}",
                       f"    lane = lane_vec // {inner_pack}",
                       "    four_step_inner = four_step_inner_base + inner_slot",
@@ -2188,8 +2191,10 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
+                src_offset = f"four_step_batch_base + src_idx{j}"
+                if r2c_scratch_pitch:
+                    src_offset = f"four_step_batch_base + in{j} * {r2c_scratch_pitch} + four_step_inner"
                 if fuse_twiddle_into_row or maca_rader_phase:
-                    src_offset = f"four_step_batch_base + src_idx{j}"
                     if scratch_tile:
                         src_offset = tiled_scratch_offset(f"in{j}", "four_step_inner")
                     if vectorized_complex_io:
@@ -2216,7 +2221,7 @@ def _emit_stage_block(
                         lines.extend(
                             _emit_vectorized_complex_load(
                                 indent,
-                                f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                                f"in_ptr + ({src_offset}) * 2",
                                 "lane_mask",
                                 f"r{j}, i{j}",
                                 dtype,
@@ -2224,11 +2229,11 @@ def _emit_stage_block(
                         )
                     else:
                         lines.append(
-                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                            f"{indent}r{j} = tl.load(in_ptr + ({src_offset}) * 2, "
                             f"mask=lane_mask, other={zero})"
                         )
                         lines.append(
-                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                            f"{indent}i{j} = tl.load(in_ptr + ({src_offset}) * 2 + 1, "
                             f"mask=lane_mask, other={zero})"
                         )
                     if recurrent_col_twiddle and j:
@@ -2783,8 +2788,9 @@ def _emit_stage_block(
                 "bluestein_four_step_prepare_row",
                 "bluestein_four_step_pointwise_row",
             }:
+                row_pitch = r2c_scratch_pitch or four_step_n1
                 lines.append(
-                    f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
+                    f"{indent}dst_idx{j} = four_step_inner * {row_pitch} + out_idx{j}"
                 )
                 if fuse_twiddle_into_row:
                     if _is_double_dtype(dtype) or _hcu_backend_active():
@@ -2843,6 +2849,9 @@ def _emit_stage_block(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
                 dst_offset = f"four_step_batch_base + dst_idx{j}"
+                store_mask = "lane_mask"
+                if r2c_scratch_pitch:
+                    store_mask = f"lane_mask & (out_idx{j} <= {four_step_n1 // 2})"
                 if scratch_tile:
                     dst_offset = tiled_scratch_offset("four_step_inner", f"out_idx{j}")
                 if vectorized_complex_io:
@@ -2852,24 +2861,34 @@ def _emit_stage_block(
                             f"out_ptr + ({dst_offset}) * 2",
                             f"r{j}",
                             f"i{j}",
-                            "lane_mask",
+                            store_mask,
                             dtype,
                         )
                     )
                 else:
                     lines.append(
-                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2, r{j}, mask=lane_mask)"
+                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2, r{j}, mask={store_mask})"
                     )
                     lines.append(
-                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2 + 1, i{j}, mask=lane_mask)"
+                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2 + 1, i{j}, mask={store_mask})"
                     )
             elif io_mode == "four_step_r2c_col":
+                length = four_step_n1 * four_step_n2
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}compact_mask{j} = lane_mask & (dst_idx{j} < {four_step_n1 * four_step_n2 // 2 + 1})"
-                )
+                if r2c_scratch_pitch:
+                    # Interior columns also supply the conjugate bins of the omitted columns.
+                    # DC and Nyquist columns already contain both members of their own pairs.
+                    lines.extend([
+                        f"{indent}mirrored{j} = dst_idx{j} > {length // 2}",
+                        f"{indent}mirror_valid{j} = (four_step_inner > 0) & (four_step_inner < {four_step_n1 // 2})",
+                        f"{indent}compact_mask{j} = lane_mask & (~mirrored{j} | mirror_valid{j})",
+                        f"{indent}dst_idx{j} = tl.where(mirrored{j}, {length} - dst_idx{j}, dst_idx{j})",
+                        f"{indent}i{j} = tl.where(mirrored{j}, -i{j}, i{j})",
+                    ])
+                else:
+                    lines.append(f"{indent}compact_mask{j} = lane_mask & (dst_idx{j} < {length // 2 + 1})")
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * output_distance + dst_idx{j}) * 2"
                 )
@@ -3737,6 +3756,16 @@ def _build_leaf_kernel_source_for_io(
         and (four_step_n1, four_step_n2) in {(64, 128), (128, 64)}
     ):
         raise ValueError("the packed C2R row requires inverse FP32 FourStep 64 × 128 or 128 × 64 on C550")
+    r2c_scratch_pitch = 0
+    if perm_form == "maca_r2c_half_columns":
+        if not (
+            _maca_backend_active() and current_profile().device_arch == "102"
+            and plan.dtype == "complex64" and plan.direction == "forward"
+            and io_mode in {"four_step_real_row", "four_step_r2c_col"}
+            and (four_step_n1, four_step_n2) == (512, 1024)
+        ):
+            raise ValueError("half-column scratch requires the FP32 R2C FourStep 512 × 1024 on C550")
+        r2c_scratch_pitch = (four_step_n1 // 2 + 8) // 8 * 8
     batched_permutation = perm_form.endswith("_batched")
     if batched_permutation:
         perm_form = perm_form.removesuffix("_batched")
@@ -4096,6 +4125,8 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_smstore"
     if maca_packed_c2r_row:
         kernel_name = f"maca_packed_c2r_row_{kernel_name}"
+    if r2c_scratch_pitch:
+        kernel_name = f"{kernel_perm_form}_{kernel_name}"
     if maca_rader_phase:
         kernel_name = f"{kernel_perm_form}_{prime_n}_{kernel_name}"
     if permutation_span:
@@ -4308,6 +4339,8 @@ def _build_leaf_kernel_source_for_io(
             four_step_inner_count = (
                 four_step_n2 if io_mode in row_modes else four_step_n1
             )
+            if r2c_scratch_pitch and io_mode == "four_step_r2c_col":
+                four_step_inner_count = four_step_n1 // 2 + 1
             body.append(f"    inner_slot = lane_vec % {inner_pack}")
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
@@ -4327,8 +4360,9 @@ def _build_leaf_kernel_source_for_io(
                 "(four_step_batch - four_step_batch_index * outer_stride)"
             )
         else:
+            pitch = r2c_scratch_pitch or four_step_n1
             body.append(
-                f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
+                f"    four_step_batch_base = four_step_batch * {pitch * four_step_n2}"
             )
         if maca_rader_phase == "scatter":
             body.append("    x0 = zero_ptr + four_step_batch * 2")
@@ -4402,6 +4436,7 @@ def _build_leaf_kernel_source_for_io(
                 prime_n=prime_n,
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
+                r2c_scratch_pitch=r2c_scratch_pitch,
                 smem_pack=smem_pack,
                 inner_pack=inner_pack,
                 fuse_twiddle_into_row=fuse_twiddle_into_row,
