@@ -343,8 +343,9 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
   other = r;
   other.input_dtype = other.output_dtype = "complex128";
+  setenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE", "0", 1);
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
-  setenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE", "1", 1);
+  unsetenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE");
   EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
             flagfft::PlanKey::from_node(plan).repr());

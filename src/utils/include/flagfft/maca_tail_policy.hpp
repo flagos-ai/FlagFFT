@@ -249,7 +249,7 @@ inline bool maca_340200_fp32_batch_900x378_enabled() {
 inline bool maca_340200_fp64_forward_column_phase_enabled(const FFTRequest& request) {
   const char* setting = std::getenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE");
   return request.input_dtype == "complex128" && request.direction == "forward" &&
-      setting && std::string_view(setting) == "1";
+      (!setting || std::string_view(setting) == "1");
 }
 
 inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
