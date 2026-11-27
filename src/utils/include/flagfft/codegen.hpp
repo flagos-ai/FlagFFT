@@ -1949,7 +1949,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_leaf_r2c_kernel(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<JitKernel> compile_leaf_r2c_permuted_store_kernel(
       const LeafPlanNode &leaf, const FFTRequest &request);
-  std::shared_ptr<JitKernel> compile_leaf_c2r_kernel(const LeafPlanNode &leaf, const FFTRequest &request);
+  std::shared_ptr<JitKernel> compile_leaf_c2r_kernel(const LeafPlanNode &leaf, const FFTRequest &request,
+                                                      const std::string &perm_form = "outer");
   std::shared_ptr<JitKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                           const FFTRequest &request,
                                                           int64_t n1,

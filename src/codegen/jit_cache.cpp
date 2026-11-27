@@ -972,6 +972,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_split_frequency || ix_wave_bands || key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
+      (key.kind == KernelKind::LeafC2R && key.perm_form == "outer_c2r_chunk16") ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
@@ -1332,7 +1333,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
       (kernel->kernel_name == "ix_prime_r2c_last" ||
-       (key.perm_form == "outer_strided" && kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+       ((key.perm_form == "outer_strided" || key.perm_form == "outer_strided_chunk16") &&
+        kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
         kernel->kernel_name.find("_stridedinput") != std::string::npos) ||
        (kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
         kernel->kernel_name.find("_stridedinput") != std::string::npos))) {

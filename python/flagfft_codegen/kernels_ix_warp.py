@@ -273,6 +273,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          strided_input: bool = False,
                          strided_output_major: bool = False,
                          packed_output_transpose: bool = False,
+                         packed_c2r_input: bool = False,
                          dif_store: bool = False,
                          ragged_r2c: bool = False,
                          frequency_bands: int = 0,
@@ -300,6 +301,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("output-major row tiles require strided input")
     if packed_output_transpose and mode != "packed_r2c":
         raise ValueError("packed output transpose requires a forward real boundary")
+    if packed_c2r_input and (mode != "c2r" or wide):
+        raise ValueError("packed input requires an FP32 inverse real boundary")
     row_modes={'four_step_row','four_step_real_row','four_step_hermitian_row'}
     col_modes={'four_step_col','four_step_r2c_col','four_step_c2r_col'}
     if mode not in {"contiguous","outer","inner","r2c","contiguous_r2c","c2r","packed_r2c","packed_c2r"}|row_modes|col_modes:
@@ -345,6 +348,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if strided_input: name+='_stridedinput'
     if strided_output_major: name+='_outtile'
     if packed_output_transpose: name+='_transpose'
+    if packed_c2r_input: name+='_packedin'
     if dif_store: name+='_dif'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
@@ -474,10 +478,16 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   f'        x{j}i=tl.load(inp+row[:,None]*input_distance+pos*2+1,valid,0.0)']
         elif mode=='c2r':
             a+= [f'    hpos=tl.where(pos<={n//2},pos,{n}-pos)',
-                 '    offset=row[:,None]*input_distance+hpos',
-                 f'    x{j}r=tl.load(inp+offset*2,valid,0.0)',
-                 f'    x{j}i=tl.load(inp+offset*2+1,valid,0.0)',
-                 f'    x{j}i=tl.where(pos<={n//2},x{j}i,-x{j}i)']
+                 '    offset=row[:,None]*input_distance+hpos']
+            if packed_c2r_input:
+                a += ['    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
+                      '    pair=tl.load(ip+offset,valid,0)',
+                      f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
+                      f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
+            else:
+                a += [f'    x{j}r=tl.load(inp+offset*2,valid,0.0)',
+                      f'    x{j}i=tl.load(inp+offset*2+1,valid,0.0)']
+            a += [f'    x{j}i=tl.where(pos<={n//2},x{j}i,-x{j}i)']
             if wide:a += [f'    x{j}i=tl.where((pos==0)|(pos=={n//2}),0.0,x{j}i)']
         elif mode in {'r2c','contiguous_r2c'}:
             a+=[f'    x{j}r=tl.load(inp+row[:,None]*input_distance+pos,valid,0.0)',
@@ -776,11 +786,13 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     input_padding = 16 if perm_form.endswith("_padinput16") else 0
     output_padding = 16 if perm_form.endswith("_padoutput16") else 0
     perm_form = perm_form.removesuffix("_padinput16").removesuffix("_padoutput16")
+    packed_c2r_input = perm_form == "outer_c2r_chunk16"
+    square_chunk = packed_c2r_input or perm_form == "outer_strided_chunk16"
     single_output = perm_form.endswith("_dif_chunk1")
     four_outputs = perm_form.endswith("_dif_chunk4")
     perm_form = perm_form.removesuffix("_chunk1").removesuffix("_chunk4")
     dif_store = perm_form.endswith("_dif")
-    strided_columns = perm_form == "outer_strided"
+    strided_columns = perm_form in {"outer_strided", "outer_strided_chunk16"}
     mode = {
         "contiguous":"contiguous", "contiguous_c2r":"c2r",
         "contiguous_r2c":"contiguous_r2c",
@@ -793,11 +805,14 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
         chunk = 1
     elif four_outputs:
         chunk = 4
+    if square_chunk:
+        chunk = 16
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c,
                                     strided_input=strided_columns,
+                                    packed_c2r_input=packed_c2r_input,
                                     input_padding=input_padding, output_padding=output_padding)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']

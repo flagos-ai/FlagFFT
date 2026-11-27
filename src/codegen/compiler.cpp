@@ -1028,7 +1028,7 @@ namespace {
                       family && key.length!=256;
     if (!narrow && !wide && !small_leaf) return;
     const bool strided_columns = key.kind == KernelKind::LeafStridedPermutedStore &&
-                                key.perm_form == "outer_strided";
+        (key.perm_form == "outer_strided" || key.perm_form == "outer_strided_chunk16");
     const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
                           key.kind == KernelKind::LeafR2CPermutedStore || strided_columns;
     if (!permuted && key.kind != KernelKind::Leaf && key.kind != KernelKind::LeafC2R &&
@@ -5623,7 +5623,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_r2c_permuted_store_kerne
 }
 
 std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPlanNode &leaf,
-                                                                   const FFTRequest &request) {
+                                                                   const FFTRequest &request,
+                                                                   const std::string &perm_form) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::leaf_c2r(target,
@@ -5635,6 +5636,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_leaf_c2r_kernel(const LeafPla
                                       leaf.num_warps,
                                       leaf.generic_radices,
                                       leaf.smem_size);
+  key.perm_form = perm_form;
   mark_ix_warp_fft(key, request);
   mark_npu_portable_leaf(key, request);
   return compile_kernel(key);
@@ -8668,8 +8670,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
 
   const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
+  const bool ix_packed_square = n0 == 2048 && n1 == 2048 && batch == 1 && ix_nd_pack > 0;
   const bool ix_direct_columns_default = (n0 < 2048 && batch == 1) ||
-      (n0 == 2048 && batch == 4 && ix_nd_pack > 0);
+      ix_packed_square || (n0 == 2048 && batch == 4 && ix_nd_pack > 0);
   const bool ix_direct_columns = request.device_type == "ix" && request.device_arch == "71" &&
       request.origin_rank == 2 && request.raw_dim == 2 && request.input_layout == "contiguous" &&
       !request.requires_contiguous_copy && request.input_dtype == "complex64" &&
@@ -8679,9 +8682,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
       flag_or_default("FLAGFFT_IX_2D_C2R_DIRECT_COLS", ix_direct_columns_default);
   if (ix_direct_columns) {
     col_request.ix_warp_fft_pack_default = n0 == 2048 ? 4 : 2;
-    row_request.ix_warp_fft_pack_default = n1 == 2048 ? 4 : 2;
-    auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, "outer_strided", true);
-    auto row_c2r = compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
+    row_request.ix_warp_fft_pack_default = n1 == 2048 && !ix_packed_square ? 4 : 2;
+    const char *column_form = ix_packed_square ? "outer_strided_chunk16" : "outer_strided";
+    auto col_fft = compile_raw_permuted_store_leaf(*ix_col_leaf, col_request, half_n1, column_form, true);
+    std::shared_ptr<CompiledRawNode> row_c2r = ix_packed_square
+        ? std::make_shared<CompiledRawC2RLeafNode>(n1,
+              compile_leaf_c2r_kernel(*ix_row_leaf, row_request, "outer_c2r_chunk16"),
+              build_raw_leaf_tables(*ix_row_leaf, row_request))
+        : compile_raw_c2r_node(node->row_plan, row_request, batch * n0, false);
     const auto bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     return std::make_shared<CompiledRaw2DC2RRCNode>(n0, n1, std::move(col_fft), nullptr,
                                                    std::move(row_c2r), nullptr,

@@ -3848,8 +3848,10 @@ def _build_leaf_kernel_source_for_io(
                             "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
             and perm_form.removesuffix("_padinput16").removesuffix("_padoutput16") in {
                 "outer", "inner", "outer_dif", "inner_dif", "outer_dif_chunk1",
-                "inner_dif_chunk1", "outer_dif_chunk4", "outer_strided"}
-            and (io_mode == "strided_permuted_store") == (perm_form == "outer_strided")):
+                "inner_dif_chunk1", "outer_dif_chunk4", "outer_strided",
+                "outer_strided_chunk16", "outer_c2r_chunk16"}
+            and (io_mode == "strided_permuted_store") == (
+                perm_form in {"outer_strided", "outer_strided_chunk16"})):
         from .kernels_ix_warp import build_ix_warp256_leaf_source
         return build_ix_warp256_leaf_source(
             plan,io_mode,perm_form,_leaf_kernel_params_for_io(plan,io_mode=io_mode),
