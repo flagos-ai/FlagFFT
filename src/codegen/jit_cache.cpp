@@ -877,6 +877,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       (key.kind == KernelKind::Leaf && (key.perm_form.rfind("maca_fp64_", 0) == 0 ||
                                        key.perm_form.rfind("maca_fp32_", 0) == 0 ||
                                        key.perm_form.rfind("maca_3d_prime_", 0) == 0)) ||
+      (key.kind == KernelKind::LeafC2R && key.perm_form == "maca_fp32_c2r210_pfa") ||
       (key.kind == KernelKind::LeafBluestein && key.perm_form.rfind("maca_prime_dif_", 0) == 0) ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);

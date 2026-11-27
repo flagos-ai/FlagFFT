@@ -226,6 +226,7 @@ def main() -> None:
             "maca_fp64_c2r48_from_columns",
             "maca_fp32_3d_c2r64",
             "maca_fp32_fft210_pfa",
+            "maca_fp32_c2r210_pfa",
             "maca_3d_prime_r2c64",
             "maca_3d_prime_c2r64",
             "maca_3d_prime_outer16",

@@ -268,6 +268,25 @@ def test_fp32_210_pfa_has_no_external_twiddle_tables(tmp_path, direction):
         emit_jit_kernel(**{**config, "dtype": "complex128"})
 
 
+def test_fp32_210_c2r_pfa_preserves_compact_leaf_distances(tmp_path):
+    config = dict(kernel="leaf_c2r", length=210, factors=(7, 5, 3, 2), lanes=1,
+                  num_warps=2, generic_radices=(), smem_size=256, direction="inverse",
+                  dtype="complex64", prime_n=0, four_step_n1=0, four_step_n2=0,
+                  out_dir=tmp_path, perm_form="maca_fp32_c2r210_pfa")
+    meta = emit_jit_kernel(**config)
+    assert meta["kernel_name"] == "maca_fp32_c2r210_pfa_inverse"
+    assert meta["arg_names"] == ["in_ptr", "out_ptr", "input_distance", "output_distance", "nbatch"]
+    assert [entry.split(":")[0] for entry in meta["signature"].split(",")] == [
+        "*fp32", "*fp32", "i64", "i64", "i32",
+    ]
+    assert (meta["batch_per_block"], meta["num_warps"]) == (2, 2)
+    source = Path(meta["module_path"]).read_text()
+    assert "compact = tl.minimum(physical, 210 - physical)" in source
+    assert "tl.store(out_ptr + dst, r, valid)" in source
+    with pytest.raises(ValueError):
+        emit_jit_kernel(**{**config, "direction": "forward"})
+
+
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
 def test_32_real_plane_dif_keeps_the_boundary_arguments(tmp_path, direction):
     from flagfft_codegen.kernels_small_3d import emit_fused_32_real_plane_kernel

@@ -753,6 +753,10 @@ def emit_jit_kernel(
     }
     maca_real48_forward = perm_form in {"maca_fp32_r2c48_to_columns", "maca_fp64_r2c48_to_columns"}
     maca_real48_inverse = perm_form == "maca_fp64_c2r48_from_columns"
+    maca_c2r210 = perm_form == "maca_fp32_c2r210_pfa"
+    if maca_c2r210 and kernel != "leaf_c2r":
+        raise ValueError("the compact C550 210-point PFA requires the C2R leaf ABI")
+    maca_pfa210 = perm_form == "maca_fp32_fft210_pfa" or maca_c2r210
     maca_dif_layout = {
         "maca_fp64_dif": (2048, 2, 1),
         "maca_fp64_dif_w4": (2048, 4, 1),
@@ -772,11 +776,12 @@ def emit_jit_kernel(
         "maca_fp64_c2r48_from_columns": (48, 2, 16),
         "maca_fp32_3d_c2r64": (64, 2, 32),
         "maca_fp32_fft210_pfa": (210, 2, 2),
+        "maca_fp32_c2r210_pfa": (210, 2, 2),
         "maca_3d_prime_r2c64": (64, 4, 32),
         "maca_3d_prime_c2r64": (64, 4, 32),
         "maca_3d_prime_outer16": (16, 4, 64),
         "maca_3d_prime_outer16_wide": (16, 8, 128),
-    }.get(perm_form) if kernel == "leaf" else None
+    }.get(perm_form) if kernel == "leaf" or maca_c2r210 else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
     maca_packed_column = perm_form in {
         "maca_split_column1105_prepare_t16", "maca_split_column1105_finish_t16",
@@ -828,8 +833,8 @@ def emit_jit_kernel(
     elif maca_dif_layout:
         required_length, maca_warps, maca_pack = maca_dif_layout
         prime_axes = perm_form.startswith("maca_3d_prime_")
-        fp32_leaf = perm_form in {
-            "maca_fp32_3d_c2r64", "maca_fp32_fft210_pfa", "maca_fp32_r2c48_to_columns",
+        fp32_leaf = maca_pfa210 or perm_form in {
+            "maca_fp32_3d_c2r64", "maca_fp32_r2c48_to_columns",
             "maca_fp32_packed_dif1024_gather",
         }
         required_dtypes = (("complex64", "complex128") if prime_axes else
@@ -837,10 +842,10 @@ def emit_jit_kernel(
         if not (_maca_backend_active() and current_profile().device_arch == "102"
                 and dtype in required_dtypes and length == required_length):
             raise ValueError(f"{perm_form} requires a {required_length}-point C550 transform of {required_dtypes}")
-        if perm_form == "maca_fp32_fft210_pfa":
+        if maca_pfa210:
             from .kernels_maca_pfa import build_maca_fp32_fft210_pfa
 
-            kernel_name, kernel_source = build_maca_fp32_fft210_pfa(direction)
+            kernel_name, kernel_source = build_maca_fp32_fft210_pfa(direction, real_inverse=maca_c2r210)
         elif perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide"}:
             from .kernels_maca_dif import build_maca_3d_prime_real_outer
 
@@ -1018,7 +1023,7 @@ def emit_jit_kernel(
         radices = (3, 8)
     elif perm_form == "maca_fp64_dif_terminal8":
         radices = (8,)
-    elif perm_form == "maca_fp32_fft210_pfa":
+    elif maca_pfa210:
         radices = (5, 6, 7)
     elif maca_rader_pfa_scatter:
         radices = tuple(sorted(codelet_radices_for(pfa_radices)))

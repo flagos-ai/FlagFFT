@@ -5508,6 +5508,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     }
   }
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+    if (request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 && batch == request.batch &&
+        n == 210 && leaf->length == n && request.fft_length == n &&
+        request.direction == "inverse" && request.real_transform_kind == "c2r" &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        !request.packed_real_child && !request.convolution_child &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        request.input_strides == std::vector<int64_t>{106, 1} &&
+        maca_flag_or_default("FLAGFFT_MACA_1D_BATCH", true) &&
+        maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_C2R_PFA", false)) {
+      auto key = KernelKey::leaf_c2r(triton_target_for_request(request), request.direction, request.input_dtype,
+          n, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
+      key.perm_form = "maca_fp32_c2r210_pfa";
+      return std::make_shared<CompiledRawC2RLeafNode>(n, compile_kernel(key), std::vector<DeviceAllocation>{});
+    }
     auto factors = hcu_real_inverse_factors(request, *leaf);
     if (factors != leaf->factors)
       leaf = std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
