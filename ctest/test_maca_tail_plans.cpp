@@ -101,17 +101,48 @@ void expect_legal(const PlanNodePtr& node) {
   }
 }
 
+TEST_F(MacaTailPlans, C550SingleFp64Prime524287UsesBalancedBluestein) {
+  auto request = request_for(524287, true);
+  request.device_arch = "102";
+  setting.set("bs1048576");
+  PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<BluesteinPlanNode>(builder.build(524287, request));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->conv_length, 1048576);
+  expect_legal(plan);
+  const auto convolution = std::dynamic_pointer_cast<FourStepPlanNode>(plan->fft_plan);
+  ASSERT_NE(convolution, nullptr);
+  EXPECT_EQ(convolution->n1, 1024);
+  EXPECT_EQ(convolution->n2, 1024);
+  EXPECT_NE(std::dynamic_pointer_cast<LeafPlanNode>(convolution->row_plan), nullptr);
+  EXPECT_NE(std::dynamic_pointer_cast<LeafPlanNode>(convolution->col_plan), nullptr);
+
+  setting.set(nullptr);
+  EXPECT_NE(key(builder.build(524287, request)), key(plan));
+  policy.set(nullptr);
+  EXPECT_EQ(key(builder.build(524287, request)), key(plan));
+  setting.set("default");
+  EXPECT_NE(key(builder.build(524287, request)), key(plan));
+  setting.set(nullptr);
+  request.requires_contiguous_copy = true;
+  EXPECT_NE(key(builder.build(524287, request)), key(plan));
+}
+
 struct Experiment {
   int64_t n;
   bool fp64;
   std::vector<std::string> names;
 };
+const std::vector<std::string> splits_663000 = {
+  "ct375x1768", "ct650x1020", "ct780x850", "ct680x975", "ct975x680",
+  "ct884x750", "ct750x884", "ct663x1000", "ct1000x663",
+};
 const std::vector<Experiment> experiments = {
   {997, true, {"bs2000", "bs2048"}},
   {1009, false, {"rader1008", "bs2048"}},
   {1048576, true, {"ct512x2048", "ct1024x1024"}},
-  {663000, false, {"ct375x1768", "ct650x1020", "ct780x850"}},
-  {663000, true, {"ct375x1768", "ct650x1020", "ct780x850"}},
+  {663000, false, splits_663000},
+  {663000, true, splits_663000},
   {328050, false, {"ct450x729", "ct486x675", "ct405x810"}},
   {328050, true, {"ct450x729", "ct486x675", "ct405x810"}},
 };

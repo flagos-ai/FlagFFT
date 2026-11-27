@@ -45,6 +45,29 @@ elseif(BACKEND STREQUAL "MACA")
         ${CMAKE_CURRENT_LIST_DIR}/backend/maca/adaptor.cpp
     )
     target_link_libraries(flagfft PRIVATE MACA::mcruntime)
+    find_program(FLAGFFT_MACA_MXCC mxcc PATHS "${MACA_PATH}/mxgpu_llvm/bin" NO_DEFAULT_PATH)
+    find_library(FLAGFFT_MACA_COMPILER_RUNTIME mccompiler PATHS "${MACA_PATH}/lib" NO_DEFAULT_PATH)
+    if(FLAGFFT_MACA_MXCC AND FLAGFFT_MACA_COMPILER_RUNTIME)
+        set(maca_native_objects)
+        foreach(maca_kernel IN ITEMS fft16 fft23 fft210 r2c2048 long_axis cube_transpose)
+            set(maca_source "${CMAKE_CURRENT_LIST_DIR}/backend/maca/${maca_kernel}.cpp")
+            set(maca_object "${CMAKE_CURRENT_BINARY_DIR}/${maca_kernel}_maca.o")
+            add_custom_command(OUTPUT "${maca_object}"
+                COMMAND "${FLAGFFT_MACA_MXCC}" -x maca "--maca-path=${MACA_PATH}"
+                        -offload-arch=xcore1000 -std=c++17 -O3 -fPIC
+                        -c "${maca_source}" -o "${maca_object}"
+                DEPENDS "${maca_source}"
+                VERBATIM)
+            list(APPEND maca_native_objects "${maca_object}")
+        endforeach()
+        add_custom_target(flagfft_maca_native_kernels DEPENDS ${maca_native_objects})
+        add_dependencies(flagfft flagfft_maca_native_kernels)
+        set_source_files_properties(${maca_native_objects} TARGET_DIRECTORY flagfft
+            PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+        target_sources(flagfft PRIVATE ${maca_native_objects})
+        target_link_libraries(flagfft PRIVATE "${FLAGFFT_MACA_COMPILER_RUNTIME}")
+        target_compile_definitions(flagfft PRIVATE FLAGFFT_MACA_NATIVE_KERNELS=1)
+    endif()
 elseif(BACKEND STREQUAL "HCU")
     target_sources(flagfft PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/backend/hcu/adaptor.cpp

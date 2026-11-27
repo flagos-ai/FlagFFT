@@ -129,6 +129,9 @@ std::vector<int64_t> PlanBuilder::score_leaf_factorization(int64_t n, const std:
 
 std::vector<int64_t> PlanBuilder::select_leaf_factors(int64_t n) {
   const RequestContext &context = request_context();
+  if (context.maca_663000_packed_c2r_split && n == 975) {
+    return {13, 5, 5, 3};
+  }
   if (context.hcu_fourstep_radix_cap && context.origin_rank == 1 &&
       context.requested_n >= 65536 &&
       (context.requested_n & (context.requested_n - 1)) == 0 &&

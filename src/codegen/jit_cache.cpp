@@ -275,7 +275,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::string cache_key = key.repr() + device_profile + policy + ";profile-v1;maca-1d-single=" +
                                 (maca_1d_single_policy_ ? "1" : "0") + ";maca-1d-batch=" +
                                 (maca_1d_batch_policy_ ? "1" : "0") + ";maca-2d-single=" +
-                                (maca_2d_single_policy_ ? "1" : "0") + ";maca-3d=" +
+                                (maca_2d_single_policy_ ? "1" : "0") + ";maca-2d-dense=" +
+                                (maca_2d_dense_policy_ ? "1" : "0") + ";maca-3d=" +
                                 (maca_3d_policy_ ? "1" : "0") + ";maca-3d-c2c32-single-cube=" +
                                 (maca_3d_c2c32_single_cube_policy_ ? "1" : "0") + ";ix-ct-single=" +
                                 (ix_ct_single_policy_ ? "1" : "0") + ";ix-ct-single-tle=" +
@@ -619,6 +620,10 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     const char *transpose = std::getenv("FLAGFFT_CUDA_2D_TRANSPOSE");
     cache_key += ";cuda-2d-transpose=" + std::string(transpose ? transpose : "auto");
   }
+  if (key.kind == KernelKind::TiledTranspose && adaptor::backend_name() == "maca") {
+    const char *transpose = std::getenv("FLAGFFT_MACA_2D_TRANSPOSE");
+    cache_key += ";maca-2d-transpose=" + std::string(transpose ? transpose : "auto");
+  }
   if (adaptor::backend_name() == "cuda" &&
       (key.kind == KernelKind::LeafPermutedStore || key.kind == KernelKind::LeafStridedPermutedStore ||
        key.kind == KernelKind::LeafR2CPermutedStore ||
@@ -670,9 +675,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_packed_c2r";
       break;
     case KernelKind::LeafBluestein:
-      kernel_kind = ix_bluestein_packed_r2c ? "leaf_bluestein_r2c" :
-          (key.perm_form == "outer" || ix_bluestein_recurrence
-               ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form);
+      if (ix_bluestein_packed_r2c || key.perm_form == "maca_prime_dif_r2c") {
+        kernel_kind = "leaf_bluestein_r2c";
+      } else if (key.perm_form == "maca_prime_dif_c2r") {
+        kernel_kind = "leaf_bluestein_c2r";
+      } else {
+        kernel_kind = key.perm_form == "outer" || ix_bluestein_recurrence ||
+                              key.perm_form == "maca_prime_dif_c2c"
+            ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
+      }
       break;
     case KernelKind::LeafRaderFull:
       kernel_kind = ix_rader_packed_c2r ? "leaf_rader_full_c2r" : "leaf_rader_full";
@@ -959,6 +970,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (maca_2d_single_policy_) {
     jit_command << " --maca-2d-single";
   }
+  if (maca_2d_dense_policy_) {
+    jit_command << " --maca-2d-dense";
+  }
   if (maca_3d_policy_) {
     jit_command << " --maca-3d";
   }
@@ -991,12 +1005,34 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --npu-portable-leaf";
     }
   }
-  if (ix_split_frequency || ix_wave_bands || key.perm_form == "ix_ct_packed_wave_c2r" ||
+  const bool maca_split_column = key.kind == KernelKind::FourStepCol &&
+      (key.perm_form.rfind("maca_split_column1768_", 0) == 0 ||
+       key.perm_form.rfind("maca_split_column1105_", 0) == 0);
+  const bool maca_packed_c2r_row =
+      key.kind == KernelKind::FourStepRow && key.perm_form == "maca_packed_c2r_row";
+  const bool maca_r2c_half_columns =
+      (key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepR2CCol) &&
+      key.perm_form == "maca_r2c_half_columns";
+  const bool maca_rader_four_step = (key.kind == KernelKind::FourStepRow || key.kind == KernelKind::FourStepCol) &&
+      key.perm_form.rfind("maca_rader_four_step_", 0) == 0;
+  const bool maca_real32_plane_dif =
+      key.kind == KernelKind::Fused32RealPlane && key.perm_form == "maca_real32_plane_dif";
+  const bool maca_paired_boundary =
+      (key.kind == KernelKind::R2CPackedPostprocess || key.kind == KernelKind::C2RPackedPreprocess) &&
+      key.perm_form.rfind("maca_paired_real_boundary_", 0) == 0;
+  if (maca_split_column || maca_packed_c2r_row || maca_r2c_half_columns || maca_rader_four_step ||
+      maca_real32_plane_dif || maca_paired_boundary ||
+      ix_split_frequency || ix_wave_bands || key.perm_form == "ix_ct_packed_wave_c2r" ||
       key.perm_form == "ix_r2c_dense_fourstep" ||
       key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::LeafC2R && key.perm_form == "outer_c2r_chunk16") ||
+      (key.kind == KernelKind::Leaf && (key.perm_form.rfind("maca_fp64_", 0) == 0 ||
+                                       key.perm_form.rfind("maca_fp32_", 0) == 0 ||
+                                       key.perm_form.rfind("maca_3d_prime_", 0) == 0)) ||
+      (key.kind == KernelKind::LeafC2R && key.perm_form == "maca_fp32_c2r210_pfa") ||
+      (key.kind == KernelKind::LeafBluestein && key.perm_form.rfind("maca_prime_dif_", 0) == 0) ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
@@ -1033,7 +1069,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       key.kind == KernelKind::BluesteinPointwise || key.kind == KernelKind::BluesteinFinalize) {
     jit_command << " --bluestein-n " << key.bluestein_n << " --bluestein-m " << key.bluestein_m;
   }
-  if (key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
+  if (maca_rader_four_step ||
+      key.kind == KernelKind::LeafRaderFull || key.kind == KernelKind::LeafRaderPrepare ||
       key.kind == KernelKind::LeafRaderFinish || key.kind == KernelKind::RaderPrepare ||
       key.kind == KernelKind::RaderPointwise ||
       key.kind == KernelKind::RaderFinalize) {
@@ -1313,6 +1350,15 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   std::string artifact_json = run_command_capture_stdout(jit_command.str());
   auto kernel = std::make_shared<JitKernel>();
   kernel->kernel_name = json_string_field(artifact_json, "kernel_name");
+  if (maca_packed_c2r_row && !kernel->kernel_name.starts_with("maca_packed_c2r_row_")) {
+    throw std::runtime_error("MACA packed C2R requires the fused FourStep row kernel");
+  }
+  if (maca_r2c_half_columns && !kernel->kernel_name.starts_with("maca_r2c_half_columns_")) {
+    throw std::runtime_error("MACA compact R2C scratch requires both half-column kernels");
+  }
+  if (maca_real32_plane_dif && !kernel->kernel_name.starts_with("maca_real32_plane_dif_")) {
+    throw std::runtime_error("MACA fused real32 plane requires the DIF kernel");
+  }
   kernel->module_path = json_string_field(artifact_json, "module_path");
 #if defined(BACKEND_MACA)
   kernel->binary_dir = json_string_field(artifact_json, "binary_dir");
@@ -1375,6 +1421,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       throw std::runtime_error("HCU CT requires a positive, tile-derived launch grid");
     }
   }
+  if (maca_split_column) {
+    kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+    if (kernel->grid_x_override <= 0) {
+      throw std::runtime_error("MACA split column requires a positive, tile-derived launch grid");
+    }
+  }
   if (key.kind == KernelKind::DirectDftCubeTransposed ||
       key.kind == KernelKind::DirectDftCube2DRow || key.kind == KernelKind::DirectDftCube2DCol) {
     kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
@@ -1390,6 +1442,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
     kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
     kernel->transpose_tile_size = json_int_field(artifact_json, "tile_size");
+  }
+  if (key.kind == KernelKind::TiledTranspose && adaptor::backend_name() == "maca") {
+    kernel->transpose_tile_size = json_int_field(artifact_json, "tile_size");
+    if (artifact_json.find("\"grid_x_override\"") != std::string::npos) {
+      kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
+      kernel->grid_y_override = json_int_field(artifact_json, "grid_y_override");
+    }
   }
   if (key.kind == KernelKind::RealPairR2CPack || key.kind == KernelKind::RealPairR2CUnpack ||
       key.kind == KernelKind::RealPairC2RPack || key.kind == KernelKind::RealPairC2RUnpack ||

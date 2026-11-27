@@ -1135,12 +1135,13 @@ def test_tiled_transpose_uses_register_transpose(kernels) -> None:
     assert "safe_col[:, None] * 64 + safe_row[None, :]" in source
 
 
-@pytest.mark.parametrize("backend,dtype,packed", [
-    ("maca", "complex64", True),
-    ("maca", "complex128", False),
-    ("cuda", "complex64", False),
+@pytest.mark.parametrize("backend,dtype,packed,paired", [
+    ("maca", "complex64", True, False),
+    ("maca", "complex128", False, True),
+    ("cuda", "complex64", False, False),
+    ("cuda", "complex128", False, False),
 ])
-def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, packed):
+def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, packed, paired):
     from flagfft_codegen import emit
 
     monkeypatch.setattr(emit, "_maca_backend_active", lambda: backend == "maca")
@@ -1150,6 +1151,10 @@ def test_maca_packed_transpose_scope(monkeypatch, tmp_path, backend, dtype, pack
     )
     source = Path(metadata["module_path"]).read_text()
     assert ("tl.pointer_type(tl.uint64)" in source) == packed
+    assert ("tl.permute(values, (1, 0, 2))" in source) == paired
+    if paired:
+        assert "col < 1025" in source
+        assert "batch < nbatch" in source
     assert metadata["tile_size"] == 32
     assert metadata["num_warps"] == 4
 
@@ -2190,6 +2195,146 @@ def _maca_profile():
     )
 
 
+def test_c550_663000_batch_uses_separate_stage_packs(monkeypatch):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import _four_step_col_inner_pack_for, _four_step_row_inner_pack_for
+    from flagfft_codegen.maca_tail_policy import maca_tail_kernel_scope, reset_maca_tail_mode, set_maca_tail_mode
+    from flagfft_codegen.target import set_codegen_target
+
+    for key in ("INNER_PACK", "FOURSTEP_ROW_PACK", "FOURSTEP_COL_PACK"):
+        monkeypatch.delenv(f"FLAGFFT_MACA_{key}", raising=False)
+    profile = set_profile(_maca_profile())
+    set_codegen_target("maca:102:64")
+    mode = set_maca_tail_mode("c2c663000-batch")
+    try:
+        with maca_tail_kernel_scope("four_step_row", 780, "complex64", 780, 850):
+            assert _four_step_row_inner_pack_for(780, 850) == 2
+            monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", "1")
+            assert _four_step_row_inner_pack_for(780, 850) == 1
+            monkeypatch.setenv("FLAGFFT_MACA_FOURSTEP_ROW_PACK", "4")
+            assert _four_step_row_inner_pack_for(780, 850) == 4
+        monkeypatch.delenv("FLAGFFT_MACA_INNER_PACK")
+        with maca_tail_kernel_scope("four_step_col", 850, "complex64", 780, 850):
+            assert _four_step_col_inner_pack_for(780, 850) == 4
+        with maca_tail_kernel_scope("four_step_col", 975, "complex64", 680, 975):
+            assert _four_step_col_inner_pack_for(680, 975) == 1
+    finally:
+        reset_maca_tail_mode(mode)
+        set_codegen_target("")
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize(
+    "shape,order,flat",
+    [
+        ((128, 64, 2048), "210", True),
+        ((2048, 64, 128), "201", True),
+        ((128, 33, 2048), "210", False),
+        ((2048, 64, 128), "021", False),
+    ],
+)
+@pytest.mark.parametrize("mode", (None, "flat", "tile16vec"))
+def test_maca_flat_fp64_3d_transpose_scope(monkeypatch, tmp_path, shape, order, flat, mode):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+
+    if mode is None:
+        monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
+    else:
+        monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", mode)
+    monkeypatch.setenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", "0")
+    flat = flat and mode != "tile16vec"
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+    token = set_profile(_maca_profile())
+    try:
+        n0, n1, n2 = shape
+        meta = _emit_tiled_transpose3d_jit_kernel(
+            n0=n0, n1=n1, n2=n2, order=order, dtype="complex128", out_dir=tmp_path,
+        )
+        assert meta["kernel_name"].endswith("_flat_t16" if flat else "_t16_tile_vec")
+        assert meta["num_warps"] == 4
+        if flat:
+            assert meta["grid_x_override"] == 65536
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize(
+    "shape,order,grid",
+    [
+        ((128, 2048, 33), "021", 49152),
+        ((128, 33, 2048), "210", 33792),
+        ((2048, 33, 128), "201", 33792),
+        ((128, 2048, 33), "120", 33792),
+    ],
+)
+def test_maca_flat_fp64_compact_3d_transpose_grid(monkeypatch, tmp_path, shape, order, grid):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.emit import _emit_tiled_transpose3d_jit_kernel
+
+    monkeypatch.delenv("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", raising=False)
+    monkeypatch.delenv("FLAGFFT_MACA_TRANSPOSE3D_FP64", raising=False)
+    monkeypatch.setenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS", "4")
+    token = set_profile(_maca_profile())
+    try:
+        n0, n1, n2 = shape
+        meta = _emit_tiled_transpose3d_jit_kernel(
+            n0=n0, n1=n1, n2=n2, order=order, dtype="complex128", out_dir=tmp_path,
+        )
+        assert meta["kernel_name"].endswith("_flat_t16")
+        assert meta["grid_x_override"] == grid
+    finally:
+        reset_profile(token)
+
+
+def test_maca_compact_four_step_stages_retain_gather_width(monkeypatch):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_four_step_col_kernel_source
+
+    monkeypatch.setenv("FLAGFFT_MACA_INNER_PACK", "1")
+    monkeypatch.setenv("FLAGFFT_MACA_LANE_MIN", "auto")
+    monkeypatch.setenv("FLAGFFT_MACA_MIXED_EXCHANGE", "")
+    token = set_profile(_maca_profile())
+    try:
+        plan = LeafPlan(1768, (17, 13, 8), 1, 1, 4, (), 2048)
+        monkeypatch.setenv("FLAGFFT_MACA_COMPACT_STAGES", "0")
+        _, baseline = _build_four_step_col_kernel_source(plan, 375, 1768)
+        monkeypatch.setenv("FLAGFFT_MACA_COMPACT_STAGES", "1")
+        _, compact = _build_four_step_col_kernel_source(plan, 375, 1768)
+    finally:
+        reset_profile(token)
+
+    assert "lane_vec = tl.arange(0, 128)" not in baseline
+    assert compact.count("lane_vec = tl.arange(0, 128)") == 1
+    assert "lane_vec = tl.arange(0, 256)" in compact
+    assert "lane_mask = base_lane_mask & (lane < 104)" in compact
+
+
+def test_maca_compact_fp64_leaf_routes_to_the_next_stage_width(monkeypatch):
+    from flagfft_codegen.backend_profile import reset_profile, set_profile
+    from flagfft_codegen.kernels_common import LeafPlan
+    from flagfft_codegen.kernels_leaf import _build_leaf_kernel_source_for_io
+
+    monkeypatch.setenv("FLAGFFT_MACA_EXCHANGE", "direct_all")
+    monkeypatch.setenv("FLAGFFT_MACA_LANE_MIN", "auto")
+    monkeypatch.setenv("FLAGFFT_MACA_BATCH_PACK", "1")
+    token = set_profile(_maca_profile())
+    try:
+        plan = LeafPlan(2048, (16, 16, 8), 1, 128, 4, (), 2048, "inverse", "complex128")
+        monkeypatch.setenv("FLAGFFT_MACA_COMPACT_STAGES", "0")
+        _, baseline = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+        monkeypatch.setenv("FLAGFFT_MACA_COMPACT_STAGES", "1")
+        _, compact = _build_leaf_kernel_source_for_io(plan, io_mode="contiguous")
+    finally:
+        reset_profile(token)
+
+    assert "lane_vec = tl.arange(0, 128)" not in baseline
+    assert compact.count("lane_vec = tl.arange(0, 128)") == 2
+    assert "tl.reshape(smem_b_register_r, (1, 128, 2, 2, 2, 2))" in compact
+    assert "tl.reshape(smem_a_register_r, (1, 256, 2, 2, 2))" in compact
+
+
 @pytest.mark.parametrize("inner_pack", ["1", "4"])
 def test_maca_portable_exchange_indexes_the_register_layout(
     kernels, monkeypatch, inner_pack
@@ -2560,6 +2705,31 @@ def test_npu_real_boundary_launch_extent(jit_source, tmp_path, monkeypatch, tile
     columns = 23095 if kernel == "r2c_half_pack" else 46189
     assert metadata["grid_x_override"] == (columns + tile - 1) // tile
     assert metadata["rows_per_block"] == 1
+
+
+@pytest.mark.parametrize("kernel", ["r2c_packed_postprocess", "c2r_packed_preprocess"])
+@pytest.mark.parametrize("warps,dtype", [(2, "complex128"), (4, "complex64")])
+def test_maca_paired_boundary_launch_extent(jit_source, tmp_path, kernel, warps, dtype):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = jit_source._emit_r2c_pointwise_jit_kernel(
+            kernel=kernel, n=663000, dtype=dtype, out_dir=tmp_path,
+            target="maca:102", perm_form=f"maca_paired_real_boundary_w{warps}",
+        )
+        assert metadata["grid_x_override"] == 648
+        assert metadata["block"] == 256
+        assert metadata["rows_per_block"] == 1
+        assert metadata["num_warps"] == warps
+        assert metadata["arg_names"] == [
+            "in_ptr", "twiddle_ptr", "out_ptr",
+            "input_distance" if kernel == "c2r_packed_preprocess" else "output_distance", "nbatch",
+        ]
+    finally:
+        reset_profile(profile)
 
 
 @pytest.mark.parametrize("kernel", ["r2c_packed_postprocess", "c2r_packed_preprocess"])

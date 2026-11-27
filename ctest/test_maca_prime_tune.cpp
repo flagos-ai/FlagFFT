@@ -578,6 +578,7 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   request.requires_contiguous_copy = false;
 
   ScopedEnv gate("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
+  ScopedEnv fused_fp32("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW", nullptr);
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
   EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048, true));
 
@@ -603,6 +604,101 @@ TEST(Plan2D, MacaRealRowsPolicyIsScopedAndNarrow) {
   request.raw_dim = 2;
   request.requires_contiguous_copy = true;
   EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
+  request.requires_contiguous_copy = false;
+  request.device_arch = "102";
+  request.batch = 4;
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 1024, 2048));
+  request.input_dtype = request.output_dtype = "complex128";
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 1024));
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 50));
+  request.batch = 2;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 2, 46189, 48));
+  request.batch = 4;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 3072));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 2048, 2048));
+  request.device_arch = "other";
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.device_arch = "102";
+  request.batch = 1;
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+  unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 50));
+  request.batch = 4;
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.batch = 1;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+
+  request.input_dtype = request.output_dtype = "complex64";
+  request.batch = 4;
+  request.direction = "inverse";
+  unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "dense", 1);
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.direction = "forward";
+  setenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  unsetenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW");
+  unsetenv("FLAGFFT_MACA_2D_REAL_ROWS");
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.batch = 1;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 1, 46189, 48));
+  request.batch = 4;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 50));
+  request.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+  request.requires_contiguous_copy = false;
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 46189, 48));
+}
+
+TEST(Plan2D, MacaDensePolicyIsScopedToC550DenseMatrices) {
+  flagfft::FFTRequest request;
+  request.device_type = "maca";
+  request.device_arch = "102";
+  request.raw_dim = request.origin_rank = 2;
+  request.batch = 4;
+  request.input_dtype = request.output_dtype = "complex128";
+  request.input_layout = "contiguous";
+
+  ScopedEnv policy("FLAGFFT_MACA_2D_DENSE", nullptr);
+  ScopedEnv rows("FLAGFFT_MACA_2D_REAL_ROWS", nullptr);
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  request.batch = 1;
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 1, 2048, 2048));
+  request.batch = 3;
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 3, 2048, 2048));
+  setenv("FLAGFFT_MACA_2D_DENSE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 3, 2048, 2048));
+  request.batch = 4;
+  setenv("FLAGFFT_MACA_2D_DENSE", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  setenv("FLAGFFT_MACA_2D_DENSE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  EXPECT_TRUE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048, false, true));
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 1024, 2048));
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 1, 2048, 2048));
+  request.requires_contiguous_copy = true;
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  request.requires_contiguous_copy = false;
+  request.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+  request.origin_rank = 2;
+  request.device_arch = "other";
+  EXPECT_FALSE(flagfft::maca_2d_dense_policy_enabled(request, 4, 2048, 2048));
+
+  request.device_arch = "102";
+  setenv("FLAGFFT_MACA_2D_REAL_ROWS", "0", 1);
+  EXPECT_FALSE(flagfft::maca_2d_real_rows_enabled(request, 4, 2048, 2048, false, true));
 }
 
 TEST(Plan2D, RcPreservesOnlySmallMixedBatchedRows) {

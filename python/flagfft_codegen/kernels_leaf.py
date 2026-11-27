@@ -54,6 +54,7 @@ from .kernels_common import (
     use_four_step_row_fused_twiddle,
     use_tle_fused_twiddle,
 )
+from .maca_tail_policy import resource_default
 
 
 def _fmt_const(value: float) -> str:
@@ -173,6 +174,16 @@ def _emit_npu_matrix_store(indent, tag, real, imag, lanes, pack, active, offset,
     return lines
 
 
+def _emit_packed_fp32_complex_load(indent: str, ptr: str, mask: str, dest: str) -> list[str]:
+    real, imag = (name.strip() for name in dest.split(","))
+    pair = f"_packed_pair_{real}"
+    return [
+        f"{indent}{pair} = tl.load(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), mask={mask}, other=0)",
+        f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
+        f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
+    ]
+
+
 def _emit_vectorized_complex_load(
     indent: str,
     ptr: str,
@@ -181,14 +192,7 @@ def _emit_vectorized_complex_load(
     dtype: str,
 ) -> list[str]:
     if _packed_maca_fp32_complex_io(dtype) or _packed_hcu_fp32_complex_io(dtype):
-        pair = "_packed_pair_" + dest.split(",")[0].strip()
-        real, imag = (name.strip() for name in dest.split(","))
-        return [
-            f"{indent}{pair} = tl.load(tl.cast(({ptr}), tl.pointer_type(tl.uint64)), "
-            f"mask={mask}, other=0)",
-            f"{indent}{real} = tl.cast(tl.cast({pair}, tl.uint32), tl.float32, bitcast=True)",
-            f"{indent}{imag} = tl.cast(tl.cast({pair} >> 32, tl.uint32), tl.float32, bitcast=True)",
-        ]
+        return _emit_packed_fp32_complex_load(indent, ptr, mask, dest)
     if _portable_complex_vector_io(dtype):
         pair = "_pair_" + dest.split(",")[0].strip()
         return [
@@ -1650,6 +1654,7 @@ def _emit_stage_block(
     prime_n: int = 0,
     four_step_n1: int = 0,
     four_step_n2: int = 0,
+    r2c_scratch_pitch: int = 0,
     smem_pack: int = 1,
     inner_pack: int = 1,
     fuse_twiddle_into_row: bool = False,
@@ -1672,6 +1677,11 @@ def _emit_stage_block(
     ix_dif_packed_real: bool = False,
     ix_packed_twiddles: bool = False,
     ix_packed_bank_shifts: tuple[int, ...] = (),
+    maca_packed_c2r_row: bool = False,
+    maca_rader_phase: str = "",
+    maca_rader_index_ptr: str = "idx_ptr",
+    maca_rader_real: str = "",
+    maca_rader_sorted_scatter: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1700,14 +1710,38 @@ def _emit_stage_block(
             lane_block = current_lanes
         elif stage == 1:
             next_lane_block = next_lanes
-    compact_npu_stage = (portable_exchange and _npu_backend_active()
-        and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"
+    maca_compact = (
+        portable_exchange and _maca_backend_active()
+        and current_profile().device_arch == "102"
+        and _maca_knob("COMPACT_STAGES") == "1"
+    )
+    compact_maca_four_step = (
+        maca_compact
+        and _maca_knob("MIXED_EXCHANGE") != "direct"
+        and io_mode in {"four_step_row", "four_step_col"}
+    )
+    compact_maca_leaf = (
+        maca_compact and n == 2048 and dtype == "complex128"
+        and io_mode == "contiguous" and smem_pack == 1
+        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+        and _structured_exchange_supported(factors, exchange_size, exchange_slot_stride, smem_pack)
+    )
+    compact_stage = compact_maca_leaf or (portable_exchange
+        and (compact_maca_four_step or (_npu_backend_active()
+            and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"))
         and any(factor & (factor-1) for factor in factors)
         and io_mode in {"contiguous", "contiguous_r2c", "contiguous_c2r",
                         "four_step_row", "four_step_col", "four_step_real_row",
                         "four_step_hermitian_row", "four_step_r2c_col", "four_step_c2r_col"})
-    if compact_npu_stage:
-        lane_block = 1 << (current_lanes-1).bit_length()
+    if compact_stage:
+        lane_block = lane_block_for(current_lanes)
+        if maca_compact:
+            # Retain the MetaX gather width while reducing padded registers.
+            exchange_floor = _portable_exchange_lane_floor(smem_pack)
+            lane_block = max(lane_block, exchange_floor)
+            if compact_maca_leaf:
+                # Direct exchange builds the next stage's register bank.
+                next_lane_block = max(lane_block_for(next_lanes), exchange_floor)
     npu_affine_tables = (portable_exchange and _npu_backend_active()
         and os.environ.get("FLAGFFT_NPU_AFFINE_MATRIX_IO") == "1")
     npu_matrix_io = (npu_affine_tables and inner_pack >= 4 and dtype == "complex64"
@@ -1752,7 +1786,24 @@ def _emit_stage_block(
         raise ValueError("FLAGFFT_CUDA_SMEM_SWIZZLE must be 0, 3, 4 or 5")
     cuda_smem_swizzle = (current_profile().backend == "cuda" and cuda_swizzle != "0" and
                         not portable_exchange and n & (n - 1) == 0)
-    smem_swizzle = fuse_twiddle_into_row or hcu_smem_swizzle or cuda_smem_swizzle or (
+    maca_row_twiddle = (
+        fuse_twiddle_into_row and _maca_backend_active()
+        and use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, dtype)
+    )
+    recurrent_row_twiddle = maca_row_twiddle and resource_default("ROW_TWIDDLE_RECURRENCE") == "1"
+    recurrent_col_twiddle = (
+        io_mode == "four_step_col" and resource_default("COL_TWIDDLE_RECURRENCE") == "1"
+    )
+    scratch_tile = 0 if r2c_scratch_pitch else int(resource_default("FOURSTEP_SCRATCH_TILE") or 0)
+
+    def tiled_scratch_offset(row: str, col: str) -> str:
+        # Both passes address scratch by column tile, row, then column within the tile.
+        return (
+            f"four_step_batch * {four_step_n1 * four_step_n2} + "
+            f"(({col}) // {scratch_tile} * {four_step_n2} + {row}) * {scratch_tile} + ({col}) % {scratch_tile}"
+        )
+
+    smem_swizzle = (fuse_twiddle_into_row and not maca_row_twiddle) or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
     )
@@ -1841,7 +1892,7 @@ def _emit_stage_block(
     # Gate both sides identically so fallback never reads undefined registers.
     mixed_direct_layout = (
         portable_exchange
-        and not fuse_twiddle_into_row
+        and (not fuse_twiddle_into_row or maca_row_twiddle)
         and tuple(stage_lanes or (lanes,) * len(factors))
         == tuple(n // factor for factor in factors)
     )
@@ -1880,10 +1931,12 @@ def _emit_stage_block(
             lines.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
     if ix_compact_tail:
         lines.extend([f"    lane = tl.arange(0, {lane_block})", f"    base_lane_mask = lane < {current_lanes}"])
-    if compact_npu_stage:
+    if compact_stage:
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
             width = four_step_n2 if io_mode in {"four_step_row","four_step_real_row","four_step_hermitian_row"} else four_step_n1
+            if r2c_scratch_pitch and io_mode == "four_step_r2c_col":
+                width = four_step_n1 // 2 + 1
             lines += [f"    inner_slot = lane_vec % {inner_pack}",
                       f"    lane = lane_vec // {inner_pack}",
                       "    four_step_inner = four_step_inner_base + inner_slot",
@@ -2450,7 +2503,44 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n2} + four_step_inner"
                 )
-                if vectorized_complex_io:
+                if maca_rader_phase == "gather":
+                    lines.append(f"{indent}src_idx{j} = tl.load({maca_rader_index_ptr} + src_idx{j}, lane_mask, 0)")
+                    if maca_rader_real == "r2c":
+                        lines.extend([
+                            f"{indent}r{j} = tl.load(in_ptr + four_step_batch * input_distance + src_idx{j}, "
+                            "mask=lane_mask, other=0.0)",
+                            f"{indent}i{j} = tl.zeros_like(r{j})",
+                        ])
+                    else:
+                        source_index = f"src_idx{j}"
+                        pitch = f"{prime_n}"
+                        if maca_rader_real == "c2r":
+                            source_index = f"tl.minimum(src_idx{j}, {prime_n} - src_idx{j})"
+                            pitch = "input_distance"
+                        lines.extend(_emit_complex_boundary_load(
+                            indent, f"in_ptr + (four_step_batch * {pitch} + {source_index}) * 2",
+                            "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io,
+                        ))
+                        if maca_rader_real == "c2r":
+                            lines.append(f"{indent}i{j} = tl.where(src_idx{j} < {prime_n // 2 + 1}, i{j}, -i{j})")
+                elif maca_packed_c2r_row:
+                    half = four_step_n1 * four_step_n2
+                    k = f"src_idx{j}"
+                    base = f"four_step_batch.to(tl.int64) * {half + 1}"
+                    for ptr, dest in (
+                        (f"in_ptr + ({base} + {k}) * 2", f"ar{j}, ai{j}"),
+                        (f"in_ptr + ({base} + {half} - {k}) * 2", f"br{j}, bi{j}"),
+                        (f"packed_twiddle_ptr + {k} * 2", f"co{j}, si{j}"),
+                    ):
+                        lines.extend(_emit_packed_fp32_complex_load(indent, ptr, "lane_mask", dest))
+                    lines.extend([
+                        f"{indent}ai{j} = tl.where({k} == 0, 0.0, ai{j})",
+                        f"{indent}bi{j} = tl.where({k} == 0, 0.0, bi{j})",
+                        f"{indent}dr{j}, di{j} = ar{j} - br{j}, ai{j} + bi{j}",
+                        f"{indent}r{j} = ar{j} + br{j} - (di{j} * co{j} - dr{j} * si{j})",
+                        f"{indent}i{j} = ai{j} - bi{j} + (dr{j} * co{j} + di{j} * si{j})",
+                    ])
+                elif vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_load(
                             indent,
@@ -2555,9 +2645,12 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
+                src_offset = f"four_step_batch_base + src_idx{j}"
+                if r2c_scratch_pitch:
+                    src_offset = f"four_step_batch_base + in{j} * {r2c_scratch_pitch} + four_step_inner"
                 if ix_column_twiddle_recurrence:
                     lines.extend(_emit_complex_boundary_load(
-                        indent, f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                        indent, f"in_ptr + ({src_offset}) * 2",
                         "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io))
                     # Restart the recurrence from an exact table value.
                     if j % col_twiddle_period == 0:
@@ -2569,12 +2662,14 @@ def _emit_stage_block(
                             f"{indent}col_tw_r, col_tw_i = _cmul(col_tw_r, col_tw_i, col_step_r, col_step_i)"
                         )
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, col_tw_r, col_tw_i)")
-                elif fuse_twiddle_into_row:
+                elif fuse_twiddle_into_row or maca_rader_phase:
+                    if scratch_tile:
+                        src_offset = tiled_scratch_offset(f"in{j}", "four_step_inner")
                     if vectorized_complex_io:
                         lines.extend(
                             _emit_vectorized_complex_load(
                                 indent,
-                                f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                                f"in_ptr + ({src_offset}) * 2",
                                 "lane_mask",
                                 f"r{j}, i{j}",
                                 dtype,
@@ -2582,11 +2677,11 @@ def _emit_stage_block(
                         )
                     else:
                         lines.append(
-                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                            f"{indent}r{j} = tl.load(in_ptr + ({src_offset}) * 2, "
                             f"mask=lane_mask, other={zero})"
                         )
                         lines.append(
-                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                            f"{indent}i{j} = tl.load(in_ptr + ({src_offset}) * 2 + 1, "
                             f"mask=lane_mask, other={zero})"
                         )
                 else:
@@ -2594,12 +2689,26 @@ def _emit_stage_block(
                         lines.extend(
                             _emit_vectorized_complex_load(
                                 indent,
-                                f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                                f"in_ptr + ({src_offset}) * 2",
                                 "lane_mask",
                                 f"r{j}, i{j}",
                                 dtype,
                             )
                         )
+                    else:
+                        lines.append(
+                            f"{indent}r{j} = tl.load(in_ptr + ({src_offset}) * 2, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}i{j} = tl.load(in_ptr + ({src_offset}) * 2 + 1, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                    if recurrent_col_twiddle and j:
+                        lines.append(
+                            f"{indent}tw_r{j}, tw_i{j} = _cmul(tw_r{j - 1}, tw_i{j - 1}, phase_step_r, phase_step_i)"
+                        )
+                    elif vectorized_complex_io and not recurrent_col_twiddle:
                         lines.extend(
                             _emit_vectorized_complex_load(
                                 indent,
@@ -2610,14 +2719,14 @@ def _emit_stage_block(
                             )
                         )
                     else:
-                        lines.append(
-                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                            f"mask=lane_mask, other={zero})"
-                        )
-                        lines.append(
-                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                            f"mask=lane_mask, other={zero})"
-                        )
+                        if recurrent_col_twiddle:
+                            # The radix inputs advance by the same frequency stride.
+                            phase_mask = "lane_mask" if inner_pack > 1 else f"four_step_inner < {four_step_n1}"
+                            lines.extend([
+                                f"{indent}step_index = (four_step_inner + {(n // radix) * four_step_n1}) * 2",
+                                f"{indent}phase_step_r = tl.load(twiddle_ptr + step_index, mask={phase_mask}, other=1.0)",
+                                f"{indent}phase_step_i = tl.load(twiddle_ptr + step_index + 1, mask={phase_mask}, other=0.0)",
+                            ])
                         lines.append(
                             f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
                         )
@@ -2717,19 +2826,24 @@ def _emit_stage_block(
         # reuses that buffer for a different, batch-contiguous layout.
         lines.append(f"{indent}tl.debug_barrier()")
 
-    ix_register_prime = False
-    if _ix_backend_active() and dtype=='complex64' and radix in {13,17}:
-        setting=_maca_knob('RADER_CODELET','0')
-        if setting not in {'0','1'}:
-            raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
-        ix_register_prime=setting=='1'
+    register_prime = False
+    if dtype == "complex64" and radix in {13, 17}:
+        ix_target = _ix_backend_active()
+        maca_target = _maca_backend_active() and current_profile().device_arch == "102"
+        if ix_target or maca_target:
+            setting = _maca_knob("RADER_CODELET", "0")
+            if setting not in {"0", "1"}:
+                backend = "IX" if ix_target else "MACA"
+                raise ValueError(f"FLAGFFT_{backend}_RADER_CODELET must be 0 or 1")
+            register_prime = setting == "1"
     if ix_compact_tail or ix_real_ct_codelet or ix_dif_packed_real:
         lines.extend(_emit_ix_register_codelet(
             indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_dif_packed_real
         ))
-    elif ix_register_prime:
+    elif register_prime:
         from .ix_prime_codelets import emit_prime_codelet
-        lines.extend(emit_prime_codelet(indent,radix,direction))
+
+        lines.extend(emit_prime_codelet(indent, radix, direction))
     elif radix == 16:
         lines.extend(_emit_radix16_codelet_call(indent, direction))
     elif radix == 32:
@@ -2740,6 +2854,29 @@ def _emit_stage_block(
         lines.extend(_emit_natural_order_codelet_call(indent, radix, direction))
     else:
         lines.extend(_emit_table_codelet(indent, radix, lane_block, dtype))
+
+    if is_last and maca_rader_sorted_scatter:
+        tile = lane_block_for(n // radix) * inner_pack * 4
+        bank_size = lane_block * inner_pack * 4
+        shift = tile.bit_length() - 1
+        for j in range(radix):
+            lines.extend([
+                f"{indent}vr{j} = tl.cast(x0r + r{j} / {prime_n - 1}, tl.uint32, bitcast=True).to(tl.uint64)",
+                f"{indent}vi{j} = tl.cast(x0i - i{j} / {prime_n - 1}, tl.uint32, bitcast=True).to(tl.uint64)",
+                f"{indent}pair{j} = vr{j} | (vi{j} << 32)",
+            ])
+        lines.extend([
+            f"{indent}joined = tl.join(tl.join(pair0, pair2), tl.join(pair1, tl.zeros_like(pair0)))",
+            f"{indent}scatter_bank = tl.reshape(joined, ({bank_size},))",
+            f"{indent}packed_map = tl.load(idx_ptr + tl.program_id(0) * {tile} + tl.arange(0, {tile}))",
+            f"{indent}gathered = tl.gather(scatter_bank, packed_map & {tile - 1}, axis=0)",
+            f"{indent}dst = packed_map >> {shift}",
+            f"{indent}result_r = tl.cast(tl.cast(gathered, tl.uint32), tl.float32, bitcast=True)",
+            f"{indent}result_i = tl.cast(tl.cast(gathered >> 32, tl.uint32), tl.float32, bitcast=True)",
+            f"{indent}addr = (out_ptr + (four_step_batch * {prime_n} + dst) * 2)[:, None] + {_COMPLEX_PAIR_OFFSETS}",
+            f"{indent}tl.store(addr, tl.join(result_r, result_i), mask=(dst > 0)[:, None])",
+        ])
+        return lines
 
     if smem_tail:
         assert not portable_exchange and stage > 0 and groups == 1
@@ -3151,8 +3288,9 @@ def _emit_stage_block(
                 "bluestein_four_step_prepare_row",
                 "bluestein_four_step_pointwise_row",
             }:
+                row_pitch = r2c_scratch_pitch or four_step_n1
                 lines.append(
-                    f"{indent}dst_idx{j} = four_step_inner * {four_step_n1} + out_idx{j}"
+                    f"{indent}dst_idx{j} = four_step_inner * {row_pitch} + out_idx{j}"
                 )
                 if fuse_twiddle_into_row:
                     if _is_double_dtype(dtype) or _hcu_backend_active():
@@ -3175,6 +3313,10 @@ def _emit_stage_block(
                                 f"{indent}tw_i{j} = tl.load(twiddle_ptr + dst_idx{j} * 2 + 1, "
                                 f"mask=lane_mask, other={zero})"
                             )
+                    elif recurrent_row_twiddle and j:
+                        lines.append(
+                            f"{indent}tw_r{j}, tw_i{j} = _cmul(tw_r{j - 1}, tw_i{j - 1}, step_r, step_i)"
+                        )
                     else:
                         outer_twiddle_scale = (
                             _direction_sign(direction)
@@ -3186,42 +3328,67 @@ def _emit_stage_block(
                             f"{indent}outer_angle{j} = four_step_inner * out_idx{j} * "
                             f"{outer_twiddle_scale:.17g}"
                         )
-                        lines.append(
-                            f"{indent}tw_i{j}, tw_r{j} = "
-                            "tl.inline_asm_elementwise("
-                            '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
-                            f'"=f,=f,f", [outer_angle{j}], '
-                            "dtype=(tl.float32, tl.float32), "
-                            "is_pure=True, pack=1)"
-                        )
+                        if maca_row_twiddle:
+                            lines.append(f"{indent}tw_r{j} = tl.cos(outer_angle{j})")
+                            lines.append(f"{indent}tw_i{j} = tl.sin(outer_angle{j})")
+                            if recurrent_row_twiddle:
+                                lines.extend([
+                                    f"{indent}step_angle = four_step_inner * {n // radix} * {outer_twiddle_scale:.17g}",
+                                    f"{indent}step_r, step_i = tl.cos(step_angle), tl.sin(step_angle)",
+                                ])
+                        else:
+                            lines.append(
+                                f"{indent}tw_i{j}, tw_r{j} = "
+                                "tl.inline_asm_elementwise("
+                                '"sin.approx.f32 $0, $2; cos.approx.f32 $1, $2;", '
+                                f'"=f,=f,f", [outer_angle{j}], '
+                                "dtype=(tl.float32, tl.float32), "
+                                "is_pure=True, pack=1)"
+                            )
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
+                dst_offset = f"four_step_batch_base + dst_idx{j}"
+                store_mask = "lane_mask"
+                if r2c_scratch_pitch:
+                    store_mask = f"lane_mask & (out_idx{j} <= {four_step_n1 // 2})"
+                if scratch_tile:
+                    dst_offset = tiled_scratch_offset("four_step_inner", f"out_idx{j}")
                 if vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_store(
                             indent,
-                            f"out_ptr + (four_step_batch_base + dst_idx{j}) * 2",
+                            f"out_ptr + ({dst_offset}) * 2",
                             f"r{j}",
                             f"i{j}",
-                            "lane_mask",
+                            store_mask,
                             dtype,
                         )
                     )
                 else:
                     lines.append(
-                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
+                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2, r{j}, mask={store_mask})"
                     )
                     lines.append(
-                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2 + 1, i{j}, mask={store_mask})"
                     )
             elif io_mode == "four_step_r2c_col":
+                length = four_step_n1 * four_step_n2
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
                 )
-                lines.append(
-                    f"{indent}compact_mask{j} = lane_mask & (dst_idx{j} < {four_step_n1 * four_step_n2 // 2 + 1})"
-                )
+                if r2c_scratch_pitch:
+                    # Interior columns also supply the conjugate bins of the omitted columns.
+                    # DC and Nyquist columns already contain both members of their own pairs.
+                    lines.extend([
+                        f"{indent}mirrored{j} = dst_idx{j} > {length // 2}",
+                        f"{indent}mirror_valid{j} = (four_step_inner > 0) & (four_step_inner < {four_step_n1 // 2})",
+                        f"{indent}compact_mask{j} = lane_mask & (~mirrored{j} | mirror_valid{j})",
+                        f"{indent}dst_idx{j} = tl.where(mirrored{j}, {length} - dst_idx{j}, dst_idx{j})",
+                        f"{indent}i{j} = tl.where(mirrored{j}, -i{j}, i{j})",
+                    ])
+                else:
+                    lines.append(f"{indent}compact_mask{j} = lane_mask & (dst_idx{j} < {length // 2 + 1})")
                 lines.append(
                     f"{indent}dst_ptr{j} = out_ptr + (four_step_batch * output_distance + dst_idx{j}) * 2"
                 )
@@ -3265,6 +3432,65 @@ def _emit_stage_block(
                     f"(four_step_batch_base + dst_idx{j} * outer_stride) * 2 + 1, "
                     f"i{j}, mask=lane_mask)"
                 )
+            elif maca_rader_phase in {"product", "scatter"}:
+                lines.append(f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner")
+                store_mask = "lane_mask"
+                if maca_rader_phase == "product":
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"b_fft_ptr + dst_idx{j} * 2", "lane_mask",
+                        f"br{j}", f"bi{j}", dtype, vectorized_complex_io,
+                    ))
+                    lines.extend([
+                        f"{indent}rader_r{j} = r{j} * br{j} - i{j} * bi{j}",
+                        f"{indent}rader_i{j} = -(r{j} * bi{j} + i{j} * br{j})",
+                    ])
+                    batch_base = "four_step_batch_base"
+                    if j == 0:
+                        lines.append(f"{indent}zero_offset = four_step_batch * 2 + tl.zeros_like(dst_idx0)")
+                        if maca_rader_real:
+                            # Keep the public output untouched until every row's DC input has been read.
+                            pitch = "input_distance" if maca_rader_real == "r2c" else "(input_distance * 2)"
+                            lines.extend([
+                                f"{indent}dc_offset = four_step_batch * {pitch} + tl.zeros_like(dst_idx0)",
+                                f"{indent}is_dc = lane_mask & (dst_idx0 == 0)",
+                                f"{indent}x0r = tl.load(user_ptr + dc_offset, mask=is_dc, other=0.0)",
+                                f"{indent}tl.store(zero_ptr + zero_offset, x0r, mask=is_dc)",
+                                f"{indent}tl.store(zero_ptr + zero_offset + 1, x0r + r0, mask=is_dc)",
+                            ])
+                        else:
+                            lines.extend([
+                                f"{indent}dc_offset = four_step_batch * {2 * prime_n} + tl.zeros_like(dst_idx0)",
+                                f"{indent}is_dc = lane_mask & (dst_idx0 == 0)",
+                                f"{indent}x0r = tl.load(user_ptr + dc_offset, mask=is_dc, other=0.0)",
+                                f"{indent}x0i = tl.load(user_ptr + dc_offset + 1, mask=is_dc, other=0.0)",
+                                f"{indent}tl.store(zero_ptr + zero_offset, x0r, mask=is_dc)",
+                                f"{indent}tl.store(zero_ptr + zero_offset + 1, x0i, mask=is_dc)",
+                                f"{indent}tl.store(dc_ptr + dc_offset, x0r + r0, mask=is_dc)",
+                                f"{indent}tl.store(dc_ptr + dc_offset + 1, x0i + i0, mask=is_dc)",
+                            ])
+                else:
+                    lines.extend([
+                        f"{indent}dst_idx{j} = tl.load({maca_rader_index_ptr} + dst_idx{j}, lane_mask, 0)",
+                        f"{indent}rader_r{j} = x0r + r{j} / {prime_n - 1}",
+                        f"{indent}rader_i{j} = x0i - i{j} / {prime_n - 1}",
+                    ])
+                    batch_base = ("four_step_batch * output_distance" if maca_rader_real
+                                  else f"four_step_batch * {prime_n}")
+                    if maca_rader_real == "r2c":
+                        store_mask = f"compact_mask{j}"
+                        lines.append(f"{indent}{store_mask} = lane_mask & (dst_idx{j} < {prime_n // 2 + 1})")
+                ptr = f"out_ptr + ({batch_base} + dst_idx{j}) * 2"
+                if maca_rader_phase == "scatter" and maca_rader_real == "c2r":
+                    lines.append(f"{indent}tl.store(out_ptr + {batch_base} + dst_idx{j}, rader_r{j}, mask=lane_mask)")
+                elif vectorized_complex_io:
+                    lines.extend(_emit_vectorized_complex_store(
+                        indent, ptr, f"rader_r{j}", f"rader_i{j}", store_mask, dtype,
+                    ))
+                else:
+                    lines.extend([
+                        f"{indent}tl.store({ptr}, rader_r{j}, mask={store_mask})",
+                        f"{indent}tl.store({ptr} + 1, rader_i{j}, mask={store_mask})",
+                    ])
             else:
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -4015,6 +4241,48 @@ def _build_leaf_kernel_source_for_io(
         from .kernels_ix_warp import build_ix_prime_r2c_last_source
         return build_ix_prime_r2c_last_source(_leaf_kernel_params_for_io(plan, io_mode=io_mode))
     kernel_perm_form = perm_form
+    rader_prefix = "maca_rader_four_step_"
+    rader_layout = perm_form.removeprefix(rader_prefix) if perm_form.startswith(rader_prefix) else ""
+    maca_rader_phase, _, rader_variant = rader_layout.partition("_")
+    narrow_rader_indices = rader_variant == "i16"
+    maca_rader_real = rader_variant if rader_variant in {"r2c", "c2r"} else ""
+    maca_rader_sorted_scatter = rader_variant == "sorted"
+    maca_rader_index_ptr = "idx16_ptr" if narrow_rader_indices else "idx_ptr"
+    if maca_rader_phase:
+        if not (
+            _maca_backend_active() and current_profile().device_arch == "102"
+            and plan.dtype == "complex64" and plan.direction == "forward"
+            and prime_n in {8191, 16381} and four_step_n1 * four_step_n2 == prime_n - 1
+            and rader_variant in {"", "i16", "r2c", "c2r", "sorted"}
+            and (not narrow_rader_indices or (prime_n == 8191 and maca_rader_phase in {"gather", "scatter"}))
+            and (not maca_rader_real or maca_rader_phase in {"gather", "product", "scatter"})
+            and (not maca_rader_sorted_scatter or (
+                prime_n == 16381 and maca_rader_phase == "scatter"
+                and (four_step_n1, four_step_n2) == (91, 180) and plan.factors == (5, 4, 3, 3)
+            ))
+            and io_mode in {"four_step_row", "four_step_col"}
+            and (maca_rader_phase == "plain"
+                 or (io_mode == "four_step_row" and maca_rader_phase == "gather")
+                 or (io_mode == "four_step_col" and maca_rader_phase in {"product", "scatter"}))
+        ):
+            raise ValueError("the Rader FourStep stages require C550 FP32 and a supported convolution length")
+    maca_packed_c2r_row = perm_form == "maca_packed_c2r_row"
+    if maca_packed_c2r_row and not (
+        _maca_backend_active() and current_profile().device_arch == "102"
+        and io_mode == "four_step_row" and plan.dtype == "complex64" and plan.direction == "inverse"
+        and (four_step_n1, four_step_n2) in {(64, 128), (128, 64)}
+    ):
+        raise ValueError("the packed C2R row requires inverse FP32 FourStep 64 × 128 or 128 × 64 on C550")
+    r2c_scratch_pitch = 0
+    if perm_form == "maca_r2c_half_columns":
+        if not (
+            _maca_backend_active() and current_profile().device_arch == "102"
+            and plan.dtype == "complex64" and plan.direction == "forward"
+            and io_mode in {"four_step_real_row", "four_step_r2c_col"}
+            and (four_step_n1, four_step_n2) == (512, 1024)
+        ):
+            raise ValueError("half-column scratch requires the FP32 R2C FourStep 512 × 1024 on C550")
+        r2c_scratch_pitch = (four_step_n1 // 2 + 8) // 8 * 8
     batched_permutation = perm_form.endswith("_batched")
     if batched_permutation:
         perm_form = perm_form.removesuffix("_batched")
@@ -4080,7 +4348,6 @@ def _build_leaf_kernel_source_for_io(
         io_mode = io_mode.rsplit("_", 1)[0]
     from .target import ix_warp_fft_pack
     warp_pack = ix_warp_fft_pack()
-    from .backend_profile import current_profile
     if (_ix_backend_active() and perm_form == "ix_ct_packed_wave_c2r"
             and plan.dtype == "complex64" and plan.length in {512, 1024}
             and plan.direction == "inverse" and io_mode == "packed_c2r"):
@@ -4351,7 +4618,7 @@ def _build_leaf_kernel_source_for_io(
         io_mode=io_mode,
         ix_packed_twiddles=ix_packed_twiddles,
         batched_permutation=batched_permutation,
-        include_four_step_twiddle=(
+        include_four_step_twiddle=not maca_rader_phase and (
             io_mode
             in {
                 "four_step_row",
@@ -4371,6 +4638,18 @@ def _build_leaf_kernel_source_for_io(
             }
         ),
     )
+    if maca_rader_phase == "gather":
+        params.insert(0, maca_rader_index_ptr)
+    elif maca_rader_phase == "product":
+        params[:0] = (["b_fft_ptr", "user_ptr", "zero_ptr"] if maca_rader_real
+                      else ["b_fft_ptr", "user_ptr", "dc_ptr", "zero_ptr"])
+    elif maca_rader_phase == "scatter":
+        params[:0] = [maca_rader_index_ptr, "zero_ptr"]
+    if maca_rader_real:
+        distance = "output_distance" if maca_rader_phase == "scatter" else "input_distance"
+        params.insert(params.index("nbatch"), distance)
+    if maca_packed_c2r_row:
+        params.insert(params.index("out_ptr") + 1, "packed_twiddle_ptr")
 
     ix_split_c2r = perm_form == "ix_split_c2r_frequency"
     ix_split_frequency = ix_split_c2r or perm_form == "ix_split_frequency"
@@ -4446,6 +4725,12 @@ def _build_leaf_kernel_source_for_io(
         kernel_name += "_tle_finish"
     if ix_c2r_radix2:
         kernel_name += "_radix2_prepare"
+    if maca_packed_c2r_row:
+        kernel_name = f"maca_packed_c2r_row_{kernel_name}"
+    if r2c_scratch_pitch:
+        kernel_name = f"{kernel_perm_form}_{kernel_name}"
+    if maca_rader_phase:
+        kernel_name = f"{kernel_perm_form}_{prime_n}_{kernel_name}"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
@@ -4494,7 +4779,7 @@ def _build_leaf_kernel_source_for_io(
         body.append(f"    perm_span = tl.full((), {permutation_span}, tl.int64)")
     if permutation_batch:
         body.append(f"    nbatch = tl.full((), {permutation_batch}, tl.int64)")
-    if _portable_complex_vector_io(plan.dtype):
+    if _portable_complex_vector_io(plan.dtype) or maca_rader_sorted_scatter:
         body.append(f"    {_COMPLEX_PAIR_OFFSETS} = tl.arange(0, 2)[None, :]")
     from .target import ix_ct_single_default_enabled
     static_single = (
@@ -4656,6 +4941,8 @@ def _build_leaf_kernel_source_for_io(
             four_step_inner_count = (
                 four_step_n2 if io_mode in row_modes else four_step_n1
             )
+            if r2c_scratch_pitch and io_mode == "four_step_r2c_col":
+                four_step_inner_count = four_step_n1 // 2 + 1
             body.append(f"    inner_slot = lane_vec % {inner_pack}")
             body.append(f"    lane = lane_vec // {inner_pack}")
             body.append("    four_step_inner = four_step_inner_base + inner_slot")
@@ -4675,9 +4962,28 @@ def _build_leaf_kernel_source_for_io(
                 "(four_step_batch - four_step_batch_index * outer_stride)"
             )
         else:
+            pitch = r2c_scratch_pitch or four_step_n1
             body.append(
-                f"    four_step_batch_base = four_step_batch * {four_step_n1 * four_step_n2}"
+                f"    four_step_batch_base = four_step_batch * {pitch * four_step_n2}"
             )
+        if maca_rader_phase == "scatter":
+            body.append("    x0 = zero_ptr + four_step_batch * 2")
+            if maca_rader_real:
+                body.extend([
+                    "    x0r, x0i = tl.load(x0), 0.0",
+                    "    if tl.program_id(0) == 0:",
+                    "        dc = tl.load(x0 + 1)",
+                ])
+                if maca_rader_real == "r2c":
+                    body.extend([
+                        "        dc_ptr = out_ptr + four_step_batch * output_distance * 2",
+                        "        tl.store(dc_ptr, dc)",
+                        "        tl.store(dc_ptr + 1, 0.0)",
+                    ])
+                else:
+                    body.append("        tl.store(out_ptr + four_step_batch * output_distance, dc)")
+            else:
+                body.append("    x0r, x0i = tl.load(x0), tl.load(x0 + 1)")
 
     if uses_cooperative_stage_lanes:
         body.append("    base_lane_mask = lane_mask")
@@ -4741,6 +5047,7 @@ def _build_leaf_kernel_source_for_io(
                 prime_n=prime_n,
                 four_step_n1=four_step_n1,
                 four_step_n2=four_step_n2,
+                r2c_scratch_pitch=r2c_scratch_pitch,
                 smem_pack=smem_pack,
                 inner_pack=inner_pack,
                 fuse_twiddle_into_row=fuse_twiddle_into_row,
@@ -4753,6 +5060,11 @@ def _build_leaf_kernel_source_for_io(
                 exchange_slot_stride=smem_slot_stride,
                 bluestein_real_kind=bluestein_real_kind,
                 permuted_smem_store=permuted_smem_store,
+                maca_packed_c2r_row=maca_packed_c2r_row,
+                maca_rader_phase=maca_rader_phase,
+                maca_rader_index_ptr=maca_rader_index_ptr,
+                maca_rader_real=maca_rader_real,
+                maca_rader_sorted_scatter=maca_rader_sorted_scatter,
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,

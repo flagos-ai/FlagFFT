@@ -47,6 +47,300 @@ def test_2d_policy_restores_parent_and_respects_override(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
+    "dtype,shape,tile,warps",
+    [
+        ("complex64", (1025, 2048), 32, 8),
+        ("complex64", (2048, 1025), 32, 4),
+        ("complex128", (1025, 2048), 16, 4),
+        ("complex128", (2048, 1025), 16, 4),
+        ("complex128", (256, 512), 32, 4),
+    ],
+)
+def test_c550_tuned_transpose_metadata(monkeypatch, tmp_path, dtype, shape, tile, warps):
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "tuned")
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        rows, cols = shape
+        meta = emit._emit_tiled_transpose_jit_kernel(
+            n0=rows, n1=cols, dtype=dtype, out_dir=tmp_path,
+        )
+        assert meta["tile_size"] == tile
+        assert meta["num_warps"] == warps
+        assert meta["kernel_name"].endswith(f"_t{tile}")
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize(
+    "shape,layout,grid",
+    [
+        ((2048, 1025), "_flat_t16", (None, None)),
+        ((1025, 2048), "_column_t16", (65, 128)),
+        ((2048, 2048), "_flat_t16", (None, None)),
+        ((1024, 2048), "_f64_t16", (None, None)),
+    ],
+)
+def test_c550_vector_fp64_transpose_layout(monkeypatch, tmp_path, shape, layout, grid):
+    from flagfft_codegen import emit
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    monkeypatch.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "vector")
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        meta = emit._emit_tiled_transpose_jit_kernel(
+            n0=shape[0], n1=shape[1], dtype="complex128", out_dir=tmp_path,
+        )
+        assert meta["kernel_name"].endswith(layout)
+        assert meta["tile_size"] == 16
+        assert (meta.get("grid_x_override"), meta.get("grid_y_override")) == grid
+    finally:
+        reset_profile(token)
+
+
+def test_maca_dense_policy_respects_override_and_scope(monkeypatch):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.kernels_common import _maca_knob
+    from flagfft_codegen.target import reset_maca_2d_dense_default, set_maca_2d_dense_default
+
+    monkeypatch.delenv("FLAGFFT_MACA_EXCHANGE", raising=False)
+    monkeypatch.delenv("FLAGFFT_MACA_2D_TRANSPOSE", raising=False)
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        policy = set_maca_2d_dense_default(True)
+        try:
+            assert _maca_knob("EXCHANGE") == "direct_all"
+            assert _maca_knob("2D_TRANSPOSE") == "vector"
+            with monkeypatch.context() as override:
+                override.setenv("FLAGFFT_MACA_EXCHANGE", "transpose")
+                override.setenv("FLAGFFT_MACA_2D_TRANSPOSE", "legacy")
+                assert _maca_knob("EXCHANGE") == "transpose"
+                assert _maca_knob("2D_TRANSPOSE") == "legacy"
+        finally:
+            reset_maca_2d_dense_default(policy)
+        assert _maca_knob("EXCHANGE") == ""
+        assert _maca_knob("2D_TRANSPOSE") == ""
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize("direction", ("forward", "inverse"))
+@pytest.mark.parametrize(
+    "length,factors,perm_form,kernel_stem,warps,batch_pack",
+    [
+        (2048, (16, 16, 8), "maca_fp64_dif", "maca_fp64_dif2048", 2, 1),
+        (2048, (16, 16, 8), "maca_fp64_dif_w4", "maca_fp64_dif2048_w4", 4, 1),
+        (64, (4, 4, 4), "maca_fp64_dif_first64", "maca_fp64_dif_first64", 8, 32),
+        (128, (8, 4, 4), "maca_fp64_ct128_prepare", "maca_fp64_ct128_prepare", 4, 4),
+        (128, (8, 4, 4), "maca_fp64_ct128_finish", "maca_fp64_ct128_finish", 4, 8),
+        (128, (8, 4, 4), "maca_fp64_ct128_prepare_dif", "maca_fp64_ct128_prepare_dif", 2, 8),
+        (128, (8, 4, 4), "maca_fp64_ct128_finish_dif", "maca_fp64_ct128_finish_dif", 2, 4),
+    ],
+)
+def test_c550_fp64_specialized_leaf_launch_abi(
+    tmp_path, direction, length, factors, perm_form, kernel_stem, warps, batch_pack,
+):
+    from flagfft_codegen.emit import emit_jit_kernel
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=length, factors=factors, lanes=64, num_warps=4,
+            generic_radices=(), smem_size=length, direction=direction, dtype="complex128",
+            prime_n=0, four_step_n1=0, four_step_n2=0, perm_form=perm_form, out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == f"{kernel_stem}_{direction}"
+        assert metadata["num_warps"] == warps
+        assert metadata["batch_per_block"] == batch_pack
+        assert metadata["arg_names"] == ["in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "nbatch"]
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize("mode", ("c2c", "r2c", "c2r"))
+@pytest.mark.parametrize("length,dtype,warps", ((1009, "complex64", 2), (997, "complex128", 4)))
+def test_c550_prime_dif_leaf_launch_abi(tmp_path, mode, length, dtype, warps):
+    from flagfft_codegen.emit import emit_jit_kernel
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    token = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf_bluestein" if mode == "c2c" else f"leaf_bluestein_{mode}",
+            length=2048, factors=(16, 16, 8), lanes=128, num_warps=warps,
+            generic_radices=(), smem_size=2048, direction="forward", dtype=dtype,
+            prime_n=length, four_step_n1=0, four_step_n2=0,
+            perm_form=f"maca_prime_dif_{mode}", out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == f"maca_prime_dif_{mode}_n{length}"
+        assert metadata["num_warps"] == warps
+        assert metadata["batch_per_block"] == 1
+        assert metadata["arg_names"] == [
+            "in_ptr", "b_fft_ptr", "chirp_ptr", "out_ptr",
+            "roots_r_ptr", "roots_fwd_ptr", "roots_inv_ptr", "nbatch",
+        ]
+    finally:
+        reset_profile(token)
+
+
+@pytest.mark.parametrize("mode,direction,precision,dtype", (
+    ("r2c", "forward", "fp64", "complex128"),
+    ("c2r", "inverse", "fp64", "complex128"),
+    ("c2r", "inverse", "fp32", "complex64"),
+))
+def test_c550_packed_3d_real_boundary_launch_abi(tmp_path, mode, direction, precision, dtype):
+    from flagfft_codegen.emit import emit_jit_kernel
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        form = f"maca_{precision}_3d_{mode}64"
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=64, factors=(4, 4, 4), lanes=16, num_warps=2,
+            generic_radices=(), smem_size=64, direction=direction, dtype=dtype,
+            prime_n=0, four_step_n1=0, four_step_n2=0, perm_form=form, out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == form
+        assert metadata["num_warps"] == 2
+        assert metadata["batch_per_block"] == 32
+        assert metadata["arg_names"] == [
+            "in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "phase_r_ptr", "phase_i_ptr", "nbatch",
+        ]
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize("direction", ("forward", "inverse"))
+def test_c550_1d_fp64_packed_dif_distances(tmp_path, direction):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=1024, factors=(16, 8, 8), lanes=64, num_warps=4,
+            generic_radices=(), smem_size=1024, direction=direction, dtype="complex128",
+            prime_n=0, four_step_n1=0, four_step_n2=0,
+            perm_form="maca_fp64_packed_dif1024", out_dir=tmp_path,
+        )
+        assert metadata["num_warps"] == 4
+        assert metadata["batch_per_block"] == 1
+        assert metadata["arg_names"] == [
+            "in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "phase_r_ptr", "phase_i_ptr",
+            "input_distance", "output_distance", "nbatch",
+        ]
+        assert metadata["signature"].endswith(",i64,i64,i32")
+    finally:
+        reset_profile(profile)
+
+
+def test_c550_prime_outer_wide_tile_launch_abi(tmp_path):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        metadata = emit_jit_kernel(
+            kernel="leaf", length=16, factors=(16,), lanes=1, num_warps=2,
+            generic_radices=(), smem_size=0, direction="forward", dtype="complex64",
+            prime_n=0, four_step_n1=0, four_step_n2=0,
+            perm_form="maca_3d_prime_outer16_wide", out_dir=tmp_path,
+        )
+        assert metadata["kernel_name"] == "maca_fp32_3d_prime_outer16_forward_32x4"
+        assert metadata["num_warps"] == 8
+        assert metadata["batch_per_block"] == 128
+        assert metadata["arg_names"] == ["in_ptr", "out_ptr", "roots_r_ptr", "roots_i_ptr", "nbatch"]
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize("dtype,tile", (("complex64", 16), ("complex64", 32), ("complex128", 32)))
+@pytest.mark.parametrize("stage", ("prepare", "finish"))
+def test_c550_packed_split_column_launch_abi(tmp_path, dtype, tile, stage):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        form = f"maca_split_column1105_{stage}_t{tile}"
+        metadata = emit_jit_kernel(
+            kernel="four_step_col", length=1105, factors=(17, 13, 5), lanes=1, num_warps=2,
+            generic_radices=(), smem_size=2048, direction="inverse", dtype=dtype, prime_n=0,
+            four_step_n1=300, four_step_n2=1105, perm_form=form, out_dir=tmp_path,
+        )
+        precision = "_fp64" if dtype == "complex128" else ""
+        assert metadata["kernel_name"] == f"{form}{precision}_inverse"
+        assert metadata["num_warps"] == 2
+        grid = (399 if tile == 16 else 200) if stage == "prepare" else (244 if tile == 16 else 122)
+        assert metadata["grid_x_override"] == grid
+        args = ["in_ptr", "out_ptr", "nbatch"]
+        if stage == "prepare":
+            args.insert(1, "twiddle_ptr")
+        assert metadata["arg_names"] == args
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize("direction", ("forward", "inverse"))
+@pytest.mark.parametrize("dtype,warps,pfa", (
+    ("complex64", 2, False), ("complex64", 4, False), ("complex64", 4, True),
+    ("complex128", 2, False), ("complex128", 2, True),
+))
+@pytest.mark.parametrize("stage", ("prepare", "finish"))
+def test_c550_split_column_launch_abi(tmp_path, direction, dtype, warps, pfa, stage):
+    from flagfft_codegen.backend_profile import BackendProfile, reset_profile, set_profile
+    from flagfft_codegen.emit import emit_jit_kernel
+
+    profile = set_profile(BackendProfile.from_device({
+        "backend": "maca", "device_arch": "102", "warp_size": 64,
+    }))
+    try:
+        form = f"maca_split_column1768_{stage}"
+        method = "_pfa" if pfa else ""
+        metadata = emit_jit_kernel(
+            kernel="four_step_col", length=1768, factors=(13, 17, 8), lanes=8, num_warps=warps,
+            generic_radices=(), smem_size=1768, direction=direction, dtype=dtype,
+            prime_n=0, four_step_n1=375, four_step_n2=1768, perm_form=form + method, out_dir=tmp_path,
+        )
+        suffix = "_w4" if warps == 4 else ""
+        precision = "_fp64" if dtype == "complex128" else ""
+        assert metadata["kernel_name"] == f"{form}{suffix}{method}{precision}_{direction}"
+        grid = 399 if stage == "prepare" else (305 if dtype == "complex128" else 153)
+        assert metadata["num_warps"] == warps
+        assert metadata["grid_x_override"] == grid
+        args = ["in_ptr", "out_ptr"]
+        if stage == "prepare":
+            args.insert(1, "twiddle_ptr")
+        if not pfa:
+            args += ["phase_r_ptr", "phase_i_ptr"]
+        args.append("nbatch")
+        assert metadata["arg_names"] == args
+    finally:
+        reset_profile(profile)
+
+
+@pytest.mark.parametrize(
     "length,factors,lanes,expected",
     [
         (48, (4, 4, 3), 4, 4),

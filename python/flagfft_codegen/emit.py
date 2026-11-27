@@ -45,7 +45,10 @@ from .kernels_common import (
 )
 from .kernels_layout import (
     _build_complex_pair_transpose_kernel_source,
+    _build_flat_fp64_transpose3d_kernel_source,
+    _build_maca_warp_transpose3d_kernel_source,
     _build_packed_transpose_kernel_source,
+    _build_paired_fp64_transpose_kernel_source,
     _build_reshape_pack_kernel_source,
     _build_tiled_transpose3d_kernel_source,
     _build_tiled_transpose3d_slice_group_kernel_source,
@@ -591,6 +594,7 @@ def _emit_r2c_pointwise_jit_kernel(
     dtype: str,
     out_dir: Path,
     target: str = "",
+    perm_form: str = "outer",
 ) -> dict[str, Any]:
     elements_per_program = 256
     if target.startswith("npu:") and dtype == "complex64" and n >= 512:
@@ -615,7 +619,24 @@ def _emit_r2c_pointwise_jit_kernel(
         if num_warps not in {4, 8, 16, 32}:
             raise ValueError("NPU 256-point real pointwise warps must be one of 4, 8, 16, 32")
         elements_per_program *= rows_per_program
-    if kernel in {"r2c_pair_pack", "r2c_pair_unpack", "c2r_pair_pack", "c2r_pair_unpack"}:
+    maca_paired = perm_form in {"maca_paired_real_boundary_w2", "maca_paired_real_boundary_w4"}
+    if maca_paired:
+        measured_batch = perm_form == "maca_paired_real_boundary_w4" and (
+            n in {185640, 524288} or (n == 340200 and dtype == "complex64")
+        )
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and (n == 663000 or measured_batch)
+                and dtype in {"complex64", "complex128"}
+                and kernel in {"r2c_packed_postprocess", "c2r_packed_preprocess"}):
+            raise ValueError("the paired real boundary requires a supported packed C550 FFT")
+        from .kernels_real import _build_maca_paired_real_boundary
+
+        kernel_name, kernel_source, arg_names, elements_per_program = _build_maca_paired_real_boundary(
+            n, dtype, inverse=kernel == "c2r_packed_preprocess",
+        )
+        rows_per_block = 1
+        num_warps = int(perm_form[-1])
+    elif kernel in {"r2c_pair_pack", "r2c_pair_unpack", "c2r_pair_pack", "c2r_pair_unpack"}:
         kernel_name, kernel_source, arg_names, rows_per_block = _build_real_pair_kernel_source(n, dtype, kernel)
     elif kernel == "real_to_complex":
         (
@@ -664,6 +685,8 @@ def _emit_r2c_pointwise_jit_kernel(
 
     dtype_tag = _dtype_suffix(dtype)
     module_name = f"flagfft_jit_{kernel}_n{n}_{dtype_tag}"
+    if maca_paired:
+        module_name += f"_paired_w{num_warps}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))
@@ -682,8 +705,11 @@ def _emit_r2c_pointwise_jit_kernel(
             and os.getenv("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY", "0") == "1"):
         grid_columns = n // 4 + 1 - int(_npu_packed_boundary_direct_midpoint(n, True, elements_per_program))
         elements_per_program *= _npu_packed_boundary_groups(n, True)
-    column_block=256
-    if kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
+    column_block = 256
+    if maca_paired:
+        grid_columns = n // 4 + 1
+        column_block = elements_per_program
+    elif kernel in {"r2c_packed_postprocess","c2r_packed_preprocess"}:
         from .kernels_real import packed_real_boundary_block, _packed_layout
         width=n//2 + (1 if kernel=="r2c_packed_postprocess" else 0)
         column_block,_=_packed_layout(width,packed_real_boundary_block(n,dtype))
@@ -703,7 +729,7 @@ def _emit_r2c_pointwise_jit_kernel(
         "block": column_block,
         "grid_x_override": (
             (grid_columns + elements_per_program - 1) // elements_per_program
-            if kernel in {"real_to_complex", "r2c_half_pack",
+            if maca_paired or kernel in {"real_to_complex", "r2c_half_pack",
                           "compact_to_hermitian_full", "complex_to_real"}
             or (target.startswith("npu:") and dtype == "complex64" and n >= 512)
             else 0
@@ -720,6 +746,7 @@ def _scoped_maca_tail(fn):
         with maca_tail_kernel_scope(
             kwargs["kernel"], kwargs["length"], kwargs["dtype"],
             kwargs["four_step_n1"], kwargs["four_step_n2"],
+            perm_form=kwargs.get("perm_form", "outer"),
         ):
             return fn(**kwargs)
     return scoped
@@ -763,7 +790,180 @@ def emit_jit_kernel(
         dtype=dtype,
     )
     spec = kernel_spec(kernel)
-    if spec.is_leaf_like:
+    maca_rader_spectral = perm_form == "maca_rader_four_step_spectral"
+    maca_rader_pfa_scatter = perm_form in {
+        "maca_rader_four_step_scatter_pfa", "maca_rader_four_step_scatter_pfa_i16",
+    }
+    maca_real48_forward = perm_form in {"maca_fp32_r2c48_to_columns", "maca_fp64_r2c48_to_columns"}
+    maca_real48_inverse = perm_form == "maca_fp64_c2r48_from_columns"
+    maca_c2r210 = perm_form == "maca_fp32_c2r210_pfa"
+    if maca_c2r210 and kernel != "leaf_c2r":
+        raise ValueError("the compact C550 210-point PFA requires the C2R leaf ABI")
+    maca_pfa210 = perm_form == "maca_fp32_fft210_pfa" or maca_c2r210
+    maca_dif_layout = {
+        "maca_fp64_dif": (2048, 2, 1),
+        "maca_fp64_dif_w4": (2048, 4, 1),
+        "maca_fp64_dif_terminal8": (2048, 2, 1),
+        "maca_fp64_packed_dif1024": (1024, 4, 1),
+        "maca_fp64_packed_dif1024_gather": (1024, 4, 1),
+        "maca_fp32_packed_dif1024_gather": (1024, 4, 1),
+        "maca_fp64_dif_first64": (64, 8, 32),
+        "maca_fp64_ct128_prepare": (128, 4, 4),
+        "maca_fp64_ct128_finish": (128, 4, 8),
+        "maca_fp64_ct128_prepare_dif": (128, 2, 8),
+        "maca_fp64_ct128_finish_dif": (128, 2, 4),
+        "maca_fp64_3d_r2c64": (64, 2, 32),
+        "maca_fp64_3d_c2r64": (64, 2, 32),
+        "maca_fp32_r2c48_to_columns": (48, 2, 16),
+        "maca_fp64_r2c48_to_columns": (48, 2, 16),
+        "maca_fp64_c2r48_from_columns": (48, 2, 16),
+        "maca_fp32_3d_c2r64": (64, 2, 32),
+        "maca_fp32_fft210_pfa": (210, 2, 2),
+        "maca_fp32_c2r210_pfa": (210, 2, 2),
+        "maca_3d_prime_r2c64": (64, 4, 32),
+        "maca_3d_prime_c2r64": (64, 4, 32),
+        "maca_3d_prime_outer16": (16, 4, 64),
+        "maca_3d_prime_outer16_wide": (16, 8, 128),
+    }.get(perm_form) if kernel == "leaf" or maca_c2r210 else None
+    maca_prime_dif = perm_form.startswith("maca_prime_dif_")
+    maca_packed_column = perm_form in {
+        "maca_split_column1105_prepare_t16", "maca_split_column1105_finish_t16",
+        "maca_split_column1105_prepare_t32", "maca_split_column1105_finish_t32",
+    }
+    maca_split_column = maca_packed_column or perm_form in {
+        "maca_split_column1768_prepare", "maca_split_column1768_finish",
+        "maca_split_column1768_prepare_pfa", "maca_split_column1768_finish_pfa",
+    }
+    if maca_packed_column:
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and dtype in {"complex64", "complex128"}
+                and num_warps == 2 and (length, four_step_n1, four_step_n2) == (1105, 300, 1105)):
+            raise ValueError("the packed split column requires FourStep 300 × 1105 on C550")
+        from .kernels_maca_column import build_maca_split_column1105
+
+        prepare_column = perm_form.startswith("maca_split_column1105_prepare")
+        kernel_name, kernel_source, column_grid = build_maca_split_column1105(
+            direction, prepare_column, int(perm_form[-2:]), fp64=dtype == "complex128",
+        )
+        n1, n2 = four_step_n1, four_step_n2
+    elif maca_split_column:
+        pfa_column = perm_form.endswith("_pfa")
+        fp64_column = dtype == "complex128"
+        allowed_warps = (2,) if fp64_column else ((4,) if pfa_column else (2, 4))
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and dtype in {"complex64", "complex128"}
+                and num_warps in allowed_warps
+                and (length, four_step_n1, four_step_n2) == (1768, 375, 1768)):
+            raise ValueError("the split column requires FP32 or FP64 FourStep 375 × 1768 on C550")
+        from .kernels_maca_column import build_maca_split_column1768
+
+        prepare_column = perm_form.startswith("maca_split_column1768_prepare")
+        kernel_name, kernel_source, column_grid = build_maca_split_column1768(
+            direction, prepare_column, num_warps, pfa=pfa_column, fp64=fp64_column,
+        )
+        n1, n2 = four_step_n1, four_step_n2
+    elif maca_prime_dif:
+        mode = perm_form.removeprefix("maca_prime_dif_")
+        expected_kernel = "leaf_bluestein" if mode == "c2c" else f"leaf_bluestein_{mode}"
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and mode in {"c2c", "r2c", "c2r"} and kernel == expected_kernel
+                and dtype in {"complex64", "complex128"} and length == 2048 and prime_n in {997, 1009}):
+            raise ValueError("the MACA prime DIF kernel requires a C550 997- or 1009-point transform")
+        from .kernels_maca_dif import build_maca_prime_dif
+
+        kernel_name, kernel_source = build_maca_prime_dif(prime_n, mode)
+        n1 = n2 = 0
+    elif maca_dif_layout:
+        required_length, maca_warps, maca_pack = maca_dif_layout
+        prime_axes = perm_form.startswith("maca_3d_prime_")
+        fp32_leaf = maca_pfa210 or perm_form in {
+            "maca_fp32_3d_c2r64", "maca_fp32_r2c48_to_columns",
+            "maca_fp32_packed_dif1024_gather",
+        }
+        required_dtypes = (("complex64", "complex128") if prime_axes else
+                           ("complex64",) if fp32_leaf else ("complex128",))
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and dtype in required_dtypes and length == required_length):
+            raise ValueError(f"{perm_form} requires a {required_length}-point C550 transform of {required_dtypes}")
+        if maca_pfa210:
+            from .kernels_maca_pfa import build_maca_fp32_fft210_pfa
+
+            kernel_name, kernel_source = build_maca_fp32_fft210_pfa(direction, real_inverse=maca_c2r210)
+        elif perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide"}:
+            from .kernels_maca_dif import build_maca_3d_prime_real_outer
+
+            kernel_name, kernel_source = build_maca_3d_prime_real_outer(
+                direction, fp64=dtype == "complex128", wide=perm_form.endswith("_wide"),
+            )
+        elif maca_real48_forward or maca_real48_inverse:
+            from .kernels_maca_dif import (
+                build_maca_fp64_c2r48_from_columns,
+                build_maca_r2c48_to_columns,
+            )
+
+            expected_direction = "forward" if maca_real48_forward else "inverse"
+            if direction != expected_direction:
+                raise ValueError(f"{perm_form} requires the {expected_direction} direction")
+            if maca_real48_forward:
+                kernel_name, kernel_source = build_maca_r2c48_to_columns(fp64=dtype == "complex128")
+            else:
+                kernel_name, kernel_source = build_maca_fp64_c2r48_from_columns()
+        elif perm_form.startswith("maca_fp64_ct128"):
+            from .kernels_maca_ct import build_maca_fp64_outer_ct, build_maca_fp64_outer_dif
+
+            builder = (build_maca_fp64_outer_dif if perm_form.endswith("_dif")
+                       else build_maca_fp64_outer_ct)
+            kernel_name, kernel_source = builder(direction, prepare="_prepare" in perm_form)
+        elif perm_form.endswith(("_r2c64", "_c2r64")):
+            from .kernels_maca_dif import build_maca_3d_real_boundary
+
+            expected_direction = "inverse" if perm_form.endswith("_c2r64") else "forward"
+            if direction != expected_direction:
+                raise ValueError(f"{perm_form} requires the {expected_direction} direction")
+            kernel_name, kernel_source = build_maca_3d_real_boundary(
+                direction, fp64=dtype == "complex128", middle_length=997 if prime_axes else 2048)
+        elif perm_form in {"maca_fp64_packed_dif1024", "maca_fp64_packed_dif1024_gather",
+                           "maca_fp32_packed_dif1024_gather"}:
+            from .kernels_maca_dif import build_maca_packed_dif
+
+            kernel_name, kernel_source = build_maca_packed_dif(
+                direction, fp64=dtype == "complex128", gather_reflection=perm_form.endswith("_gather"),
+            )
+        else:
+            from .kernels_maca_dif import build_maca_fp64_dif_first_axis, build_maca_fp64_dif_leaf
+
+            if required_length == 64:
+                kernel_name, kernel_source = build_maca_fp64_dif_first_axis(direction)
+            else:
+                kernel_name, kernel_source = build_maca_fp64_dif_leaf(
+                    direction, four_warps=perm_form == "maca_fp64_dif_w4",
+                    terminal8=perm_form == "maca_fp64_dif_terminal8",
+                )
+        n1 = n2 = 0
+    elif maca_rader_spectral:
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and direction == "forward" and dtype == "complex64"
+                and (prime_n, four_step_n1, four_step_n2, length, factors) == (16381, 180, 91, 91, (13, 7))):
+            raise ValueError("the fused Rader spectrum requires the C550 FP32 16381-point FourStep column")
+        from .kernels_maca_rader import SPECTRAL_PACK, SPECTRAL_WARPS, build_maca_rader16381_spectral
+
+        kernel_name, kernel_source = build_maca_rader16381_spectral()
+        n1, n2 = four_step_n1, four_step_n2
+    elif maca_rader_pfa_scatter:
+        from .kernels_maca_rader import PFA_SCATTER_CONFIGS, build_maca_rader_pfa_scatter
+
+        narrow_indices = perm_form.endswith("_i16")
+        if not (_maca_backend_active() and current_profile().device_arch == "102"
+                and kernel == "four_step_col" and direction == "forward" and dtype == "complex64"
+                and (not narrow_indices or prime_n == 8191)
+                and (prime_n, four_step_n1, four_step_n2, length, factors) in {
+                    (8191, 117, 70, 70, (7, 10)), (16381, 91, 180, 180, (5, 4, 3, 3)),
+                }):
+            raise ValueError("the Good–Thomas scatter requires a supported C550 FP32 Rader column")
+        pfa_radices, _, pfa_pack, pfa_warps = PFA_SCATTER_CONFIGS[prime_n]
+        kernel_name, kernel_source = build_maca_rader_pfa_scatter(prime_n, narrow_indices=narrow_indices)
+        n1, n2 = four_step_n1, four_step_n2
+    elif spec.is_leaf_like:
         io_mode = (
             "permuted_r2c"
             if kernel == "leaf_r2c" and perm_form == "permuted"
@@ -849,7 +1049,9 @@ def emit_jit_kernel(
         four_step_n2=n2,
         perm_form=perm_form,
     )
-    if spec.family == STOCKHAM:
+    if (spec.family == STOCKHAM or maca_dif_layout or maca_prime_dif or maca_split_column
+            or perm_form in {"maca_packed_c2r_row", "maca_r2c_half_columns"}
+            or perm_form.startswith("maca_rader_four_step_")):
         # Include the lowering and span in the generated-module identity.
         module_name = f"flagfft_jit_{kernel_name}"
     if kernel_name.startswith("ix_warp256_"):
@@ -863,7 +1065,18 @@ def emit_jit_kernel(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
-    if spec.is_leaf_like:
+    if maca_split_column:
+        last_radix = 5 if maca_packed_column else 8
+        radices = () if prepare_column else (last_radix,)
+    elif maca_real48_forward or maca_real48_inverse:
+        radices = (3, 8)
+    elif perm_form == "maca_fp64_dif_terminal8":
+        radices = (8,)
+    elif maca_pfa210:
+        radices = (5, 6, 7)
+    elif maca_rader_pfa_scatter:
+        radices = tuple(sorted(codelet_radices_for(pfa_radices)))
+    elif spec.is_leaf_like and not (maca_dif_layout or maca_prime_dif):
         radices = tuple(
             sorted(
                 codelet_radices_for(factors)
@@ -899,6 +1112,16 @@ def emit_jit_kernel(
         permutation_span=permutation_span,
         permutation_batch=permutation_batch,
     )
+    if maca_dif_layout:
+        metadata.update(num_warps=maca_warps, batch_per_block=maca_pack)
+    if maca_prime_dif:
+        metadata.update(num_warps=4 if dtype == "complex128" else 2, batch_per_block=1)
+    if maca_split_column:
+        metadata.update(num_warps=num_warps, grid_x_override=column_grid, tle_fused_twiddle=False)
+    if maca_rader_spectral:
+        metadata.update(num_warps=SPECTRAL_WARPS, inner_pack=SPECTRAL_PACK, tle_fused_twiddle=False)
+    if maca_rader_pfa_scatter:
+        metadata.update(num_warps=pfa_warps, inner_pack=pfa_pack, tle_fused_twiddle=False)
     if permutation_span:
         metadata["permutation_span"] = permutation_span
     if permutation_batch:
@@ -932,6 +1155,20 @@ def _emit_tiled_transpose_jit_kernel(
 ) -> dict[str, Any]:
     cuda_mode = os.environ.get("FLAGFFT_CUDA_2D_TRANSPOSE", "auto") if _declared_backend() == "cuda" else "auto"
     hcu_mode = os.environ.get("FLAGFFT_HCU_2D_TRANSPOSE", "auto") if _hcu_backend_active() else "auto"
+    maca_target = _maca_backend_active()
+    maca_mode = _maca_knob("2D_TRANSPOSE") if maca_target or _ix_backend_active() else ""
+    maca_tuned = maca_target and maca_mode in {"tuned", "vector"}
+    c550 = maca_tuned and current_profile().device_arch == "102"
+    fp64_vector = c550 and maca_mode == "vector" and dtype == "complex128"
+    column_first = fp64_vector and (n0, n1) == (1025, 2048)
+    flatten_pair = fp64_vector and (n0, n1) in {(2048, 1025), (2048, 2048)}
+    num_warps = 4
+    if c550 and min(n0, n1) >= 1024:
+        if dtype == "complex128":
+            tile_size = 16
+        elif n0 % 2 and n1 % tile_size == 0:
+            # A wider CTA improves stores to the odd half-spectrum pitch.
+            num_warps = 8
     if hcu_mode not in {"auto", "register", "scalar", "coalesced"}:
         raise ValueError("FLAGFFT_HCU_2D_TRANSPOSE must be auto, register, scalar or coalesced")
     if cuda_mode not in {"auto", "register", "scalar", "packed"}:
@@ -947,12 +1184,14 @@ def _emit_tiled_transpose_jit_kernel(
         )
     elif (
         cuda_mode == "packed" or (hcu_mode == "coalesced" and dtype == "complex64")
-        or ((_maca_backend_active() or _ix_backend_active())
-            and dtype == "complex64"
-            and _maca_knob("2D_TRANSPOSE") == "packed")
+        or ((maca_mode == "packed" or maca_tuned) and dtype == "complex64")
     ):
         kernel_name, kernel_source, arg_names = _build_packed_transpose_kernel_source(
             n0, n1, tile_size
+        )
+    elif maca_target and (maca_mode == "packed" or maca_tuned) and dtype == "complex128":
+        kernel_name, kernel_source, arg_names = _build_paired_fp64_transpose_kernel_source(
+            n0, n1, tile_size, flatten_pair=flatten_pair, column_first=column_first,
         )
     else:
         kernel_name, kernel_source, arg_names = _build_tiled_transpose_kernel_source(
@@ -969,7 +1208,7 @@ def _emit_tiled_transpose_jit_kernel(
         "module_path": str(module_path),
         "kernel_name": kernel_name,
         "signature": _signature(arg_names, dtype),
-        "num_warps": 4,
+        "num_warps": num_warps,
         "num_stages": 1,
         "batch_per_block": 1,
         "arg_names": arg_names,
@@ -984,6 +1223,9 @@ def _emit_tiled_transpose_jit_kernel(
         metadata["grid_x_override"] = npu_programs
         metadata["grid_y_override"] = 1
         metadata["npu_table_transpose"] = True
+    elif column_first:
+        metadata["grid_x_override"] = (n0 + tile_size - 1) // tile_size
+        metadata["grid_y_override"] = (n1 + tile_size - 1) // tile_size
     write_text_atomic(out_dir / f"{module_name}.json", json.dumps(metadata, sort_keys=True))
     return metadata
 
@@ -1044,22 +1286,51 @@ def _emit_tiled_transpose3d_jit_kernel(
             transpose_warps = int(raw_warps)
 
     if _declared_backend() == "maca":
-        maca_mode_default = (
-            "pair16sg2rg2"
-            if dtype == "complex64" and tuple(sorted((n0, n1, n2))) == (256, 256, 256)
-            else "pair16"
-        )
-        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D", maca_mode_default)
+        fp32_cube = dtype == "complex64" and (n0, n1, n2) == (256, 256, 256)
+        fp32_long = dtype == "complex64" and (n0, n1, n2, order) in {
+            (128, 64, 2048, "210"),
+            (2048, 64, 128, "201"),
+            (128, 2048, 33, "120"),
+            (2048, 33, 128, "210"),
+        }
+        maca_mode_default = "pair16sg2rg2" if fp32_cube else "pair16"
+        maca_mode = os.environ.get("FLAGFFT_MACA_TRANSPOSE3D")
+        if maca_mode is None:
+            use_warp = (
+                (fp32_cube or fp32_long) and current_profile().device_arch == "102"
+                and not any(name in os.environ for name in (
+                    "FLAGFFT_MACA_TRANSPOSE3D_WARPS",
+                    "FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL",
+                    "FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP",
+                ))
+            )
+            maca_mode = "warp8" if use_warp else maca_mode_default
     else:
         maca_mode = "tile32"
     if maca_mode not in {
         "tile16", "tile32", "tile64", "pair16", "pair32", "pair64", "pair64x16",
-        "pair16rg2", "pair16sg2rg2", "v1",
+        "pair16rg2", "pair16sg2rg2", "warp8", "v1",
     }:
         raise ValueError(
             "FLAGFFT_MACA_TRANSPOSE3D must be tile16, tile32, tile64, pair16, "
-            "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2 or v1"
+            "pair32, pair64, pair64x16, pair16rg2, pair16sg2rg2, warp8 or v1"
         )
+    maca_warp_groups = 0
+    maca_warp_tile = (8, 8)
+    if maca_mode == "warp8":
+        if dtype == "complex64" and current_profile().device_arch == "102":
+            if (n0, n1, n2, order) in {(128, 64, 2048, "210"), (128, 33, 2048, "210")}:
+                maca_warp_groups = 8
+            elif ((n0, n1, n2) == (256, 256, 256) and order in {"021", "210", "201", "120"}
+                  or (n0, n1, n2, order) == (2048, 64, 128, "201")):
+                maca_warp_groups = 4
+            elif (n0, n1, n2, order) == (128, 2048, 33, "120"):
+                maca_warp_groups = 4
+            elif (n0, n1, n2, order) == (2048, 33, 128, "210"):
+                maca_warp_groups = 4
+                maca_warp_tile = (8, 16)
+        if not maca_warp_groups:
+            maca_mode = maca_mode_default
     if maca_mode == "pair16sg2rg2" and (
         dtype != "complex64"
         or tuple(sorted((n0, n1, n2)))
@@ -1139,13 +1410,29 @@ def _emit_tiled_transpose3d_jit_kernel(
         and maca_slice_group == "2"
     )
     fp64_mode = (
-        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "tile16vec")
+        os.environ.get("FLAGFFT_MACA_TRANSPOSE3D_FP64", "flat")
         if _declared_backend() == "maca"
         else "v1"
     )
-    if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "v1"}:
-        raise ValueError("FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec or v1")
-    if maca_mode == "pair64x16" and _portable_transpose3d_supported():
+    if fp64_mode not in {"tile16", "tile32", "tile64", "tile16vec", "tile32vec", "flat", "v1"}:
+        raise ValueError(
+            "FLAGFFT_MACA_TRANSPOSE3D_FP64 must be tile16, tile32, tile64, tile16vec, tile32vec, flat or v1"
+        )
+    if fp64_mode == "flat":
+        layout = (n0, n1, n2, order)
+        long_complex = layout in {(128, 64, 2048, "210"), (2048, 64, 128, "201")}
+        long_real = os.environ.get("FLAGFFT_MACA_3D_FP64_COMPACT_TRANSPOSE", "1") == "1" and layout in {
+            (128, 2048, 33, "021"), (128, 33, 2048, "021"), (128, 33, 2048, "210"),
+            (2048, 33, 128, "210"), (2048, 33, 128, "201"), (128, 2048, 33, "120"),
+        }
+        if current_profile().device_arch != "102" or maca_warps != "4" or not (long_complex or long_real):
+            fp64_mode = "tile16vec"
+    if maca_warp_groups:
+        kernel_name, kernel_source, arg_names, grid_x = _build_maca_warp_transpose3d_kernel_source(
+            n0, n1, n2, order, maca_warp_groups, tile=maca_warp_tile,
+        )
+        maca_warps = str(maca_warp_groups)
+    elif maca_mode == "pair64x16" and _portable_transpose3d_supported():
         if dtype != "complex64" or maca_warps != "16" or maca_traversal != "row":
             raise ValueError("pair64x16 requires complex64, 16 warps and row traversal")
         if tuple(sorted((n0, n1, n2))) != (256, 256, 256):
@@ -1244,6 +1531,10 @@ def _emit_tiled_transpose3d_jit_kernel(
         (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
             n0, n1, n2, order, dtype, tile=int(maca_mode[4:]), pair=maca_mode.startswith("pair"),
             tile_traversal=maca_traversal
+        )
+    elif dtype == "complex128" and fp64_mode == "flat":
+        (kernel_name, kernel_source, arg_names, grid_x) = _build_flat_fp64_transpose3d_kernel_source(
+            n0, n1, n2, order,
         )
     elif dtype == "complex128" and _declared_backend() == "maca" and fp64_mode != "v1":
         (kernel_name, kernel_source, arg_names, grid_x) = _build_tiled_transpose3d_tile_kernel_source(
@@ -1382,6 +1673,8 @@ def _emit_tiled_transpose3d_jit_kernel(
         )
         kernel_name = kernel_name_with_warps
     module_name = f"flagfft_jit_transpose3d_{order}_n{n0}_{n1}_{n2}_{suffix}{warp_suffix}"
+    if maca_warp_groups:
+        module_name += f"_warp8_g{maca_warp_groups}"
     out_dir.mkdir(parents=True, exist_ok=True)
     module_path = out_dir / f"{module_name}.py"
     write_text_atomic(module_path, _module_source(kernel_source))

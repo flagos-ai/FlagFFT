@@ -360,15 +360,16 @@ DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int
   return adaptor::Memory::from_floats(interleaved);
 }
 
-DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx) {
-  std::vector<int32_t> table;
-  table.reserve(idx.size());
-  for (int64_t value : idx) {
-    table.push_back(static_cast<int32_t>(value));
-  }
-  DeviceAllocation allocation(table.size() * sizeof(int32_t));
+template <typename Index>
+static DeviceAllocation upload_rader_indices(const std::vector<int64_t> &idx) {
+  const std::vector<Index> table(idx.begin(), idx.end());
+  DeviceAllocation allocation(table.size() * sizeof(Index));
   allocation.copy_from_host(table.data(), allocation.size());
   return allocation;
+}
+
+DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx, bool narrow) {
+  return narrow ? upload_rader_indices<int16_t>(idx) : upload_rader_indices<int32_t>(idx);
 }
 
 DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,

@@ -16,7 +16,42 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_BATCH_VEC_IO", "FLAGFFT_MACA_BATCH_REAL_PACK2",
                              "FLAGFFT_MACA_BATCH_C2C_PACK2",
                              "FLAGFFT_MACA_BATCH_PRIME_VEC_IO",
-                             "FLAGFFT_MACA_BATCH_C2C_TREE"}) {
+                             "FLAGFFT_MACA_BATCH_C2C_TREE", "FLAGFFT_MACA_PRIME_DIF",
+                             "FLAGFFT_MACA_663000_REAL", "FLAGFFT_MACA_663000_C2C",
+                             "FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN",
+                             "FLAGFFT_MACA_663000_PACKED_C2R_SPLIT",
+                             "FLAGFFT_MACA_663000_PACKED_COLUMN_PFA",
+                             "FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER",
+                             "FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT",
+                             "FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK",
+                             "FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE",
+                             "FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT",
+                             "FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE",
+                             "FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE",
+                             "FLAGFFT_MACA_340200_BATCH_SPLIT",
+                             "FLAGFFT_MACA_340200_FP32_BATCH_900X378",
+                             "FLAGFFT_MACA_340200_FP32_RADIX_ORDER",
+                             "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE",
+                             "FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE",
+                             "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
+                             "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
+                             "FLAGFFT_MACA_524288_FP64_SINGLE_Z2D",
+                             "FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4",
+                             "FLAGFFT_MACA_524288_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_185640_PACKED_REAL_SPLIT",
+                             "FLAGFFT_MACA_16_FP64_BATCH_PACK16",
+                             "FLAGFFT_MACA_16_FP64_NATIVE",
+                             "FLAGFFT_MACA_23_FP64_NATIVE",
+                             "FLAGFFT_MACA_16_D2Z_NATIVE",
+                             "FLAGFFT_MACA_210_BATCH_RADIX6",
+                             "FLAGFFT_MACA_RADER_CODELET",
+                             "FLAGFFT_MACA_BATCH_RADER_SPLIT",
+                             "FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP",
+                             "FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP",
+                             "FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT",
+                             "FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN"}) {
       const char* value = std::getenv(name);
       saved.emplace_back(name, value ? std::optional<std::string>(value) : std::nullopt);
       unsetenv(name);
@@ -112,6 +147,858 @@ TEST_F(TailPolicy, ScopeExclusionsAndOverride) {
   EXPECT_EQ(flagfft::maca_tail_automatic_plan(real), "");
   setenv("FLAGFFT_MACA_TAIL_POLICY", "yes", 1);
   EXPECT_THROW(flagfft::maca_tail_automatic_plan(base), std::runtime_error);
+}
+
+TEST_F(TailPolicy, FusedC550PrimeDefaultScopeAndFallback) {
+  auto r = request(1009, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {1009, 1};
+  for (int64_t n : {1009, 997}) {
+    r.requested_n = r.fft_length = r.input_strides.front() = n;
+    for (int64_t batch : {1, 64}) {
+      r.batch = batch;
+      EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+      EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "bs2048");
+      const char* root_policy = batch == 1 ? "FLAGFFT_MACA_TAIL_POLICY" : "FLAGFFT_MACA_1D_BATCH";
+      setenv(root_policy, "0", 1);
+      EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+      unsetenv(root_policy);
+      setenv("FLAGFFT_MACA_PRIME_DIF", "0", 1);
+      EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+      unsetenv("FLAGFFT_MACA_PRIME_DIF");
+    }
+  }
+  setenv("FLAGFFT_MACA_TAIL_PLAN", "default", 1);
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  unsetenv("FLAGFFT_MACA_TAIL_PLAN");
+  r.real_transform = true;
+  r.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+  r.real_transform_kind.clear();
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  r.real_transform = false;
+  setenv("FLAGFFT_MACA_PRIME_DIF", "1", 1);
+  EXPECT_TRUE(flagfft::maca_prime_dif_requested(r));
+  r.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+  r.origin_rank = 1;
+  r.requested_n = r.fft_length = r.input_strides.front() = 8191;
+  EXPECT_FALSE(flagfft::maca_prime_dif_requested(r));
+}
+
+TEST_F(TailPolicy, C550Packed663000ResourcesMatchMeasuredRequests) {
+  using flagfft::KernelKind;
+  auto r = request(663000, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {663000, 1};
+  r.real_transform = true;
+  r.real_transform_kind = "r2c";
+  r.direction = "forward";
+  EXPECT_TRUE(flagfft::maca_663000_real_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  r.packed_real_child = true;
+  r.fft_length = r.requested_n = 331500;
+  r.input_strides.front() = 331500;
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "r2c663000");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("r2c663000", KernelKind::FourStepCol,
+                                         "complex64", 1105, 300, 1105), "r2c663000");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode("r2c663000", KernelKind::FourStepCol,
+                                         "complex64", 884, 375, 884), "off");
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_663000_real_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  r.batch = 64;
+  r.real_transform_kind = "z2d";
+  r.direction = "inverse";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-c2r663000");
+  setenv("FLAGFFT_MACA_663000_REAL", "0", 1);
+  EXPECT_FALSE(flagfft::maca_663000_real_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+}
+
+TEST_F(TailPolicy, C550Packed663000SplitAppliesToFp32BatchInverseChild) {
+  using flagfft::KernelKind;
+  auto r = request(331500, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {331500, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.real_transform_kind = "c2r";
+  r.direction = "inverse";
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA", "0", 1);
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "0", 1);
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  const auto baseline = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(baseline, nullptr);
+  EXPECT_EQ(baseline->n1, 300);
+  EXPECT_EQ(baseline->n2, 1105);
+  unsetenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT");
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct340x975");
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-c2r663000-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex64", 340, 340, 975), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex64", 1105, 300, 1105), "off");
+
+  auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 340);
+  EXPECT_EQ(plan->n2, 975);
+  const auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->row_plan);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t>{17, 5, 4}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{13, 5, 5, 3}));
+
+  r.packed_real_child = false;
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  r.packed_real_child = true;
+  r.batch = 1;
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "z2d";
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  unsetenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA");
+  EXPECT_TRUE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  r.batch = 1;
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex64";
+  r.real_transform_kind = "c2r";
+  EXPECT_TRUE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  const auto packed = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(packed, nullptr);
+  EXPECT_EQ(packed->n1, 300);
+  EXPECT_EQ(packed->n2, 1105);
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "1", 1);
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct340x975");
+  setenv("FLAGFFT_MACA_663000_PACKED_C2R_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+  setenv("FLAGFFT_MACA_663000_PACKED_COLUMN_PFA", "1", 1);
+  EXPECT_TRUE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+  r.input_strides.front() += 1;
+  EXPECT_FALSE(flagfft::maca_663000_packed_column_pfa_enabled(r));
+}
+
+TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
+  using flagfft::KernelKind;
+  auto r = request(340200, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {340200, 1};
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT", "0", 1);
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(340200, r)).repr();
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(r));
+
+  unsetenv("FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 900);
+  EXPECT_EQ(plan->n2, 378);
+  const auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->row_plan);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t>{10, 9, 10}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{7, 6, 9}));
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "c2c340200-single-row-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow, "complex64", 900, 900, 378), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 900, 900, 378), "off");
+  auto inverse = r;
+  inverse.direction = "inverse";
+  const auto inverse_mode = flagfft::maca_tail_codegen_root(inverse);
+  EXPECT_EQ(inverse_mode, "c2c340200-inverse-pack-row-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepRow, "complex64", 900, 900, 378),
+            inverse_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378),
+            inverse_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepRow, "complex64", 900, 900, 400),
+            "off");
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(inverse), mode);
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode);
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c340200-single");
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(inverse), "c2c340200-inverse-pack");
+  unsetenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE");
+  auto other = r;
+  other.batch = 64;
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  other = r;
+  other.origin_rank = 2;
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  other = r;
+  other.input_dtype = other.output_dtype = "complex128";
+  setenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE", "0", 1);
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  unsetenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE");
+  EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
+            flagfft::PlanKey::from_node(plan).repr());
+  const auto fp64_column_mode = flagfft::maca_tail_codegen_root(other);
+  EXPECT_EQ(fp64_column_mode, "z2z340200-column-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_column_mode, KernelKind::FourStepCol,
+                                          "complex128", 378, 900, 378), fp64_column_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_column_mode, KernelKind::FourStepCol,
+                                          "complex128", 900, 378, 900), "off");
+  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  unsetenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT");
+  other.direction = "inverse";
+  EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
+            flagfft::PlanKey::from_node(plan).repr());
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(other), fp64_column_mode);
+  setenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE", "0", 1);
+  const auto fp64_mode = flagfft::maca_tail_codegen_root(other);
+  EXPECT_EQ(fp64_mode, "z2z340200-single");
+  unsetenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepRow, "complex128", 900, 900, 378),
+            fp64_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), "off");
+  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "1", 1);
+  other.direction = "forward";
+  EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
+  other = r;
+  other.input_strides.front() += 1;
+  EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, r)).repr(), baseline);
+}
+
+TEST_F(TailPolicy, C550Batched340200SplitUsesTheMeasuredLeafFactors) {
+  auto r = request(340200, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {340200, 1};
+  r.batch = 64;
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_340200_BATCH_SPLIT", "0", 1);
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(340200, r)).repr();
+  EXPECT_FALSE(flagfft::maca_340200_batch_split_enabled(r));
+
+  unsetenv("FLAGFFT_MACA_340200_BATCH_SPLIT");
+  setenv("FLAGFFT_MACA_340200_FP32_BATCH_900X378", "0", 1);
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 567);
+  EXPECT_EQ(plan->n2, 600);
+  const auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->row_plan);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t>{7, 9, 9}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{6, 10, 10}));
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "c2c340200-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, flagfft::KernelKind::FourStepRow,
+                                         "complex64", 567, 567, 600), mode);
+  unsetenv("FLAGFFT_MACA_340200_FP32_BATCH_900X378");
+  setenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER", "1", 1);
+  const auto reordered = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(reordered, nullptr);
+  const auto reordered_row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(reordered->row_plan);
+  const auto reordered_col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(reordered->col_plan);
+  ASSERT_NE(reordered_row, nullptr);
+  ASSERT_NE(reordered_col, nullptr);
+  EXPECT_EQ(reordered_row->factors, (std::vector<int64_t>{9, 7, 9}));
+  EXPECT_EQ(reordered_col->factors, (std::vector<int64_t>{10, 6, 10}));
+  unsetenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER");
+  const auto swapped = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(swapped, nullptr);
+  EXPECT_EQ(swapped->n1, 900);
+  EXPECT_EQ(swapped->n2, 378);
+  const auto swapped_row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(swapped->row_plan);
+  const auto swapped_col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(swapped->col_plan);
+  ASSERT_NE(swapped_row, nullptr);
+  ASSERT_NE(swapped_col, nullptr);
+  EXPECT_EQ(swapped_row->factors, (std::vector<int64_t>{10, 10, 9}));
+  EXPECT_EQ(swapped_col->factors, (std::vector<int64_t>{9, 7, 6}));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c340200-batch-900x378");
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, r)).repr(), baseline);
+  unsetenv("FLAGFFT_MACA_1D_BATCH");
+  r.input_strides.front() += 5;
+  EXPECT_FALSE(flagfft::maca_340200_batch_split_enabled(r));
+
+  r.input_strides.front() = 340200;
+  r.input_dtype = r.output_dtype = "complex128";
+  const auto wide = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(340200, r));
+  ASSERT_NE(wide, nullptr);
+  EXPECT_EQ(wide->n1, 504);
+  EXPECT_EQ(wide->n2, 675);
+  const auto wide_row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(wide->row_plan);
+  const auto wide_col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(wide->col_plan);
+  ASSERT_NE(wide_row, nullptr);
+  ASSERT_NE(wide_col, nullptr);
+  EXPECT_EQ(wide_row->factors, (std::vector<int64_t>{7, 8, 9}));
+  EXPECT_EQ(wide_col->factors, (std::vector<int64_t>{5, 15, 9}));
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "z2z340200-split");
+}
+
+TEST_F(TailPolicy, C550SinglePackedReal663000Fp64UsesTheMeasuredColumnOrder) {
+  auto r = request(331500, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {331500, 1};
+  r.real_transform = r.packed_real_child = true;
+  r.real_transform_kind = "d2z";
+  r.direction = "forward";
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER", "0", 1);
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(331500, r)).repr();
+  EXPECT_FALSE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
+
+  unsetenv("FLAGFFT_MACA_663000_FP64_PACKED_COLUMN_ORDER");
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(331500, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 300);
+  EXPECT_EQ(plan->n2, 1105);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{13, 5, 17}));
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(331500, r)).repr(), baseline);
+  unsetenv("FLAGFFT_MACA_TAIL_POLICY");
+  r.direction = "inverse";
+  r.real_transform_kind = "z2d";
+  EXPECT_TRUE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
+  r.batch = 64;
+  EXPECT_FALSE(flagfft::maca_663000_fp64_packed_column_order_enabled(r));
+}
+
+TEST_F(TailPolicy, C550BatchedPackedReal340200UsesTheMeasuredSplit) {
+  using flagfft::KernelKind;
+  auto r = request(170100, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {170100, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.real_transform_kind = "r2c";
+  r.direction = "forward";
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_340200_PACKED_REAL_SPLIT", "0", 1);
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(170100, r)).repr();
+  EXPECT_FALSE(flagfft::maca_340200_packed_real_split_enabled(r));
+
+  unsetenv("FLAGFFT_MACA_340200_PACKED_REAL_SPLIT");
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(170100, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 405);
+  EXPECT_EQ(plan->n2, 420);
+  const auto row = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->row_plan);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(row->factors, (std::vector<int64_t>{5, 9, 9}));
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{7, 6, 10}));
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-real340200-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex64", 420, 405, 420), mode);
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(170100, r)).repr(), baseline);
+  unsetenv("FLAGFFT_MACA_1D_BATCH");
+
+  r.direction = "inverse";
+  r.real_transform_kind = "c2r";
+  EXPECT_TRUE(flagfft::maca_340200_packed_real_split_enabled(r));
+  r.packed_real_child = false;
+  EXPECT_FALSE(flagfft::maca_340200_packed_real_split_enabled(r));
+  r.packed_real_child = true;
+  r.input_dtype = r.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::maca_340200_packed_real_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550BatchedPackedReal16384UsesTheMeasuredSplit) {
+  using flagfft::KernelKind;
+  auto r = request(8192, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {8192, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.direction = "inverse";
+  r.real_transform_kind = "z2d";
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_16384_PACKED_REAL_SPLIT", "0", 1);
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(8192, r)).repr();
+  unsetenv("FLAGFFT_MACA_16384_PACKED_REAL_SPLIT");
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(8192, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 128);
+  EXPECT_EQ(plan->n2, 64);
+  EXPECT_NE(flagfft::PlanKey::from_node(plan).repr(), baseline);
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-real16384-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex128", 128, 128, 64), mode);
+  r.input_dtype = r.output_dtype = "complex64";
+  r.direction = "forward";
+  r.real_transform_kind = "r2c";
+  EXPECT_TRUE(flagfft::maca_16384_packed_real_split_enabled(r));
+  r.input_strides.front() += 5;
+  EXPECT_FALSE(flagfft::maca_16384_packed_real_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
+  using flagfft::KernelKind;
+  auto r = request(16384, "complex64");
+  r.device_arch = "102";
+  r.batch = 64;
+  r.input_layout = "contiguous";
+  r.input_strides = {16384, 1};
+  const auto phase_mode = flagfft::maca_tail_codegen_root(r);
+  ASSERT_EQ(phase_mode, "c2c16384-tiled-row-phase");
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "0", 1);
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
+  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow,
+                                         "complex64", 256, 256, 64), phase_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepCol,
+                                         "complex64", 64, 256, 64), phase_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow,
+                                         "complex64", 128, 128, 128), "off");
+  flagfft::PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(16384, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 64);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{8, 8}));
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c16384-row-twiddle");
+  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE");
+  r.batch = 1;
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex128";
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
+}
+
+TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {
+  auto r = request(16384, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16384, 1};
+  r.batch = 64;
+  flagfft::PlanBuilder builder;
+  setenv("FLAGFFT_MACA_16384_FP64_BATCH_SPLIT", "0", 1);
+  const auto baseline = flagfft::PlanKey::from_node(builder.build(16384, r)).repr();
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
+  unsetenv("FLAGFFT_MACA_16384_FP64_BATCH_SPLIT");
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(16384, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 64);
+  EXPECT_NE(flagfft::PlanKey::from_node(plan).repr(), baseline);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "z2z16384-split");
+  r.batch = 1;
+  EXPECT_FALSE(flagfft::maca_16384_fp64_batch_split_enabled(r));
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex64";
+  EXPECT_FALSE(flagfft::maca_16384_fp64_batch_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550SingleFp64_524288Z2DVectorIoIsScopedToThePackedChild) {
+  using flagfft::KernelKind;
+  auto outer = request(524288, "complex128");
+  outer.device_arch = "102";
+  outer.real_transform = true;
+  outer.real_transform_kind = "z2d";
+  outer.direction = "inverse";
+  outer.input_layout = "contiguous";
+  outer.input_strides = {262145, 1};
+  auto child = outer;
+  child.packed_real_child = true;
+  child.fft_length = child.requested_n = 262144;
+  child.input_strides = {262144, 1};
+  EXPECT_EQ(flagfft::maca_524288_fp64_single_z2d_mode(outer), "paired");
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "batch-vecio");
+  setenv("FLAGFFT_MACA_524288_FP64_SINGLE_Z2D", "0", 1);
+  EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(outer).empty());
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "off");
+  for (const char* setting : {"vector", "paired"}) {
+    setenv("FLAGFFT_MACA_524288_FP64_SINGLE_Z2D", setting, 1);
+    EXPECT_EQ(flagfft::maca_524288_fp64_single_z2d_mode(outer), setting);
+    EXPECT_EQ(flagfft::maca_tail_codegen_root(outer), "off");
+    const auto mode = flagfft::maca_tail_codegen_root(child);
+    EXPECT_EQ(mode, "batch-vecio");
+    EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                           "complex128", 512, 512, 512), mode);
+    auto other = child;
+    other.direction = "forward";
+    EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(other).empty());
+    other = child;
+    other.batch = 64;
+    EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(other).empty());
+    other = outer;
+    other.input_strides.front() += 1;
+    EXPECT_TRUE(flagfft::maca_524288_fp64_single_z2d_mode(other).empty());
+  }
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(child), "off");
+}
+
+TEST_F(TailPolicy, C550BatchedPackedReal524288UsesMeasuredSplit) {
+  using flagfft::KernelKind;
+  auto r = request(262144, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {262144, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.direction = "forward";
+  r.real_transform_kind = "r2c";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-real524288-split");
+  setenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
+
+  unsetenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
+  setenv("FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4", "1", 1);
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-real524288-row4");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex64", 512, 512, 512), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex64", 512, 512, 512), "batch-vecio");
+
+  setenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT", "1", 1);
+  flagfft::PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(262144, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 1024);
+  const auto split_mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(split_mode, "batch-real524288-split");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(split_mode, KernelKind::FourStepCol,
+                                         "complex64", 1024, 256, 1024), split_mode);
+  unsetenv("FLAGFFT_MACA_524288_PACKED_REAL_SPLIT");
+  unsetenv("FLAGFFT_MACA_524288_PACKED_REAL_ROW_PACK4");
+  r.direction = "inverse";
+  r.real_transform_kind = "c2r";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-real524288-split");
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "z2d";
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-vecio");
+}
+
+TEST_F(TailPolicy, C550BatchedPackedReal185640UsesTwoMeasuredLeafPacks) {
+  using flagfft::KernelKind;
+  auto r = request(92820, "complex64");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {92820, 1};
+  r.batch = 64;
+  r.real_transform = r.packed_real_child = true;
+  r.direction = "inverse";
+  r.real_transform_kind = "c2r";
+  setenv("FLAGFFT_MACA_185640_PACKED_REAL_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_185640_packed_real_split_enabled(r));
+
+  unsetenv("FLAGFFT_MACA_185640_PACKED_REAL_SPLIT");
+  flagfft::PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(92820, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 420);
+  EXPECT_EQ(plan->n2, 221);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "batch-real185640-p2");
+  r.input_dtype = r.output_dtype = "complex128";
+  r.real_transform_kind = "z2d";
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "batch-real185640-p4");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex128", 221, 420, 221), mode);
+  r.batch = 1;
+  EXPECT_FALSE(flagfft::maca_185640_packed_real_split_enabled(r));
+}
+
+TEST_F(TailPolicy, C550ShortBatchedComplexOptionsStayLocal) {
+  using flagfft::KernelKind;
+  auto r = request(16, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16, 1};
+  r.batch = 64;
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  setenv("FLAGFFT_MACA_16_FP64_BATCH_PACK16", "1", 1);
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "z2z16-pack16");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::Leaf, "complex128", 16, 0, 0), mode);
+  r.batch = 1;
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
+
+  r.batch = 64;
+  r.input_dtype = r.output_dtype = "complex64";
+  r.input_strides = {210, 1};
+  r.fft_length = r.requested_n = 210;
+  EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
+  setenv("FLAGFFT_MACA_210_BATCH_RADIX6", "1", 1);
+  flagfft::PlanBuilder builder;
+  const auto leaf = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(builder.build(210, r));
+  ASSERT_NE(leaf, nullptr);
+  EXPECT_EQ(leaf->factors, (std::vector<int64_t>{7, 6, 5}));
+  r.real_transform = true;
+  EXPECT_FALSE(flagfft::maca_210_fp32_batch_radix6_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp32PrimeRaderDefaultsToDenseBatchedComplexRequests) {
+  for (const int64_t n : {8191, 16381}) {
+    auto r = request(n, "complex64");
+    r.device_arch = "102";
+    r.batch = 64;
+    r.input_layout = "contiguous";
+    r.input_strides = {n, 1};
+    EXPECT_TRUE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", "0", 1);
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP");
+    setenv("FLAGFFT_MACA_BATCH_RADER_SPLIT", "0", 1);
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    unsetenv("FLAGFFT_MACA_BATCH_RADER_SPLIT");
+    setenv("FLAGFFT_MACA_RADER_CODELET", "1", 1);
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP", "1", 1);
+    EXPECT_TRUE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    unsetenv("FLAGFFT_MACA_RADER_CODELET");
+    unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_FOUR_STEP");
+
+    r.input_strides = {n + 1, 1};
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    r.input_strides = {n, 1};
+    r.batch = 1;
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    r.batch = 64;
+    r.origin_rank = 2;
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+    r.origin_rank = 1;
+    r.input_dtype = r.output_dtype = "complex128";
+    EXPECT_FALSE(flagfft::maca_batch_prime_c2c_four_step_enabled(r, n));
+  }
+}
+
+TEST_F(TailPolicy, C550Fp32PrimeRaderAllowsPublicRealBoundaries) {
+  auto r = request(8191, "complex64");
+  r.device_arch = "102";
+  r.batch = 64;
+  r.input_layout = "contiguous";
+  r.real_transform = true;
+  r.real_transform_kind = "r2c";
+  r.input_strides = {8191, 1};
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT", "0", 1);
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT");
+  setenv("FLAGFFT_MACA_BATCH_RADER_SPLIT", "0", 1);
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "1", 1);
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP");
+  unsetenv("FLAGFFT_MACA_BATCH_RADER_SPLIT");
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT", "1", 1);
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "0", 1);
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  unsetenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_DIRECT");
+  setenv("FLAGFFT_MACA_BATCH_PRIME_RADER_REAL_FOUR_STEP", "1", 1);
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191, true));
+  flagfft::PlanBuilder builder;
+  EXPECT_EQ(builder.build(8191, r)->kind, flagfft::PlanNodeKind::Rader);
+  r.input_strides = {8192, 1};
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  r.real_transform_kind = "c2r";
+  r.direction = "inverse";
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  r.input_strides = {4096, 1};
+  EXPECT_TRUE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  EXPECT_EQ(builder.build(8191, r)->kind, flagfft::PlanNodeKind::Rader);
+  r.origin_rank = 2;
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+  r.origin_rank = 1;
+  r.input_dtype = r.output_dtype = "complex128";
+  EXPECT_FALSE(flagfft::maca_batch_prime_real_four_step_enabled(r, 8191));
+}
+
+TEST_F(TailPolicy, C550Fp64Fft16NativeStaysWithinDenseRootRequests) {
+  auto r = request(16, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16, 1};
+  EXPECT_TRUE(flagfft::maca_fp64_fft16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_FP64_NATIVE", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_16_FP64_NATIVE");
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  r.batch = 64;
+  EXPECT_TRUE(flagfft::maca_fp64_fft16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_FP64_BATCH_PACK16", "1", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_FP64_NATIVE", "1", 1);
+  EXPECT_TRUE(flagfft::maca_fp64_fft16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_16_FP64_BATCH_PACK16");
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_1D_BATCH");
+  setenv("FLAGFFT_MACA_TAIL_PLAN", "default", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_TAIL_PLAN");
+  r.input_strides = {32, 2};
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  r.input_strides = {16, 1};
+  r.origin_rank = 3;
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+  r.origin_rank = 1;
+  r.input_dtype = r.output_dtype = "complex64";
+  EXPECT_FALSE(flagfft::maca_fp64_fft16_native_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp64Fft23NativeStaysWithinSingleComplexRequests) {
+  auto r = request(23, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {23, 1};
+  EXPECT_TRUE(flagfft::maca_fp64_fft23_native_enabled(r));
+  setenv("FLAGFFT_MACA_23_FP64_NATIVE", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_23_FP64_NATIVE");
+  EXPECT_TRUE(flagfft::maca_fp64_fft23_native_enabled(r));
+  r.batch = 64;
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+  r.batch = 1;
+  r.real_transform = true;
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+  r.real_transform = false;
+  setenv("FLAGFFT_MACA_TAIL_POLICY", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_fft23_native_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp64D2Z16NativeAcceptsDenseAndPaddedRows) {
+  auto r = request(16, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {16, 1};
+  r.real_transform = true;
+  r.real_transform_kind = "d2z";
+  EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  setenv("FLAGFFT_MACA_16_D2Z_NATIVE", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  unsetenv("FLAGFFT_MACA_16_D2Z_NATIVE");
+  EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.batch = 64;
+  r.input_strides = {18, 1};
+  EXPECT_TRUE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.input_strides = {32, 2};
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.input_strides = {16, 1};
+  r.origin_rank = 2;
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.origin_rank = 1;
+  r.real_transform_kind = "z2d";
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+  r.real_transform_kind = "d2z";
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_FALSE(flagfft::maca_fp64_d2z16_native_enabled(r));
+}
+
+TEST_F(TailPolicy, C550Fp64_524288Pack4IsScopedToDenseSingleComplex) {
+  using flagfft::KernelKind;
+  auto r = request(524288, "complex128");
+  r.device_arch = "102";
+  r.input_layout = "contiguous";
+  r.input_strides = {524288, 1};
+  setenv("FLAGFFT_MACA_524288_FP64_REGISTER_PACK", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "off");
+  unsetenv("FLAGFFT_MACA_524288_FP64_REGISTER_PACK");
+  const auto mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(mode, "z2z524288-pack4");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
+                                         "complex128", 512, 512, 1024), mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol,
+                                         "complex128", 1024, 1024, 1024), "off");
+  r.batch = 64;
+  EXPECT_FALSE(flagfft::maca_524288_fp64_register_pack_enabled(r));
+  r.batch = 1;
+  r.real_transform = true;
+  EXPECT_FALSE(flagfft::maca_524288_fp64_register_pack_enabled(r));
+}
+
+TEST_F(TailPolicy, C550BatchedSplitColumnUsesTheMatchingFourStepPlan) {
+  auto r = request(663000, "complex64");
+  r.device_arch = "102";
+  r.batch = 64;
+  r.input_layout = "contiguous";
+  r.input_strides = {663000, 1};
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
+  setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  unsetenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
+  setenv("FLAGFFT_MACA_RADER_CODELET", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  unsetenv("FLAGFFT_MACA_RADER_CODELET");
+  setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c663000");
+  flagfft::PlanBuilder builder;
+  auto fourstep = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(663000, r));
+  ASSERT_NE(fourstep, nullptr);
+  EXPECT_EQ(fourstep->n1, 375);
+  EXPECT_EQ(fourstep->n2, 1768);
+  setenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN", "pfa", 1);
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct375x1768");
+  r.requires_contiguous_copy = true;
+  EXPECT_EQ(flagfft::maca_tail_automatic_plan(r), "ct780x850");
+  r.requires_contiguous_copy = false;
+  setenv("FLAGFFT_MACA_1D_BATCH", "0", 1);
+  EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+}
+
+TEST_F(TailPolicy, C550BatchedPrimeBluesteinUsesTwoLeafAxes) {
+  flagfft::PlanBuilder builder;
+  for (const int64_t n : {8191, 16381}) {
+    auto r = request(n, "complex64");
+    r.device_arch = "102";
+    r.batch = 64;
+    r.input_layout = "contiguous";
+    r.input_strides = {n, 1};
+    EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+    setenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN", "1", 1);
+    auto root = std::dynamic_pointer_cast<flagfft::BluesteinPlanNode>(builder.build(n, r));
+    ASSERT_NE(root, nullptr);
+    EXPECT_EQ(root->conv_length, n == 8191 ? 16384 : 32768);
+    auto conv = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(root->fft_plan);
+    ASSERT_NE(conv, nullptr);
+    EXPECT_EQ(conv->n1, 128);
+    EXPECT_EQ(conv->n1 * conv->n2, root->conv_length);
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(conv->row_plan), nullptr);
+    EXPECT_NE(std::dynamic_pointer_cast<flagfft::LeafPlanNode>(conv->col_plan), nullptr);
+    r.input_dtype = r.output_dtype = "complex128";
+    EXPECT_TRUE(flagfft::maca_tail_automatic_plan(r).empty());
+    unsetenv("FLAGFFT_MACA_BATCH_PRIME_BLUESTEIN");
+  }
 }
 
 TEST_F(TailPolicy, NativeDescriptorKeepsOriginalApiAndRank) {

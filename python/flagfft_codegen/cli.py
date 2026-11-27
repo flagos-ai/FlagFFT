@@ -72,6 +72,7 @@ from .target import (
     set_maca_1d_batch_default,
     set_musa_1d_batch_default,
     set_maca_2d_single_default,
+    set_maca_2d_dense_default,
     set_maca_3d_default,
     set_maca_3d_c2c32_single_cube,
 )
@@ -227,9 +228,64 @@ def main() -> None:
             "ix_split_frequency",
             "ix_split_c2r_frequency",
             "ix_prime_r2c_last",
+            "maca_fp64_dif",
+            "maca_fp64_dif_w4",
+            "maca_fp64_dif_terminal8",
+            "maca_fp64_packed_dif1024",
+            "maca_fp64_packed_dif1024_gather",
+            "maca_fp32_packed_dif1024_gather",
+            "maca_fp64_dif_first64",
+            "maca_fp64_ct128_prepare",
+            "maca_fp64_ct128_finish",
+            "maca_fp64_ct128_prepare_dif",
+            "maca_fp64_ct128_finish_dif",
+            "maca_fp64_3d_r2c64",
+            "maca_fp64_3d_c2r64",
+            "maca_fp32_r2c48_to_columns",
+            "maca_fp64_r2c48_to_columns",
+            "maca_fp64_c2r48_from_columns",
+            "maca_fp32_3d_c2r64",
+            "maca_fp32_fft210_pfa",
+            "maca_fp32_c2r210_pfa",
+            "maca_3d_prime_r2c64",
+            "maca_3d_prime_c2r64",
+            "maca_3d_prime_outer16",
+            "maca_3d_prime_outer16_wide",
+            "maca_prime_dif_c2c",
+            "maca_prime_dif_r2c",
+            "maca_prime_dif_c2r",
+            "maca_split_column1768_prepare",
+            "maca_split_column1768_finish",
+            "maca_split_column1768_prepare_pfa",
+            "maca_split_column1768_finish_pfa",
+            "maca_split_column1105_prepare_t16",
+            "maca_split_column1105_finish_t16",
+            "maca_split_column1105_prepare_t32",
+            "maca_split_column1105_finish_t32",
+            "maca_paired_real_boundary_w2",
+            "maca_paired_real_boundary_w4",
+            "maca_packed_c2r_row",
+            "maca_r2c_half_columns",
+            "maca_real32_plane_dif",
+            "maca_rader_four_step_plain",
+            "maca_rader_four_step_gather",
+            "maca_rader_four_step_gather_i16",
+            "maca_rader_four_step_gather_r2c",
+            "maca_rader_four_step_gather_c2r",
+            "maca_rader_four_step_product",
+            "maca_rader_four_step_product_r2c",
+            "maca_rader_four_step_product_c2r",
+            "maca_rader_four_step_scatter",
+            "maca_rader_four_step_scatter_i16",
+            "maca_rader_four_step_scatter_sorted",
+            "maca_rader_four_step_scatter_pfa",
+            "maca_rader_four_step_scatter_pfa_i16",
+            "maca_rader_four_step_scatter_r2c",
+            "maca_rader_four_step_scatter_c2r",
+            "maca_rader_four_step_spectral",
         ),
         default="outer",
-        help="axis placement for the permuted store's fused permutation",
+        help="layout for a permuted store or specialized leaf",
     )
     parser.add_argument("--hcu-3d-full-smem", action="store_true")
     parser.add_argument("--bluestein-n", type=int)
@@ -280,12 +336,27 @@ def main() -> None:
     parser.add_argument("--maca-tail-mode",
                         choices=("off", "p4w4", "real-direct", "batch-vecio",
                                  "batch-real-pack2", "batch-c2c-pack2", "batch-prime-vecio",
-                                 "batch-c2c-tree", "batch-prime-rader-vecio"),
+                                 "batch-c2c-tree", "batch-prime-rader-vecio", "c2c663000",
+                                 "c2c663000-batch", "r2c663000", "batch-c2r663000",
+                                 "batch-c2r663000-split", "c2c340200-split", "c2c340200-single",
+                                 "c2c340200-inverse-pack", "c2c340200-batch-900x378",
+                                 "c2c340200-single-row-phase", "c2c340200-inverse-pack-row-phase",
+                                 "z2z340200-split", "z2z340200-single", "z2z340200-column-phase",
+                                 "batch-real340200-split", "batch-real16384-split",
+                                 "batch-real524288-row4", "batch-real524288-split",
+                                 "batch-real185640-p2", "batch-real185640-p4",
+                                 "c2c16384-row-twiddle", "c2c16384-tiled-row-phase",
+                                 "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"),
                         default="off")
     parser.add_argument(
         "--maca-2d-single",
         action="store_true",
         help="enable the MACA rank-2 FP32 batch-1 code-generation policy",
+    )
+    parser.add_argument(
+        "--maca-2d-dense",
+        action="store_true",
+        help="enable tuned dense C550 rank-2 axis kernels",
     )
     parser.add_argument("--maca-3d", action="store_true",
                         help="enable scoped MACA rank-3 axis packing")
@@ -336,6 +407,7 @@ def main() -> None:
     set_ix_ct_single_tle_default(args.ix_ct_single_tle)
     set_maca_tail_mode(args.maca_tail_mode)
     set_maca_2d_single_default(args.maca_2d_single)
+    set_maca_2d_dense_default(args.maca_2d_dense)
     set_maca_3d_default(args.maca_3d)
     set_maca_3d_c2c32_single_cube(args.maca_3d_c2c32_single_cube)
     if args.device_profile:
@@ -394,6 +466,8 @@ def main() -> None:
         profile_dir += (
             "-maca-2d-single" if args.maca_2d_single else "-maca-2d-single-off"
         )
+        if args.maca_2d_dense:
+            profile_dir += "-maca-2d-dense"
         profile_dir += "-maca-3d" if args.maca_3d else "-maca-3d-off"
         maca_env_fingerprint = _maca_environment_fingerprint()
         if maca_env_fingerprint:
@@ -714,6 +788,7 @@ def main() -> None:
         elif args.kernel == "fused_32_real_plane":
             metadata = emit_fused_32_real_plane_kernel(
                 dtype=args.dtype, direction=args.direction, out_dir=args.out_dir,
+                maca_dif=args.perm_form == "maca_real32_plane_dif",
             )
         elif args.kernel == "fused_32_plane":
             metadata = emit_fused_32_plane_kernel(
@@ -746,6 +821,7 @@ def main() -> None:
             dtype=args.dtype,
             out_dir=args.out_dir,
             target=args.target,
+            perm_form=args.perm_form,
         )
     elif spec.family in {DIRECT_DFT, STOCKHAM}:
         if args.length is None or args.length <= 0:
@@ -799,11 +875,8 @@ def main() -> None:
             smem_size=args.smem_size,
             direction=args.direction,
             dtype=args.dtype,
-            prime_n=(args.rader_n if args.kernel in {"leaf_rader_full",
-                                                    "leaf_rader_full_c2r",
-                                                    "leaf_rader_prepare",
-                                                    "leaf_rader_finish"}
-                     else args.bluestein_n) or 0,
+            prime_n=(args.rader_n if args.kernel.startswith("leaf_rader_")
+                     or args.perm_form.startswith("maca_rader_four_step_") else args.bluestein_n) or 0,
             four_step_n1=args.four_step_n1,
             four_step_n2=args.four_step_n2,
             perm_form=args.perm_form,
@@ -864,6 +937,7 @@ def main() -> None:
             "ix_ct_single_tle_default": args.ix_ct_single_tle,
             "maca_tail_mode": args.maca_tail_mode,
             "maca_2d_single_default": args.maca_2d_single,
+            "maca_2d_dense_default": args.maca_2d_dense,
             "warp_size": profile.warp_size,
             "block_threads": metadata["num_warps"] * profile.warp_size,
         }

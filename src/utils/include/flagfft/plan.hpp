@@ -168,6 +168,7 @@ class PlanBuilder {
     int64_t requested_n = 0;
     int64_t batch = 1;
     bool maca_3d_c2c32_single_cube = false;
+    bool maca_663000_packed_c2r_split = false;
     bool ix_short_single = false;
     bool ix_ct_batch = false;
     bool ix_rader1009 = false;

@@ -44,6 +44,7 @@ bool PlanBuilder::RequestContext::operator==(const RequestContext &other) const 
          requested_n == other.requested_n &&
          batch == other.batch &&
          maca_3d_c2c32_single_cube == other.maca_3d_c2c32_single_cube &&
+         maca_663000_packed_c2r_split == other.maca_663000_packed_c2r_split &&
          ix_short_single == other.ix_short_single &&
          ix_ct_batch == other.ix_ct_batch &&
          ix_rader1009 == other.ix_rader1009 &&
@@ -127,6 +128,7 @@ PlanBuilder::RequestContext PlanBuilder::make_request_context(const FFTRequest &
   context.requested_n = request.requested_n;
   context.batch = request.batch;
   context.maca_3d_c2c32_single_cube = request.maca_3d_c2c32_single_cube;
+  context.maca_663000_packed_c2r_split = maca_663000_packed_c2r_split_enabled(request);
   context.ix_short_single = request.requested_n == 1024 && ix_ct_single_policy_enabled(request);
   context.ix_ct_batch = ix_ct_batch_policy_enabled(request);
   context.ix_rader1009 = ix_rader1009_policy_enabled(request);
@@ -551,6 +553,54 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
                                           return build_auto_node(length, heuristic);
                                         });
   }
+  if (n == 340200 && maca_340200_single_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 900, 378,
+        make_leaf_plan(900, {10, 9, 10}), make_leaf_plan(378, {7, 6, 9}));
+  }
+  if (n == 340200 && maca_340200_batch_split_enabled(request)) {
+    if (request.input_dtype == "complex64") {
+      if (maca_340200_fp32_batch_900x378_enabled()) {
+        return std::make_shared<FourStepPlanNode>(n, 900, 378,
+            make_leaf_plan(900, {10, 10, 9}), make_leaf_plan(378, {9, 7, 6}));
+      }
+      const char* radix_order = std::getenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER");
+      if (radix_order && std::string(radix_order) == "1") {
+        return std::make_shared<FourStepPlanNode>(n, 567, 600,
+            make_leaf_plan(567, {9, 7, 9}), make_leaf_plan(600, {10, 6, 10}));
+      }
+      return std::make_shared<FourStepPlanNode>(n, 567, 600,
+          make_leaf_plan(567, {7, 9, 9}), make_leaf_plan(600, {6, 10, 10}));
+    }
+    return std::make_shared<FourStepPlanNode>(n, 504, 675,
+        make_leaf_plan(504, {7, 8, 9}), make_leaf_plan(675, {5, 15, 9}));
+  }
+  if (n == 170100 && maca_340200_packed_real_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 405, 420,
+        make_leaf_plan(405, {5, 9, 9}), make_leaf_plan(420, {7, 6, 10}));
+  }
+  if (n == 8192 && maca_16384_packed_real_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 128, 64,
+        make_leaf_plan(128, {8, 4, 4}), make_leaf_plan(64, {4, 4, 4}));
+  }
+  if (n == 262144 && maca_524288_packed_real_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 256, 1024,
+        make_leaf_plan(256, {4, 4, 4, 4}), make_leaf_plan(1024, {16, 8, 8}));
+  }
+  if (n == 92820 && maca_185640_packed_real_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 420, 221,
+        make_leaf_plan(420, {7, 6, 10}), make_leaf_plan(221, {17, 13}));
+  }
+  if (n == 331500 && maca_663000_fp64_packed_column_order_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 300, 1105,
+        make_leaf_plan(300, {5, 5, 4, 3}), make_leaf_plan(1105, {13, 5, 17}));
+  }
+  if (n == 16384 && maca_16384_fp64_batch_split_enabled(request)) {
+    return std::make_shared<FourStepPlanNode>(n, 256, 64,
+        make_leaf_plan(256, {4, 4, 4, 4}), make_leaf_plan(64, {4, 4, 4}));
+  }
+  if (n == 210 && maca_210_fp32_batch_radix6_enabled(request)) {
+    return make_leaf_plan(210, {7, 6, 5});
+  }
   const char *maca_batch_setting = std::getenv("FLAGFFT_MACA_1D_BATCH");
   const bool maca_batch_c2c = request.device_type == "maca" && request.device_arch == "102" &&
                               request.raw_dim == 1 && request.origin_rank <= 1 && request.batch == 64 &&
@@ -561,6 +611,9 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     // The measured batch splits distribute the C550 column stage more evenly.
     const int64_t n1 = n == 16384 ? 256 : 884;
     const int64_t n2 = n / n1;
+    if (n == 16384 && maca_16384_fp32_batch_row_phase_enabled(request)) {
+      return std::make_shared<FourStepPlanNode>(n, n1, n2, build_auto_node(n1, false), make_leaf_plan(n2, {8, 8}));
+    }
     return std::make_shared<FourStepPlanNode>(n, n1, n2,
                                               build_auto_node(n1, false), build_auto_node(n2, false));
   }

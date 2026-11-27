@@ -24,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <functional>
+#include <numeric>
 
 #if defined(FLAGFFT_BACKEND_NPU)
 #include "adaptor/backend/npu/npu_fft_contract.hpp"
@@ -55,6 +56,43 @@ namespace {
            request.origin_real_transform_kind.empty() && !request.packed_real_child &&
            !request.convolution_child;
   }
+
+  std::vector<DeviceAllocation> make_maca_dif_roots(int64_t length,
+                                                   bool fp64,
+                                                   bool inverse,
+                                                   bool both_directions = false) {
+    std::vector<double> cosine(length), sine(length);
+    const double phase_step = (inverse ? 2.0 : -2.0) * kPi / length;
+    for (int64_t i = 0; i < length; ++i) {
+      cosine[i] = std::cos(phase_step * i);
+      sine[i] = std::sin(phase_step * i);
+    }
+    const auto upload = [fp64](const std::vector<double>& values) {
+      return fp64 ? adaptor::Memory::from_doubles(values)
+                  : adaptor::Memory::from_floats(std::vector<float>(values.begin(), values.end()));
+    };
+    std::vector<DeviceAllocation> roots;
+    roots.push_back(upload(cosine));
+    roots.push_back(upload(sine));
+    if (both_directions) {
+      for (double& value : sine) value = -value;
+      roots.push_back(upload(sine));
+    }
+    return roots;
+  }
+
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  template<class Real>
+  std::vector<Real> make_maca_sdk_roots(int64_t length, bool inverse) {
+    std::vector<Real> roots(2 * length);
+    const double step = (inverse ? 2.0 : -2.0) * kPi / length;
+    for (int64_t k = 0; k < length; ++k) {
+      roots[2 * k] = static_cast<Real>(std::cos(step * k));
+      roots[2 * k + 1] = static_cast<Real>(std::sin(step * k));
+    }
+    return roots;
+  }
+#endif
 
   // Compact real boundaries and graph replay are qualified on A100. Keep
   // the policy local to sm_80 and retain explicit rollback for comparisons.
@@ -2775,6 +2813,48 @@ namespace {
         flag_or_default("FLAGFFT_HCU_2D_REAL_ROWS", false);
   }
 
+  bool maca_2d_fused_packed_rows_enabled(const FFTRequest &request, bool dense_default) {
+    const int64_t length = request.requested_n;
+    if (request.device_type != "maca" || request.device_arch != "102" ||
+        request.origin_rank != 2 || request.raw_dim != 2 ||
+        request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+        request.input_strides.empty() || request.input_strides.back() != 1 ||
+        length < 512 || length > 2048 || (length & (length - 1)) != 0 ||
+        !flag_or_default("FLAGFFT_MACA_2D_FUSED_PACKED_ROWS", dense_default)) {
+      return false;
+    }
+    // The FFT and reconstruction share one CTA. Budget six half-length
+    // scalar buffers before selecting a fused leaf for a dense row pass.
+    const auto scalar_bytes = complex_element_bytes(request.input_dtype) / 2;
+    return length / 2 <= adaptor::max_dynamic_smem_bytes(request.device_index) / (6 * scalar_bytes);
+  }
+
+  bool maca_1d_2048_scope(const FFTRequest &request, int64_t batch, const char *dtype) {
+    return request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
+        (batch == 1 || batch == 64) && !request.convolution_child && !request.packed_real_child &&
+        request.fft_length == 2048 && request.requested_n == 2048 &&
+        request.input_dtype == dtype && request.output_dtype == dtype &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        !request.input_strides.empty() && request.input_strides.back() == 1;
+  }
+
+  bool maca_1d_fp64_2048_dif_enabled(const FFTRequest &request, int64_t batch) {
+    const bool qualified = !request.real_transform || request.real_transform_kind == "z2d";
+    return maca_1d_2048_scope(request, batch, "complex128") &&
+        flag_or_default("FLAGFFT_MACA_1D_FP64_2048", true) &&
+        flag_or_default("FLAGFFT_MACA_1D_FP64_2048_DIF", qualified);
+  }
+
+  bool maca_1d_fp64_2048_enabled(const FFTRequest &request, int64_t batch) {
+    if (!maca_1d_2048_scope(request, batch, "complex128")) return false;
+    const char *setting = performance_env("FLAGFFT_MACA_1D_FP64_2048");
+    if (setting) return std::string(setting) == "1";
+    if (request.real_transform_kind != "d2z" || request.direction != "forward") return false;
+    return batch == 1 ? maca_tail_policy_enabled(request)
+                      : flag_or_default("FLAGFFT_MACA_1D_BATCH", true);
+  }
+
   bool hcu_3d_packed_real_boundary_enabled(const FFTRequest &request,
                                            bool inverse,
                                            int64_t batch,
@@ -2801,6 +2881,13 @@ namespace {
                                    const FFTRequest &request,
                                    int64_t batch) {
     const auto bluestein = std::dynamic_pointer_cast<BluesteinPlanNode>(node);
+    if (bluestein && maca_prime_dif_requested(request) && batch == request.batch &&
+        bluestein->conv_length == 2048 &&
+        std::dynamic_pointer_cast<LeafPlanNode>(bluestein->fft_plan) &&
+        (request.real_transform_kind == "r2c" || request.real_transform_kind == "c2r" ||
+         request.real_transform_kind == "d2z" || request.real_transform_kind == "z2d")) {
+      return true;
+    }
     const bool cuda_real = bluestein && request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.raw_dim == 1 && request.origin_rank <= 1 && batch == request.batch &&
         !request.packed_real_child && request.fft_length == request.requested_n &&
@@ -2937,7 +3024,8 @@ namespace {
   std::optional<PackedRealChild> select_packed_real_child(const PlanNodePtr &original_plan,
                                                           const FFTRequest &request,
                                                           int64_t batch,
-                                                          bool inverse) {
+                                                          bool inverse,
+                                                          bool maca_packed_rows) {
     const char *setting = std::getenv("FLAGFFT_PACKED_REAL");
     const int64_t n = request.requested_n;
     const bool hcu_large_packed = hcu_large_packed_real_enabled(original_plan, request, batch);
@@ -2946,6 +3034,8 @@ namespace {
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
     const bool force = (setting != nullptr && std::string(setting) == "1") || cuda_fused ||
                        hcu_large_packed ||
+                       maca_packed_rows ||
+                       (!inverse && batch == 1 && maca_663000_real_enabled(request)) ||
                        hcu_fused_packed_real_enabled(request, batch, n) ||
                        (inverse && ix_fused_c2r_leaf_enabled(request, batch)) ||
                        hcu_3d_packed_real_boundary_enabled(request, inverse, batch, n);
@@ -3032,25 +3122,30 @@ namespace {
         (n == 16384 || n == 185640 || n == 340200 || n == 524288 || n == 663000) &&
         (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
         (maca_batch_setting == nullptr || std::string(maca_batch_setting) != "0");
-    // On C550, the compact-input four-step C2R pass still runs a full-length
-    // complex FFT. The measured half-length route wins for these single
-    // transforms in both precisions; keep short and batched paths unchanged.
-    const bool is_maca_single_c2r_target =
-        request.device_type == "maca" && request.raw_dim == 1 && batch == 1 && inverse &&
+    // Single large C2R and the measured C550 D2Z lengths benefit from
+    // reinterpreting adjacent real values as one half-length complex FFT.
+    const bool maca_single_d2z = !inverse && request.device_arch == "102" &&
+        request.origin_rank <= 1 && batch == request.batch &&
+        request.input_dtype == "complex128" && request.real_transform_kind == "d2z" &&
+        request.fft_length == n && request.input_layout == "contiguous" &&
+        !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{n, 1};
+    const bool is_maca_single_real_target =
+        request.device_type == "maca" && request.raw_dim == 1 && batch == 1 &&
+        (inverse || maca_single_d2z) &&
         std::dynamic_pointer_cast<FourStepPlanNode>(original_plan) != nullptr &&
-        (n == 185640 || n == 340200 || n == 524288 || n == 663000);
+        (n == 185640 || n == 340200 || n == 524288 || (inverse && n == 663000));
     if (!force && !is_a100_fp64_target && !is_musa_s5000_fp64_target &&
         !is_musa_s5000_batch_fp32_c2r_target && !is_musa_s5000_batch_fp32_r2c_target &&
         !is_npu_fp32_target &&
         !is_ix_single_fp32_target && !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
-        !is_maca_batch_real_target && !is_maca_single_c2r_target) {
+        !is_maca_batch_real_target && !is_maca_single_real_target) {
       return std::nullopt;
     }
     if (!force && !is_musa_s5000_batch_fp32_c2r_target &&
         !is_musa_s5000_batch_fp32_r2c_target && !is_npu_fp32_target &&
         !is_ix_single_fp32_target &&
         !is_ix_batch_fp32_target && !is_ix_large_batch_fp32_target &&
-        !is_maca_batch_real_target && !is_maca_single_c2r_target &&
+        !is_maca_batch_real_target && !is_maca_single_real_target &&
         (request.input_dtype != "complex128" || n < 65536 ||
          (batch == 1 && is_musa_s5000_fp64_target && n < 300000))) {
       return std::nullopt;
@@ -3134,7 +3229,7 @@ namespace {
       if (!child_is_leaf_pair) return std::nullopt;
       return PackedRealChild {std::move(child_request), std::move(child_plan)};
     }
-    if (!force && is_maca_single_c2r_target) {
+    if (!force && is_maca_single_real_target) {
       // A tuned child may choose a different factor pair. Use the route only
       // for the exact half-length decompositions measured on C550.
       const bool measured_child = child_is_leaf_pair &&
@@ -3190,6 +3285,29 @@ namespace {
       return default_value;
     }
     return std::string(value) == "1";
+  }
+
+  const char* maca_paired_real_boundary_form(const FFTRequest &request, int64_t n,
+                                             int64_t batch, bool inverse) {
+    if (request.device_type != "maca" || request.device_arch != "102" ||
+        request.origin_rank > 1 || request.raw_dim != 1 ||
+        request.fft_length != n || request.requested_n != n || batch != request.batch ||
+        request.requires_contiguous_copy) return nullptr;
+    if (n == 663000 && (batch == 1 || batch == 64) &&
+        maca_flag_or_default("FLAGFFT_MACA_663000_PAIRED_REAL", true)) {
+      const bool use_two_warps = batch == 1 && (inverse || request.input_dtype == "complex128");
+      return use_two_warps ? "maca_paired_real_boundary_w2" : "maca_paired_real_boundary_w4";
+    }
+    if (inverse && n == 524288 && maca_524288_fp64_single_z2d_mode(request) == "paired") {
+      return "maca_paired_real_boundary_w4";
+    }
+    const bool measured_batch = batch == 64 &&
+        (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+        (n == 185640 || n == 524288 || (n == 340200 && request.input_dtype == "complex64"));
+    const char* batch_policy = std::getenv("FLAGFFT_MACA_1D_BATCH");
+    return measured_batch && (!batch_policy || std::string(batch_policy) != "0") &&
+        maca_flag_or_default("FLAGFFT_MACA_BATCH_PAIRED_REAL", true)
+        ? "maca_paired_real_boundary_w4" : nullptr;
   }
 
   bool real_direct_dft_enabled(const PlanNodePtr &node,
@@ -3671,9 +3789,38 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
       return make_npu_aiv_fft64_child(request, 1, group_size, NpuAivFFT64Mode::Complex, radix4_pair);
     }
 #endif
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    if (leaf->length == 16 && batch == request.batch && maca_fp64_fft16_native_enabled(request)) {
+      return std::make_shared<CompiledRawMacaFp64FFT16Node>(
+          request.direction == "inverse" ? FLAGFFT_INVERSE : FLAGFFT_FORWARD);
+    }
+#endif
+    if (leaf->length == 2048 && !request.real_transform &&
+        maca_1d_fp64_2048_dif_enabled(request, batch)) {
+      return compile_raw_leaf(*leaf, request, MacaLeafLayout::ContiguousFourWarps);
+    }
+    if (leaf->length == 2048 && !request.real_transform &&
+        maca_1d_fp64_2048_enabled(request, batch)) {
+      return compile_raw_leaf(*leaf, request, MacaLeafLayout::Contiguous);
+    }
+    if (maca_2d_dense_policy_ && request.input_dtype == "complex128" &&
+        leaf->length == 2048 && leaf->factors == std::vector<int64_t> {16, 16, 8} &&
+        flag_or_default("FLAGFFT_MACA_2D_FP64_RADIX_ORDER", false)) {
+      // Keep the FFT size and physical block geometry while moving radix 8
+      // to the middle. The reordered plan also builds the matching twiddles.
+      LeafPlanNode reordered = *leaf;
+      std::swap(reordered.factors[1], reordered.factors[2]);
+      return compile_raw_leaf(reordered, request);
+    }
     return compile_raw_leaf(*leaf, request);
   }
   if (auto direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node)) {
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    if (direct->length == 23 && batch == request.batch && maca_fp64_fft23_native_enabled(request)) {
+      auto roots = make_maca_sdk_roots<double>(direct->length, request.direction == "inverse");
+      return std::make_shared<CompiledRawMacaFp64FFT23Node>(DeviceAllocation::from_doubles(roots));
+    }
+#endif
 #if defined(FLAGFFT_BACKEND_NPU)
     if (use_npu_2d_aiv1024 && direct->length == 1024) {
       return make_npu_aiv1024_child();
@@ -4087,6 +4234,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
                                                      adaptor::Memory(bytes));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node)) {
+    // The public Z2Z handle starts with the forward root. Select the measured
+    // inverse split when that root still uses the original 378 by 900 axes.
+    if (four_step->n1 == 378 && four_step->n2 == 900 && request.direction == "inverse" &&
+        request.input_dtype == "complex128" && maca_340200_single_split_enabled(request)) {
+      PlanBuilder builder;
+      if (auto inverse = std::dynamic_pointer_cast<FourStepPlanNode>(builder.build(four_step->length, request))) {
+        four_step = std::move(inverse);
+      }
+    }
     const int64_t n1 = four_step->n1, n2 = four_step->n2;
     if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
         request.input_dtype=="complex64" && request.output_dtype=="complex64" &&
@@ -4345,13 +4501,49 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     if (row_leaf != nullptr && col_leaf != nullptr) {
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
-      DeviceAllocation stage1 =
-          adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));
+      const auto workspace_bytes = static_cast<std::size_t>(batch * four_step->length * element_bytes);
+      DeviceAllocation stage1 = adaptor::Memory(workspace_bytes);
+      auto row_kernel = compile_four_step_row_kernel(*row_leaf, request, n1, n2);
+      const bool split_fp32 = maca_663000_c2c_enabled(request) &&
+          (batch == 1 ? maca_flag_or_default("FLAGFFT_MACA_663000_SPLIT_COLUMN",
+                                            maca_flag_or_default("FLAGFFT_MACA_RADER_CODELET", true))
+                      : maca_663000_batch_split_column_enabled(request));
+      const bool split_fp64 = request.input_dtype == "complex128" && (batch == 1 || batch == 64) &&
+          maca_663000_c2c_scope(request) && maca_flag_or_default("FLAGFFT_MACA_663000_C2C", true) &&
+          maca_flag_or_default("FLAGFFT_MACA_663000_FP64_SPLIT_COLUMN", true);
+      const bool packed_column = n1 == 300 && n2 == 1105 && maca_663000_packed_column_pfa_enabled(request);
+      const bool complex_column = n1 == 375 && n2 == 1768 && (split_fp32 || split_fp64);
+      if ((packed_column || complex_column) && batch == request.batch &&
+          request.input_layout == "contiguous" &&
+          !request.requires_contiguous_copy && !row_kernel->tle_fused_twiddle) {
+        auto key = KernelKey::four_step_col(triton_target_for_request(request), request.direction,
+            request.input_dtype, n1, n2, col_leaf->length, col_leaf->factors, col_leaf->lanes,
+            batch == 64 && !split_fp64 && !packed_column ? 4 : 2, col_leaf->generic_radices, col_leaf->smem_size);
+        const bool inverse = request.direction == "inverse";
+        const char* batch_column = std::getenv("FLAGFFT_MACA_663000_BATCH_SPLIT_COLUMN");
+        const bool column_pfa = packed_column || (split_fp64 ? batch == 1
+            : (batch == 64 && (!batch_column || std::string(batch_column) == "pfa")));
+        const std::string prefix = packed_column ? "maca_split_column1105_" : "maca_split_column1768_";
+        const char* suffix = packed_column ? (batch == 64 && request.input_dtype == "complex64" ? "_t16" : "_t32")
+                                           : (column_pfa ? "_pfa" : "");
+        key.perm_form = prefix + "prepare" + suffix;
+        auto column_preparation = CompiledRawFourStepFusedNode::ColumnPreparation{
+            compile_kernel(key),
+            column_pfa ? std::vector<DeviceAllocation>{} : make_maca_dif_roots(n2, split_fp64, inverse),
+            adaptor::Memory(workspace_bytes)};
+        key.perm_form = prefix + "finish" + suffix;
+        auto column_tables = column_pfa
+            ? std::vector<DeviceAllocation>{} : make_maca_dif_roots(n2 / 13, split_fp64, inverse);
+        return std::make_shared<CompiledRawFourStepFusedNode>(four_step->length, n1, n2,
+            std::move(row_kernel), build_raw_leaf_tables(*row_leaf, request),
+            compile_kernel(key), std::move(column_tables),
+            std::move(twiddle), std::move(stage1), std::move(column_preparation));
+      }
       return std::make_shared<CompiledRawFourStepFusedNode>(
           four_step->length,
           four_step->n1,
           four_step->n2,
-          compile_four_step_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+          std::move(row_kernel),
           build_raw_leaf_tables(*row_leaf, request,
               ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           compile_four_step_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
@@ -4495,11 +4687,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     // Separate from the two-kernel leaf experiment: large convolutions retain
     // one FFT per boundary kernel and execute four kernels in total. Bound
     // each child to the existing 1024-point four-step leaf family.
+    const bool maca_batched_four_step = batch == chunk_batch &&
+        maca_batch_prime_bluestein_enabled(request);
     const bool use_maca_four_step =
-        request.device_type == "maca" && batch == 1 && four_step != nullptr &&
+        request.device_type == "maca" && (batch == 1 || maca_batched_four_step) && four_step != nullptr &&
         row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
-        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION", maca_1d_single_policy_);
+        maca_flag_or_default("FLAGFFT_MACA_BLUESTEIN_FOUR_STEP_FUSION",
+                             maca_1d_single_policy_ || maca_batched_four_step);
     const bool use_cuda_four_step = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         four_step != nullptr && row_leaf != nullptr && col_leaf != nullptr &&
         row_leaf->length <= 1024 && col_leaf->length <= 1024 &&
@@ -4514,6 +4709,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     DeviceAllocation b_fft_buf =
         adaptor::Memory(static_cast<std::size_t>(bluestein->conv_length * element_bytes));
+    if (leaf && bluestein->conv_length == 2048 && bluestein->length == request.requested_n &&
+        batch == request.batch && (maca_3d_prime_dif_ || maca_prime_dif_requested(request))) {
+      const bool fp64 = request.input_dtype == "complex128";
+      auto key = KernelKey::leaf_bluestein(
+          triton_target_for_request(child_request), child_request.direction, request.input_dtype,
+          bluestein->length, leaf->length, leaf->factors, leaf->lanes,
+          fp64 ? 4 : 2, leaf->generic_radices, leaf->smem_size);
+      key.perm_form = "maca_prime_dif_" + (real_kind.empty() ? std::string("c2c") : real_kind);
+      return std::make_shared<CompiledRawBluesteinFullLeafNode>(
+          bluestein->length, bluestein->conv_length, std::move(fft), compile_kernel(key),
+          make_maca_dif_roots(2048, fp64, false, true), std::move(chirp), std::move(b_time),
+          std::move(b_fft_buf), real_kind,
+          real_kind.empty() ? std::function<std::shared_ptr<CompiledRawNode>()>{}
+                            : make_real_layout_fallback);
+    }
     if (use_maca_boundary_leaf || use_ix_3d_boundary_leaf || use_cuda_boundary_leaf ||
         use_hcu_boundary_leaf || use_ix_batch_boundary_leaf) {
       const auto boundary_leaf = use_ix_batch_boundary_leaf
@@ -4738,6 +4948,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     }
     FFTRequest child_request = forward_child_request(request);
     child_request.convolution_child = true;
+    const int64_t prime = rader->prime;
+    if (batch == request.batch &&
+        (maca_batch_prime_c2c_four_step_enabled(request, prime) ||
+         maca_batch_prime_real_four_step_enabled(request, prime))) {
+      // The surrounding real node supplies dense complex input and output.
+      return compile_raw_maca_rader_four_step(
+          *rader, request, batch, CompiledRawMacaRaderFourStepNode::Boundary::Complex);
+    }
     std::shared_ptr<CompiledRawNode> fft = compile_raw_node(
         rader->conv_plan, child_request, batch, allow_npu_aiv256_transposed_store);
     std::shared_ptr<JitKernel> fused_leaf_kernel;
@@ -4810,6 +5028,124 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     return compile_raw_3d_node(three_dim, request, batch);
   }
   throw std::runtime_error("raw C API does not support plan node kind: " + plan_node_kind_name(node->kind));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_step(
+    const RaderPlanNode &plan, const FFTRequest &request, int64_t batch,
+    CompiledRawMacaRaderFourStepNode::Boundary boundary) {
+  using Boundary = CompiledRawMacaRaderFourStepNode::Boundary;
+  auto child_request = forward_child_request(request);
+  child_request.convolution_child = true;
+  const int64_t prime = plan.prime;
+  const auto make_leaf = [](std::vector<int64_t> factors) {
+    int64_t length = 1;
+    int64_t factor_lcm = 1;
+    for (const auto factor : factors) {
+      length *= factor;
+      factor_lcm = std::lcm(factor_lcm, factor);
+    }
+    return LeafPlanNode(length, std::move(factors), 1, length / factor_lcm, 2, {},
+                        ceil_power_of_two(length));
+  };
+  const auto row = make_leaf(prime == 8191
+      ? std::vector<int64_t>{7, 10} : std::vector<int64_t>{5, 4, 3, 3});
+  const auto col = make_leaf(prime == 8191
+      ? std::vector<int64_t>{13, 9} : std::vector<int64_t>{13, 7});
+  const int64_t n1 = row.length;
+  const int64_t n2 = col.length;
+  const int64_t m = prime - 1;
+  const bool narrow_indices = prime == 8191 && !request.real_transform &&
+      flag_or_default("FLAGFFT_MACA_8191_RADER_INDEX16", false);
+  const bool complex_boundary = boundary == Boundary::Complex && !request.real_transform;
+  const bool sorted_requested = prime == 16381 && complex_boundary &&
+      flag_or_default("FLAGFFT_MACA_16381_RADER_SORTED_SCATTER", false);
+  const bool pfa_scatter = (prime == 8191 || prime == 16381) && complex_boundary &&
+      flag_or_default("FLAGFFT_MACA_BATCH_PRIME_RADER_PFA_SCATTER", !sorted_requested);
+  const bool sorted_scatter = sorted_requested && !pfa_scatter;
+  const bool fused_spectrum = prime == 16381 && complex_boundary &&
+      flag_or_default("FLAGFFT_MACA_16381_RADER_FUSED_SPECTRUM", pfa_scatter);
+  const std::string real_suffix = boundary == Boundary::RealForward ? "_r2c" :
+      (boundary == Boundary::RealInverse ? "_c2r" : "");
+  const std::string boundary_suffix = narrow_indices ? "_i16" : real_suffix;
+  const auto compile_pass = [&](const LeafPlanNode& leaf, int64_t rows, int64_t columns,
+                                bool is_row, const std::string& phase) {
+    const auto make_key = is_row ? KernelKey::four_step_row : KernelKey::four_step_col;
+    auto key = make_key(triton_target_for_request(child_request), child_request.direction,
+        child_request.input_dtype, rows, columns, leaf.length, leaf.factors, leaf.lanes,
+        leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+    key.rader_n = prime;
+    key.rader_m = m;
+    key.perm_form = std::string("maca_rader_four_step_") + phase;
+    return compile_kernel(key);
+  };
+  CompiledRawMacaRaderFourStepNode::Kernels kernels;
+  kernels.gather = compile_pass(row, n1, n2, true, "gather" + boundary_suffix);
+  kernels.product = compile_pass(col, n1, n2, false, fused_spectrum ? "spectral" : "product" + real_suffix);
+  kernels.spectrum_row = compile_pass(row, n1, n2, true, "plain");
+  kernels.spectrum_col = compile_pass(col, n1, n2, false, "plain");
+  if (!fused_spectrum) {
+    kernels.inverse_row = compile_pass(col, n2, n1, true, "plain");
+  }
+  std::string scatter_phase = "scatter";
+  if (pfa_scatter) scatter_phase += "_pfa";
+  scatter_phase += sorted_scatter ? "_sorted" : boundary_suffix;
+  kernels.scatter = compile_pass(row, n2, n1, false, scatter_phase);
+  kernels.scatter_uses_row_tables = !pfa_scatter;
+
+  std::vector<int64_t> gather_indices(static_cast<std::size_t>(m));
+  std::vector<int64_t> scatter_indices(static_cast<std::size_t>(m));
+  for (int64_t j1 = 0; j1 < n1; ++j1) {
+    for (int64_t j2 = 0; j2 < n2; ++j2) {
+      const int64_t index = j1 * n2 + j2;
+      // Good-Thomas orders the convolution input by residues. The two
+      // inverse passes then traverse the axes in the opposite order.
+      const int64_t time = (j1 * n2 + j2 * n1) % m;
+      gather_indices[index] = plan.idx[(m - time) % m];
+      scatter_indices[index] = plan.idx[time];
+    }
+  }
+  std::vector<int64_t> scatter_order;
+  if (sorted_scatter) {
+    const int64_t pack = kernels.scatter->inner_pack;
+    const int64_t radix = row.factors.back();
+    const int64_t branch_width = ceil_power_of_two(radix);
+    const int64_t lanes = n1 / radix;
+    const int64_t tile = ceil_power_of_two(lanes) * pack * branch_width;
+    scatter_order.resize(ceil_div(n2, pack) * tile);
+    for (int64_t first = 0; first < n2; first += pack) {
+      const auto begin = scatter_order.begin() + (first / pack) * tile;
+      auto next = begin;
+      for (int64_t lane = 0; lane < lanes; ++lane) {
+        for (int64_t slot = 0; slot < std::min(pack, n2 - first); ++slot) {
+          for (int64_t branch = 0; branch < radix; ++branch) {
+            const int64_t dest = scatter_indices[(lane + branch * lanes) * n2 + first + slot];
+            const int64_t source = (lane * pack + slot) * branch_width + branch;
+            *next++ = dest * tile + source;
+          }
+        }
+      }
+      // The high bits order the public stores and the low bits select a codelet output.
+      std::sort(begin, next);
+    }
+  }
+  return std::make_shared<CompiledRawMacaRaderFourStepNode>(n1, n2, batch, boundary, std::move(kernels),
+      build_raw_leaf_tables(row, child_request), build_raw_leaf_tables(col, child_request),
+      build_raw_rader_idx_table(gather_indices, narrow_indices),
+      build_raw_rader_idx_table(sorted_scatter ? scatter_order : scatter_indices, narrow_indices),
+      build_raw_rader_conv_kernel(request, prime, scatter_indices));
+}
+
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_maca_rader_real_boundary(
+    const PlanNodePtr &node, const FFTRequest &request, int64_t batch) {
+  if (batch != request.batch ||
+      !maca_batch_prime_real_four_step_enabled(request, request.requested_n, true)) {
+    return nullptr;
+  }
+  const auto rader = std::dynamic_pointer_cast<RaderPlanNode>(node);
+  if (!rader || rader->prime != request.requested_n) return nullptr;
+  using Boundary = CompiledRawMacaRaderFourStepNode::Boundary;
+  const auto boundary = request.real_transform_kind == "r2c" ? Boundary::RealForward : Boundary::RealInverse;
+  return compile_raw_maca_rader_four_step(*rader, request, batch, boundary);
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_real_batch_pair(
@@ -4899,6 +5235,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
                                                                       bool allow_packed) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
+  if (allow_packed) {
+    if (auto fused = compile_maca_rader_real_boundary(node, request, batch)) return fused;
+  }
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
       (std::dynamic_pointer_cast<DirectDFTPlanNode>(node) &&
@@ -4908,6 +5247,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
 #endif
   const int64_t element_bytes = complex_element_bytes(request.input_dtype);
   const int64_t n = request.requested_n;
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  if (batch == request.batch && maca_fp64_d2z16_native_enabled(request)) {
+    return std::make_shared<CompiledRawMacaFp64D2Z16Node>(batch);
+  }
+  const char* sdk = std::getenv("FLAGFFT_MACA_2048_FP32_SINGLE_NATIVE");
+  const std::string_view sdk_mode = sdk ? sdk : "residues";
+  const bool sdk_single = batch == 1 && (sdk_mode == "residues" || sdk_mode == "shared");
+  const bool sdk_batch_default = std::getenv("FLAGFFT_MACA_1D_FP32_2048_R2C_GATHER") == nullptr;
+  const bool sdk_batch = batch == 64 &&
+      maca_flag_or_default("FLAGFFT_MACA_2048_FP32_BATCH_NATIVE", sdk_batch_default) &&
+      flag_or_default("FLAGFFT_MACA_1D_BATCH", true);
+  const char* packed = std::getenv("FLAGFFT_PACKED_REAL");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  if ((sdk_single || sdk_batch) && allow_packed && maca_1d_2048_scope(request, batch, "complex64") &&
+      request.real_transform_kind == "r2c" && request.direction == "forward" &&
+      (!packed || std::string_view(packed) != "0") && (!plan || !*plan) &&
+      (!sdk_single || maca_tail_policy_enabled(request))) {
+    return std::make_shared<CompiledRawMacaFp32R2C2048Node>(
+        DeviceAllocation::from_floats(make_maca_sdk_roots<float>(n, false)),
+        sdk_single && sdk_mode == "residues", batch);
+  }
+#endif
   // Reuse the bounded complex-axis schedule for mixed real four-step
   // transforms. The real boundaries remain separate coalesced Triton passes.
   const bool npu_bounded_fourstep = request.device_type == "npu" &&
@@ -5062,15 +5423,33 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
         n, compile_kernel(key), build_raw_leaf_tables(packed_leaf, child_request),
         build_raw_packed_real_twiddle(request, n));
   }
+  const bool maca_1d_packed = allow_packed && maca_1d_fp64_2048_enabled(request, batch);
+  const bool maca_d2z_gather = maca_1d_packed && request.real_transform_kind == "d2z" &&
+      request.direction == "forward" && flag_or_default("FLAGFFT_MACA_1D_FP64_2048_DIF", true) &&
+      maca_flag_or_default("FLAGFFT_MACA_1D_FP64_2048_D2Z_GATHER", true);
+  const bool maca_r2c_gather = allow_packed && batch == 64 && maca_1d_2048_scope(request, batch, "complex64") &&
+      request.real_transform_kind == "r2c" && request.direction == "forward" &&
+      request.input_strides == std::vector<int64_t>{2048, 1} &&
+      flag_or_default("FLAGFFT_MACA_1D_BATCH", true) &&
+      maca_flag_or_default("FLAGFFT_MACA_1D_FP32_2048_R2C_GATHER", true);
+  const bool maca_gather = maca_d2z_gather || maca_r2c_gather;
+  const bool maca_1d_dif = maca_gather || (allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch));
+  const bool maca_fused_packed = maca_1d_dif || maca_1d_packed ||
+      (allow_packed && maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_));
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, false) : std::nullopt) {
+              ? select_packed_real_child(node, request, batch, false, maca_fused_packed)
+              : std::nullopt) {
     const int64_t packed = n / 2;
-    if (hcu_fused_packed_real_enabled(request, batch, n) ||
+    if (maca_fused_packed ||
+        hcu_fused_packed_real_enabled(request, batch, n) ||
         (request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false))) {
       if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(packed_child->plan)) {
+        if (maca_1d_dif && leaf->length == 1024) {
+          return compile_maca_1d_packed_dif(*leaf, request, maca_gather);
+        }
         leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
         auto key = KernelKey::leaf_r2c(triton_target_for_request(packed_child->request),
             packed_child->request.direction, packed_child->request.input_dtype,
@@ -5108,17 +5487,29 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->row_plan);
     auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(four_step->col_plan);
     if (row_leaf != nullptr && col_leaf != nullptr) {
+      const char *plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+      const bool half_columns = four_step->n1 == 512 && four_step->n2 == 1024 &&
+          request.device_type == "maca" && request.device_arch == "102" &&
+          maca_1d_single_policy_ && batch == 1 && request.origin_rank <= 1 &&
+          n == four_step->length && request.fft_length == n && request.input_dtype == "complex64" &&
+          request.real_transform_kind == "r2c" && request.direction == "forward" &&
+          !request.convolution_child && !request.packed_real_child &&
+          (!plan || !*plan) && maca_tail_policy_enabled(request) &&
+          maca_flag_or_default("FLAGFFT_MACA_524288_FP32_R2C_HALF_COLUMNS", true);
+      const int64_t column_count = half_columns ? four_step->n1 / 2 + 1 : four_step->n1;
+      const int64_t scratch_pitch = half_columns ? (column_count + 7) / 8 * 8 : four_step->n1;
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
       DeviceAllocation stage1 =
-          adaptor::Memory(static_cast<std::size_t>(batch * four_step->length * element_bytes));
+          adaptor::Memory(static_cast<std::size_t>(batch * four_step->n2 * scratch_pitch * element_bytes));
       return std::make_shared<CompiledRawR2CFourStepRealInHalfOutNode>(
           n,
           four_step->n1,
           four_step->n2,
-          compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2),
+          column_count,
+          compile_four_step_real_row_kernel(*row_leaf, request, four_step->n1, four_step->n2, half_columns),
           build_raw_leaf_tables(*row_leaf, request,
               ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
-          compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2),
+          compile_four_step_r2c_col_kernel(*col_leaf, request, four_step->n1, four_step->n2, half_columns),
           build_raw_leaf_tables(*col_leaf, request,
               ix_large_fourstep_portable_default(request, four_step->n1, four_step->n2)),
           std::move(twiddle),
@@ -5148,6 +5539,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                                                       bool allow_packed) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   configure_single_transform_policies(request);
+  if (allow_packed) {
+    if (auto fused = compile_maca_rader_real_boundary(node, request, batch)) return fused;
+  }
 #if defined(FLAGFFT_BACKEND_NPU)
   if (std::dynamic_pointer_cast<LeafPlanNode>(node) ||
       (std::dynamic_pointer_cast<DirectDFTPlanNode>(node) &&
@@ -5235,10 +5629,32 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       use_ix_compact_rader_c2r(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  const char* packed = std::getenv("FLAGFFT_PACKED_REAL");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  if (allow_packed && maca_1d_single_policy_ && batch == 1 && maca_1d_2048_scope(request, batch, "complex64") &&
+      request.direction == "inverse" && request.real_transform_kind == "c2r" &&
+      request.input_strides == std::vector<int64_t>{1025, 1} &&
+      (!packed || std::string_view(packed) != "0") && (!plan || !*plan) &&
+      maca_tail_policy_enabled(request) &&
+      maca_flag_or_default("FLAGFFT_MACA_2048_FP32_SINGLE_C2R_NATIVE", true)) {
+    return std::make_shared<CompiledRawMacaFp32C2R2048Node>(
+        DeviceAllocation::from_floats(make_maca_sdk_roots<float>(n, false)));
+  }
+#endif
+  const bool maca_1d_dif = allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch);
+  const bool maca_1d_fused = allow_packed && (maca_1d_dif || maca_1d_fp64_2048_enabled(request, batch));
+  const bool maca_packed_rows = allow_packed &&
+      maca_2d_fused_packed_rows_enabled(request, maca_2d_dense_policy_);
   if (auto packed_child =
           allow_packed && (!npu_bounded_fourstep || use_npu_packed_mixed_real(request,n,batch))
-              ? select_packed_real_child(node, request, batch, true) : std::nullopt) {
+              ? select_packed_real_child(node, request, batch, true, maca_packed_rows || maca_1d_fused)
+              : std::nullopt) {
     const int64_t packed = n / 2;
+    auto make_layout_fallback = [node, request, batch]() {
+      TritonCompiler compiler;
+      return compiler.compile_raw_c2r_node(node, request, batch, false);
+    };
     const char *packed_fuse_setting = performance_env("FLAGFFT_HCU_3D_C2R_PACKED_FUSE");
     if (packed_fuse_setting != nullptr && std::string(packed_fuse_setting) != "0" &&
         std::string(packed_fuse_setting) != "1") {
@@ -5257,7 +5673,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     const bool cuda_fused_leaf = request.device_type == "cuda" && request.device_arch == "sm_80" &&
         request.origin_rank <= 1 && n >= 256 && n <= 8192 &&
         flag_or_default("FLAGFFT_CUDA_FUSED_PACKED_REAL",false);
-    const bool use_packed_fused_leaf = cuda_fused_leaf || hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
+    // Screen compact-spectrum reconstruction followed by the existing
+    // 1024-point inverse leaf as a resource alternative to the fused CTA.
+    const bool maca_fused_rows = maca_packed_rows &&
+        !(n == 2048 && request.input_dtype == "complex128" &&
+          flag_or_default("FLAGFFT_MACA_2D_SPLIT_PACKED_C2R", false));
+    const bool use_packed_fused_leaf = cuda_fused_leaf || maca_fused_rows || maca_1d_fused ||
+                                      hcu_fused_packed_real_enabled(request, batch, n) || (request.device_type == "hcu" &&
                                        request.origin_rank == 3 && n == 256 &&
                                        batch == 256 * 256 && packed_fuse_enabled) ||
                                       ix_fused_c2r_leaf_enabled(request, batch);
@@ -5275,6 +5697,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                              packed / radix, warps, std::vector<int64_t>{}, packed);
       }
       if (leaf) {
+        if (maca_1d_dif && leaf->length == 1024) {
+          return compile_maca_1d_packed_dif(*leaf, request);
+        }
         KernelKey key = KernelKey::leaf_c2r(
             triton_target_for_request(packed_child->request),
             packed_child->request.direction,
@@ -5297,10 +5722,39 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             build_raw_leaf_tables(*leaf, packed_child->request,
                                   request.ix_fourstep_preset == 7 || request.ix_fourstep_preset == 8,
                                   ix_packed_tle),
-            [node, request, batch]() {
-              TritonCompiler compiler;
-              return compiler.compile_raw_c2r_node(node, request, batch, false);
-            });
+            make_layout_fallback);
+      }
+    }
+    if (maca_1d_batch_policy_ && request.real_transform_kind == "c2r" && n == 16384 &&
+        batch == request.batch && request.input_layout == "contiguous" &&
+        !request.requires_contiguous_copy && request.input_strides == std::vector<int64_t>{packed + 1, 1}) {
+      const auto pair = std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan);
+      if (pair) {
+        const auto row = std::dynamic_pointer_cast<LeafPlanNode>(pair->row_plan);
+        const auto col = std::dynamic_pointer_cast<LeafPlanNode>(pair->col_plan);
+        const auto& child = packed_child->request;
+        const bool original_split = row && col && pair->n1 == 64 && pair->n2 == 128 &&
+            row->factors == std::vector<int64_t>{4, 4, 4} && col->factors == std::vector<int64_t>{4, 4, 4, 2};
+        const bool alternate_split = row && col && pair->n1 == 128 && pair->n2 == 64 &&
+            maca_16384_packed_real_split_enabled(child) &&
+            row->factors == std::vector<int64_t>{8, 4, 4} && col->factors == std::vector<int64_t>{4, 4, 4};
+        if ((original_split || alternate_split) &&
+            maca_flag_or_default("FLAGFFT_MACA_16384_FUSED_PACKED_C2R", alternate_split)) {
+          if (alternate_split) configure_single_transform_policies(child);
+          auto key = KernelKey::four_step_row(triton_target_for_request(child), child.direction,
+              child.input_dtype, pair->n1, pair->n2, row->length, row->factors, row->lanes,
+              row->num_warps, row->generic_radices, row->smem_size);
+          key.perm_form = "maca_packed_c2r_row";
+          auto row_tables = build_raw_leaf_tables(*row, child);
+          row_tables.insert(row_tables.begin(), build_raw_packed_real_twiddle(request, n));
+          auto fft = std::make_shared<CompiledRawFourStepFusedNode>(packed, pair->n1, pair->n2,
+              compile_kernel(key), std::move(row_tables),
+              compile_four_step_col_kernel(*col, child, pair->n1, pair->n2), build_raw_leaf_tables(*col, child),
+              build_raw_four_step_twiddle(child, pair->n1, pair->n2),
+              adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes)));
+          return std::make_shared<CompiledRawPackedC2RNode>(n, nullptr, std::move(fft),
+              DeviceAllocation{}, DeviceAllocation{}, make_layout_fallback);
+        }
       }
     }
     DeviceAllocation packed_input = adaptor::Memory(static_cast<std::size_t>(batch * packed * element_bytes));
@@ -5318,10 +5772,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         compile_raw_node(packed_child->plan, packed_child->request, batch),
         std::move(boundary_twiddle),
         std::move(packed_input),
-        [node, request, batch]() {
-          TritonCompiler compiler;
-          return compiler.compile_raw_c2r_node(node, request, batch, false);
-        },
+        std::move(make_layout_fallback),
         std::move(aiv_preprocess));
   }
   if (auto four_step = std::dynamic_pointer_cast<FourStepPlanNode>(node);
@@ -5347,6 +5798,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
     }
   }
   if (auto leaf = std::dynamic_pointer_cast<LeafPlanNode>(node)) {
+    if (request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 1 && request.origin_rank <= 1 && batch == 64 && batch == request.batch &&
+        n == 210 && leaf->length == n && request.fft_length == n &&
+        request.direction == "inverse" && request.real_transform_kind == "c2r" &&
+        request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+        !request.packed_real_child && !request.convolution_child &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        request.input_strides == std::vector<int64_t>{106, 1} &&
+        maca_flag_or_default("FLAGFFT_MACA_1D_BATCH", true) &&
+        maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_C2R_PFA", true)) {
+      auto key = KernelKey::leaf_c2r(triton_target_for_request(request), request.direction, request.input_dtype,
+          n, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
+      key.perm_form = "maca_fp32_c2r210_pfa";
+      return std::make_shared<CompiledRawC2RLeafNode>(n, compile_kernel(key), std::vector<DeviceAllocation>{});
+    }
     auto factors = hcu_real_inverse_factors(request, *leaf);
     if (factors != leaf->factors)
       leaf = std::make_shared<LeafPlanNode>(leaf->length, std::move(factors), leaf->remainder,
@@ -5375,8 +5841,28 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
                                               std::move(full_output));
 }
 
+std::shared_ptr<CompiledRawNode> TritonCompiler::compile_maca_1d_packed_dif(
+    const LeafPlanNode &leaf, const FFTRequest &request, bool gather_reflection) {
+  const bool inverse = request.direction == "inverse";
+  const bool fp64 = request.input_dtype == "complex128";
+  auto key = KernelKey::leaf(triton_target_for_request(request), request.direction, request.input_dtype,
+      leaf.length, leaf.factors, leaf.lanes, leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+  key.perm_form = gather_reflection ? "maca_fp64_packed_dif1024_gather" : "maca_fp64_packed_dif1024";
+  if (!fp64) key.perm_form = "maca_fp32_packed_dif1024_gather";
+  auto kernel = compile_kernel(key);
+  auto tables = make_maca_dif_roots(1024, fp64, inverse);
+  auto phase = make_maca_dif_roots(2048, fp64, inverse);
+  tables.push_back(std::move(phase[0]));
+  tables.push_back(std::move(phase[1]));
+  if (inverse) {
+    return std::make_shared<CompiledRawC2RLeafNode>(2048, std::move(kernel), std::move(tables));
+  }
+  return std::make_shared<CompiledRawR2CLeafNode>(2048, std::move(kernel), std::move(tables));
+}
+
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlanNode &leaf,
-                                                                  const FFTRequest &request) {
+                                                                  const FFTRequest &request,
+                                                                  MacaLeafLayout maca_layout) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   int64_t num_warps = leaf.num_warps;
@@ -5394,9 +5880,59 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     key.perm_form = "ix_bluestein_997_single_r2c";
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
+  if (leaf.length == 210 && request.input_dtype == "complex64" &&
+      maca_batch_c2c_option_enabled(request, 210, "FLAGFFT_MACA_210_FP32_BATCH_PFA", true)) {
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    const bool native_default = std::getenv("FLAGFFT_MACA_210_FP32_BATCH_PFA") == nullptr;
+    if (maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_NATIVE", native_default)) {
+      return std::make_shared<CompiledRawMacaFp32FFT210Node>(
+          DeviceAllocation::from_floats(make_maca_sdk_roots<float>(210, request.direction == "inverse")));
+    }
+#endif
+    key.perm_form = "maca_fp32_fft210_pfa";
+    return std::make_shared<CompiledRawLeafNode>(leaf.length, compile_kernel(key),
+                                                std::vector<DeviceAllocation>{});
+  }
+  if (maca_layout == MacaLeafLayout::Auto && maca_2d_fp64_dif_policy_ &&
+      request.input_dtype == "complex128" && leaf.length == 2048) {
+    maca_layout = MacaLeafLayout::Contiguous;
+  }
+  switch (maca_layout) {
+    case MacaLeafLayout::Auto: break;
+    case MacaLeafLayout::Contiguous: key.perm_form = "maca_fp64_dif"; break;
+    case MacaLeafLayout::ContiguousFourWarps: key.perm_form = "maca_fp64_dif_w4"; break;
+    case MacaLeafLayout::TerminalEight: key.perm_form = "maca_fp64_dif_terminal8"; break;
+    case MacaLeafLayout::FirstAxis64: key.perm_form = "maca_fp64_dif_first64"; break;
+    case MacaLeafLayout::OuterPrepare128: key.perm_form = "maca_fp64_ct128_prepare"; break;
+    case MacaLeafLayout::OuterFinish128: key.perm_form = "maca_fp64_ct128_finish"; break;
+    case MacaLeafLayout::OuterPrepareDif128: key.perm_form = "maca_fp64_ct128_prepare_dif"; break;
+    case MacaLeafLayout::OuterFinishDif128: key.perm_form = "maca_fp64_ct128_finish_dif"; break;
+    case MacaLeafLayout::RealForward64: key.perm_form = "maca_fp64_3d_r2c64"; break;
+    case MacaLeafLayout::RealInverse64:
+      key.perm_form = request.input_dtype == "complex128" ? "maca_fp64_3d_c2r64" : "maca_fp32_3d_c2r64";
+      break;
+    case MacaLeafLayout::RealPrimeForward64: key.perm_form = "maca_3d_prime_r2c64"; break;
+    case MacaLeafLayout::RealPrimeInverse64: key.perm_form = "maca_3d_prime_c2r64"; break;
+    case MacaLeafLayout::RealPrimeOuter16: key.perm_form = "maca_3d_prime_outer16"; break;
+    case MacaLeafLayout::RealPrimeOuter16Wide: key.perm_form = "maca_3d_prime_outer16_wide"; break;
+  }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
+  const bool packed_boundary = maca_layout == MacaLeafLayout::RealForward64 ||
+                               maca_layout == MacaLeafLayout::RealInverse64 ||
+                               maca_layout == MacaLeafLayout::RealPrimeForward64 ||
+                               maca_layout == MacaLeafLayout::RealPrimeInverse64;
+  const bool inverse = request.direction == "inverse";
+  const bool fp64 = request.input_dtype == "complex128";
+  auto tables = maca_layout != MacaLeafLayout::Auto
+      ? make_maca_dif_roots(packed_boundary ? leaf.length / 2 : leaf.length, fp64, inverse)
+      : build_raw_leaf_tables(leaf, request);
+  if (packed_boundary) {
+    auto boundary_roots = make_maca_dif_roots(leaf.length, fp64, inverse);
+    tables.push_back(std::move(boundary_roots[0]));
+    tables.push_back(std::move(boundary_roots[1]));
+  }
   auto original = std::make_shared<CompiledRawLeafNode>(leaf.length, std::move(kernel),
-                                                        build_raw_leaf_tables(leaf, request));
+                                                        std::move(tables));
   if (const auto bands = ix_short_frequency_bands(request, leaf.length);
       bands > 0 && request.real_transform_kind.empty())
     return compile_ix_wave_bands(leaf.length, bands, request, std::move(original));
@@ -5768,7 +6304,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_row_strided_kernel(
 std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(const LeafPlanNode &leaf,
                                                                              const FFTRequest &request,
                                                                              int64_t n1,
-                                                                             int64_t n2) {
+                                                                             int64_t n2,
+                                                                             bool half_columns) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_real_row(target,
@@ -5784,6 +6321,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_real_row_kernel(con
                                                 leaf.smem_size);
   mark_npu_portable_leaf(key, request);
   mark_ix_warp_fourstep(key, request);
+  if (half_columns) key.perm_form = "maca_r2c_half_columns";
   return compile_kernel(key);
 }
 
@@ -5856,7 +6394,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_col_strided_kernel(
 std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(const LeafPlanNode &leaf,
                                                                             const FFTRequest &request,
                                                                             int64_t n1,
-                                                                            int64_t n2) {
+                                                                            int64_t n2,
+                                                                            bool half_columns) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::four_step_r2c_col(target,
@@ -5872,6 +6411,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_four_step_r2c_col_kernel(cons
                                                leaf.smem_size);
   mark_npu_portable_leaf(key, request);
   mark_ix_warp_fourstep(key, request);
+  if (half_columns) key.perm_form = "maca_r2c_half_columns";
   return compile_kernel(key);
 }
 
@@ -6089,6 +6629,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_r2c_packed_postprocess_kernel
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::r2c_packed_postprocess(target, complex_dtype_for(request.input_dtype), n);
+  if (const char* form = maca_paired_real_boundary_form(request, n, batch, false)) {
+    key.perm_form = form;
+  }
   if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
       complex_dtype_for(request.input_dtype)=="complex64" && batch>=16 && n>=65536 &&
       flag_or_default("FLAGFFT_NPU_PAIRED_REAL_BOUNDARY",false) &&
@@ -6102,6 +6645,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_c2r_packed_preprocess_kernel(
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   std::string target = triton_target_for_request(request);
   KernelKey key = KernelKey::c2r_packed_preprocess(target, complex_dtype_for(request.input_dtype), n);
+  if (const char* form = maca_paired_real_boundary_form(request, n, batch, true)) {
+    key.perm_form = form;
+  }
   // Record this batch-only schedule in the key so short and single-row
   // boundaries keep their existing launch and cannot share its cached binary.
   if (request.device_type=="npu" && request.device_arch.rfind("Ascend910B",0)==0 &&
@@ -6543,9 +7089,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, plane_size * plane_size);
     DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(
         batch * plane_size * plane_size * plane_size * element_bytes));
-    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
+    auto plane = std::make_shared<CompiledRaw3DFusedPlaneNode>(
         plane_size, std::move(plane_fft), std::move(outer_fft), std::move(temp),
         std::move(tw_r), std::move(tw_i));
+    const bool maca_fused_fp64_cube = fused16 && request.device_type == "maca" &&
+        request.device_arch == "102" && batch == 1 && request.batch == batch &&
+        request.raw_dim == 3 && (request.origin_rank == 0 || request.origin_rank == 3) &&
+        !request.real_transform && request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        request.input_strides == std::vector<int64_t>{4096, 256, 16, 1} &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_FUSED16_CUBE", true);
+    if (maca_fused_fp64_cube) {
+      auto roots = make_maca_dif_roots(16, true, request.direction == "inverse");
+      auto cube_key = KernelKey::fused_16_cube(
+          triton_target_for_request(request), request.direction, request.input_dtype);
+      return std::make_shared<CompiledRaw3DFusedCubeNode>(
+          compile_kernel(cube_key), std::move(roots[0]), std::move(roots[1]), std::move(plane));
+    }
+    return plane;
   }
 
   const char *prime_plane_override = performance_env("FLAGFFT_HCU_3D_PRIME_PLANE");
@@ -6647,14 +7208,92 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       n1 >= 1024 &&
       n1 >= 4 * std::max(n0, n2) &&
       batch * n0 * n1 * n2 > kStridedMaxElements) {
-    auto n2_fft = compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
-    auto n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
-    auto perm_210 = compile_transpose3d_kernel(request, n0, n2, n1, "210");
+    const bool maca_dif_shape = maca_first_store_fp64_enabled && request.device_arch == "102" &&
+        n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4);
+    const bool maca_first_dif = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_FIRST", true);
+    std::shared_ptr<CompiledRawNode> n2_fft;
+    std::shared_ptr<CompiledRawNode> sdk_middle;
+    std::shared_ptr<CompiledRawNode> sdk_last;
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    const bool maca_sdk_shape = maca_first_store_default && request.device_type == "maca" &&
+        request.device_arch == "102" && request.raw_dim == 3 && !request.real_transform &&
+        (request.origin_rank == 0 || request.origin_rank == 3) &&
+        (batch == 1 || batch == 4) && batch == request.batch &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        request.input_dtype == request.output_dtype &&
+        request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1};
+    if (maca_sdk_shape && maca_first_dif &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_NATIVE_FIRST", true)) {
+      const bool inverse = request.direction == "inverse";
+      auto roots = make_maca_sdk_roots<double>(n2, inverse);
+      using Stage = CompiledRawMacaLongAxisNode::Stage;
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_FIRST_RADIX4", true)
+          ? Stage::FirstFp64Radix4 : Stage::FirstFp64;
+      n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_doubles(roots), stage, inverse);
+    }
+    if (maca_sdk_shape && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_FIRST", true)) {
+      const bool inverse = request.direction == "inverse";
+      auto roots = make_maca_sdk_roots<float>(n2, inverse);
+      using Stage = CompiledRawMacaLongAxisNode::Stage;
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_FIRST_TWO_SHUFFLE", true)
+          ? Stage::FirstFp32TwoShuffle : Stage::FirstFp32;
+      n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots), stage, inverse);
+    }
+    const bool maca_transpose_override = std::getenv("FLAGFFT_MACA_TRANSPOSE3D") ||
+        std::getenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS") ||
+        std::getenv("FLAGFFT_MACA_TRANSPOSE3D_TRAVERSAL") ||
+        std::getenv("FLAGFFT_MACA_TRANSPOSE3D_SLICE_GROUP");
+    if (maca_sdk_shape && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_MIDDLE", !maca_transpose_override)) {
+      sdk_middle = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation{},
+          CompiledRawMacaLongAxisNode::Stage::MiddleFp32);
+    }
+    if (maca_sdk_shape && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_LAST", !maca_transpose_override)) {
+      auto roots = make_maca_sdk_roots<float>(n0, request.direction == "inverse");
+      using Stage = CompiledRawMacaLongAxisNode::Stage;
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_LAST_WIDE", true)
+          ? Stage::LastFp32Wide : Stage::LastFp32;
+      sdk_last = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots), stage);
+    }
+#endif
+    if (!n2_fft) {
+      n2_fft = maca_first_dif
+          ? compile_raw_leaf(*n2_leaf, n2_request, MacaLeafLayout::FirstAxis64)
+          : compile_raw_permuted_store_leaf(*n2_leaf, n2_request, n1, "outer");
+    }
+    const bool maca_middle_dif = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF", true);
+    const auto middle_layout = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_DIF_TERMINAL8", true)
+        ? MacaLeafLayout::TerminalEight : MacaLeafLayout::Contiguous;
+    auto n1_fft = maca_middle_dif
+        ? compile_raw_leaf(*n1_leaf, n1_request, middle_layout)
+        : compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+    const bool maca_outer_ct = maca_dif_shape &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_CT", true);
+    auto perm_210 = (maca_outer_ct || sdk_middle) ? nullptr
+        : compile_transpose3d_kernel(request, n0, n2, n1, "210");
     const bool maca_long_axis = request.device_type == "maca";
-    auto n0_fft = maca_long_axis
-        ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
-        : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
-    auto perm_201 = maca_long_axis
+    const bool needs_final_transpose = maca_long_axis && !maca_outer_ct && !sdk_last;
+    auto n0_first = std::move(sdk_middle);
+    std::shared_ptr<CompiledRawNode> n0_fft;
+    if (maca_outer_ct) {
+      const bool outer_dif = maca_flag_or_default("FLAGFFT_MACA_3D_FP64_OUTER_DIF", true);
+      n0_first = compile_raw_leaf(*n0_leaf, n0_request,
+          outer_dif ? MacaLeafLayout::OuterPrepareDif128 : MacaLeafLayout::OuterPrepare128);
+      n0_fft = compile_raw_leaf(*n0_leaf, n0_request,
+          outer_dif ? MacaLeafLayout::OuterFinishDif128 : MacaLeafLayout::OuterFinish128);
+    } else if (sdk_last) {
+      n0_fft = std::move(sdk_last);
+    } else {
+      n0_fft = maca_long_axis
+          ? compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2)
+          : compile_raw_permuted_store_leaf(*n0_leaf, n0_request, n1 * n2, "outer");
+    }
+    auto perm_201 = needs_final_transpose
         ? compile_transpose3d_kernel(request, n1, n2, n0, "201")
         : nullptr;
     DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
@@ -6669,7 +7308,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                                      std::move(temp1),
                                                      std::move(temp2),
                                                      std::shared_ptr<JitKernel>{},
-                                                     std::move(perm_201));
+                                                     std::move(perm_201),
+                                                     std::move(n0_first));
   }
 
   // Cube screen: fuse only the first n2-axis permutation into the leaf store.
@@ -6912,7 +7552,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   }
 
   std::shared_ptr<CompiledRawNode> n2_fft = compile_raw_node(node->n2_plan, n2_request, batch * n0 * n1);
-  std::shared_ptr<CompiledRawNode> n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+  const bool maca_prime_dif = request.device_type == "maca" && request.device_arch == "102" &&
+      n0 == 16 && n1 == 997 && n2 == 64 && (batch == 1 || batch == 4) &&
+      !request.real_transform &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2C_PRIME_DIF", request.input_dtype == "complex128");
+  std::shared_ptr<CompiledRawNode> n1_fft;
+  {
+    const ScopedBool prime_dif_scope(maca_3d_prime_dif_, maca_prime_dif);
+    n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * n2);
+  }
   std::shared_ptr<CompiledRawNode> n0_fft = compile_raw_node(node->n0_plan, n0_request, batch * n1 * n2);
 
   // Forward: (n0,n1,n2) -021-> (n0,n2,n1) -210-> (n1,n2,n0) -201-> (n0,n1,n2).
@@ -6944,7 +7595,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
 
-  return std::make_shared<CompiledRaw3DNode>(n0,
+  auto compiled = std::make_shared<CompiledRaw3DNode>(n0,
                                              n1,
                                              n2,
                                              std::move(n2_fft),
@@ -6959,6 +7610,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                              std::move(temp1),
                                              std::move(temp2),
                                              std::move(npu_transpose_indices));
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  compiled->maca_fp64_cube_transpose = request.device_type == "maca" && request.device_arch == "102" &&
+      n0 == 256 && n1 == 256 && n2 == 256 && (batch == 1 || batch == 4) && batch == request.batch &&
+      request.raw_dim == 3 && (request.origin_rank == 0 || request.origin_rank == 3) && !request.real_transform &&
+      request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+      request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+      request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1} &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_FP64_CUBE_NATIVE_TRANSPOSE", true);
+#endif
+  return compiled;
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
@@ -7072,6 +7733,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   const bool maca_prime_compact = maca_real_compact && node->n0 == 16 &&
       node->n1 == 997 && node->n2 == 64 && batch <= 4 &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_COMPACT", true);
+  const bool maca_real_prime_dif = maca_prime_compact && request.device_arch == "102" &&
+      (batch == 1 || batch == 4) &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", request.input_dtype == "complex128");
   // HCU can keep an elongated Bluestein middle axis in the compact real
   // layout; the real_hybrid shape gate below decides whether that route applies.
   if (!n2_leaf || !n0_leaf ||
@@ -7080,10 +7746,27 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
   }
 
   const bool small = n1_leaf && packed <= 64 * 64 * 64;
+  const bool maca_long_real = maca_real_compact && request.device_arch == "102" &&
+      n0 == 128 && n1 == 2048 && n2 == 64 && (batch == 1 || batch == 4);
+  const bool maca_long_fp64 = maca_long_real && request.input_dtype == "complex128";
+  const bool maca_real_middle_dif = maca_long_fp64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_DIF", true);
+  const char *packed_real_setting = std::getenv("FLAGFFT_PACKED_REAL");
+  const bool maca_real_boundary_default =
+      (packed_real_setting == nullptr || std::string(packed_real_setting) != "0") &&
+      (inverse || performance_env("FLAGFFT_MACA_3D_R2C_FIRST_STORE") == nullptr);
+  const bool maca_fp32_inverse_boundary = maca_long_real && inverse && maca_real_boundary_default &&
+      request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_C2R_FP32_BOUNDARY_DIF", true);
+  const bool maca_real_boundary_dif = maca_fp32_inverse_boundary || (maca_long_fp64 &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FP64_BOUNDARY_DIF", maca_real_boundary_default));
+  const auto middle_dif_layout = maca_real_middle_dif
+      ? MacaLeafLayout::Contiguous : MacaLeafLayout::Auto;
   const bool maca_r2c_first_store_default = maca_real_compact && !inverse &&
       request.input_dtype == "complex64" && n0 == 128 && n1 == 2048 && n2 == 64;
-  const bool maca_r2c_first_store = maca_real_compact &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default);
+  const bool maca_r2c_first_store = maca_real_compact && !inverse &&
+      (maca_real_boundary_dif ||
+       maca_flag_or_default("FLAGFFT_MACA_3D_R2C_FIRST_STORE", maca_r2c_first_store_default));
   const char *c2r_fused32_setting = performance_env("FLAGFFT_HCU_3D_C2R_FUSED32");
   if (c2r_fused32_setting != nullptr && std::string(c2r_fused32_setting) != "0" &&
       std::string(c2r_fused32_setting) != "1") {
@@ -7235,6 +7918,48 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     n0_request.real_transform = false;
   }
 
+  // The C API records logical inner strides and the physical batch distance.
+  const int64_t prime_input_distance = n0 * n1 * (inverse ? half : n2);
+  const bool maca_fused_prime_axes = maca_prime_compact && request.device_arch == "102" &&
+      (batch == 1 || batch == 4) &&
+      (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+      request.input_dtype == request.output_dtype && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy &&
+      request.input_strides == std::vector<int64_t>{
+          prime_input_distance, n1 * n2, n2, 1} &&
+      (packed_real_setting == nullptr || std::string(packed_real_setting) != "0") &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_FUSED_AXES", true);
+  if (maca_fused_prime_axes) {
+    std::shared_ptr<CompiledRawNode> real_axis;
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    if (!inverse && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_NATIVE_FIRST", true)) {
+      auto roots = make_maca_sdk_roots<float>(n2 / 2, false);
+      const auto phase = make_maca_sdk_roots<float>(n2, false);
+      roots.insert(roots.end(), phase.begin(), phase.end());
+      real_axis = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots),
+          CompiledRawMacaLongAxisNode::Stage::PrimeR2CFp32);
+    }
+#endif
+    if (!real_axis) {
+      real_axis = compile_raw_leaf(*n2_leaf, n2_request,
+          inverse ? MacaLeafLayout::RealPrimeInverse64 : MacaLeafLayout::RealPrimeForward64);
+    }
+    const ScopedBool prime_dif_scope(maca_3d_prime_dif_,
+        maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", true));
+    auto middle = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+    const bool wide_outer = !inverse && batch == 4 && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_OUTER_WIDE", true);
+    auto outer = compile_raw_leaf(*n0_leaf, n0_request, wide_outer ? MacaLeafLayout::RealPrimeOuter16Wide
+                                                                 : MacaLeafLayout::RealPrimeOuter16);
+    const auto bytes = static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
+    return std::make_shared<CompiledRaw3DRealLeafNode>(n0, n1, n2, inverse,
+        wide_outer ? CompiledRaw3DRealLeafNode::Layout::FusedPrimeAxesWide
+                   : CompiledRaw3DRealLeafNode::Layout::FusedPrimeAxes,
+        std::move(real_axis), std::move(middle), std::move(outer), nullptr, nullptr, nullptr,
+        adaptor::Memory(bytes), adaptor::Memory(bytes));
+  }
+
   // Preserve the compact real spectrum while fusing the short outer-axis
   // stores. An explicit middle transpose also supports a Bluestein child.
   if (cuda_real_compact && !small &&
@@ -7305,10 +8030,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_FUSED32", true);
   if (maca_fused_real32) {
     const std::string complex_dtype = complex_dtype_for(request.input_dtype);
-    std::vector<double> tw_r_d(16);
-    std::vector<double> tw_i_d(16);
+    const bool plane_dif = request.device_arch == "102" && complex_dtype == "complex128" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_REAL32_PLANE_DIF", true);
+    const int64_t twiddle_count = plane_dif ? 32 : 16;
+    std::vector<double> tw_r_d(twiddle_count);
+    std::vector<double> tw_i_d(twiddle_count);
     const double sign = inverse ? 1.0 : -1.0;
-    for (int64_t k = 0; k < 16; ++k) {
+    for (int64_t k = 0; k < twiddle_count; ++k) {
       const double angle = sign * 2.0 * kPi * static_cast<double>(k) / 32.0;
       tw_r_d[k] = std::cos(angle);
       tw_i_d[k] = std::sin(angle);
@@ -7322,8 +8050,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       tw_r = adaptor::Memory::from_floats(std::vector<float>(tw_r_d.begin(), tw_r_d.end()));
       tw_i = adaptor::Memory::from_floats(std::vector<float>(tw_i_d.begin(), tw_i_d.end()));
     }
-    auto plane_fft = compile_kernel(KernelKey::fused_32_real_plane(
-        triton_target_for_request(request), request.direction, complex_dtype));
+    auto plane_key = KernelKey::fused_32_real_plane(
+        triton_target_for_request(request), request.direction, complex_dtype);
+    if (plane_dif) plane_key.perm_form = "maca_real32_plane_dif";
+    auto plane_fft = compile_kernel(plane_key);
     auto outer_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
     DeviceAllocation temp = adaptor::Memory(
         static_cast<std::size_t>(packed * complex_element_bytes(complex_dtype)));
@@ -7398,11 +8128,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
                                      ? r2c_permute_default
                                      : std::string(r2c_permute_override) != "0");
   const int64_t n2_batch = batch * n0 * n1;
-  auto n2_real_fft = !inverse && !small && n1_leaf
-      ? compile_raw_hcu_packed_r2c_store(n2_request, n2_batch, n2, n1) : nullptr;
+  std::shared_ptr<CompiledRawNode> n2_real_fft;
+  if (maca_real_boundary_dif) {
+    n2_real_fft = compile_raw_leaf(*n2_leaf, n2_request,
+        inverse ? MacaLeafLayout::RealInverse64 : MacaLeafLayout::RealForward64);
+  } else if (!inverse && !small && n1_leaf) {
+    n2_real_fft = compile_raw_hcu_packed_r2c_store(n2_request, n2_batch, n2, n1);
+  }
   const bool n2_permuted = n2_real_fft != nullptr || hcu_n2_permuted || maca_r2c_first_store;
   if (n2_real_fft) {
-    // The half-length FFT reconstructs directly into the next axis layout.
+    // The packed boundary handles its own permutation.
   } else if (n2_permuted) {
     KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
                                         n2_request.direction, n2_request.input_dtype,
@@ -7448,18 +8183,25 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       n1_fft = compile_raw_strided_leaf(*n1_leaf, n1_request, half);
       n0_fft = compile_raw_strided_leaf(*n0_leaf, n0_request, n1 * half);
     } else if (maca_r2c_first_store) {
-      n1_fft = compile_raw_leaf(*n1_leaf, n1_request);
+      n1_fft = compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout);
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
       perm_201 = compile_transpose3d_kernel(request, n1, half, n0, "201");
     } else {
-      n1_fft = n1_leaf ? compile_raw_leaf(*n1_leaf, n1_request)
-                       : compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      if (n1_leaf) {
+        n1_fft = compile_raw_leaf(*n1_leaf, n1_request, middle_dif_layout);
+      } else {
+        // The compact boundary has already formed complex rows for the middle axis.
+        const ScopedBool prime_dif_scope(maca_3d_prime_dif_, maca_real_prime_dif);
+        n1_fft = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
+      }
       n0_fft = compile_raw_leaf(*n0_leaf, n0_request);
       if (inverse) {
         perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "120");
         perm_210 = compile_transpose3d_kernel(request, n1, half, n0, "210");
-        perm_201 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+        if (!maca_real_boundary_dif) {
+          perm_201 = compile_transpose3d_kernel(request, n0, half, n1, "021");
+        }
       } else {
         perm_021 = compile_transpose3d_kernel(request, n0, n1, half, "021");
         perm_210 = compile_transpose3d_kernel(request, n0, half, n1, "210");
@@ -8094,6 +8836,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
+  const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
+      maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
+  const Maca2dPolicyScope dif_scope(maca_2d_fp64_dif_policy_, maca_2d_dense_policy_ &&
+      flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", batch == 1 || batch == 4));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::Complex))
@@ -8104,6 +8850,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
   const int64_t n1 = node->n1;
   const auto ix_nd_pack=qualified_ix_nd_pack(request,batch,n0,n1);
   const bool rc_eligible = n0 <= 256;
+  const bool maca_short_fp64_direct = request.device_arch == "102" && request.raw_dim == 2 &&
+      request.origin_rank == 2 && !request.real_transform && request.input_dtype == "complex128" &&
+      request.output_dtype == "complex128" && request.input_layout == "contiguous" &&
+      !request.requires_contiguous_copy && request.batch == batch && (batch == 1 || batch == 4) &&
+      n0 == n1 && (n0 == 64 || n0 == 128);
   // On MUSA S5000, replaying the short batch-1 complex 2D graph adds
   // about 0.1 ms versus direct launches (both RC and transpose paths).
   // Keep other devices and unmeasured batch sizes on the existing policy.
@@ -8116,7 +8867,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_node(
       !env_flag_enabled(std::getenv("FLAGFFT_PROFILE_KERNELS")) &&
       !(request.device_type == "musa" && request.device_arch == "31" && batch == 1) &&
       (request.device_type != "maca" ||
-       maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", !maca_2d_single_policy_));
+       maca_flag_or_default("FLAGFFT_MACA_2D_GRAPH", !(maca_2d_single_policy_ || maca_short_fp64_direct)));
 
   // Build row FFT request (axis-1, length=n1, batch=batch*n0)
   FFTRequest row_request = request;
@@ -8439,6 +9190,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
+  const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
+      maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
+  const Maca2dPolicyScope dif_scope(maca_2d_fp64_dif_policy_, maca_2d_dense_policy_ &&
+      flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", batch == 1 || batch == 4));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealForward))
@@ -8482,7 +9237,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
                                                    batch);
   }
 
-  const auto ix_row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+  const auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
   const auto ix_col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
   const bool hcu_row_store = request.device_type == "hcu" && request.device_arch == "gfx936" &&
       request.origin_rank == 2 && request.input_layout == "contiguous" &&
@@ -8492,18 +9247,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
       ((n0 >= 512 && n0 <= 2048 && n1 >= 512 && n1 <= 2048) || ix_small_transpose) &&
       flag_or_default("FLAGFFT_IX_2D_TRANSPOSE_STORE", ix_nd_pack>0 || ix_small_transpose)) || hcu_row_store) &&
-      ix_row_leaf && ix_col_leaf) {
+      row_leaf && ix_col_leaf) {
     // Keep the compact spectrum transposed between two FFT passes. Each
     // outer store stays inside its own matrix, including the odd half width.
     auto key = KernelKey::leaf_r2c_permuted_store(
         triton_target_for_request(row_request), row_request.direction, row_request.input_dtype,
-        ix_row_leaf->length, ix_row_leaf->factors, ix_row_leaf->lanes, ix_row_leaf->num_warps,
-        ix_row_leaf->generic_radices, ix_row_leaf->smem_size, "outer");
+        row_leaf->length, row_leaf->factors, row_leaf->lanes, row_leaf->num_warps,
+        row_leaf->generic_radices, row_leaf->smem_size, "outer");
     if (ix_small_transpose) row_request.ix_warp_fft_pack_default = n0 == 64 ? 4 : 8;
     mark_ix_warp_fft(key, row_request, n0);
     auto row_r2c = compile_raw_hcu_packed_r2c_store(row_request, batch * n0, n1, n0);
     if (!row_r2c) row_r2c = std::make_shared<CompiledRawR2CLeafNode>(
-        n1, compile_kernel(key), build_raw_leaf_tables(*ix_row_leaf, row_request), DeviceAllocation{}, n0);
+        n1, compile_kernel(key), build_raw_leaf_tables(*row_leaf, row_request), DeviceAllocation{}, n0);
     FFTRequest col_request = request;
     col_request.fft_length = col_request.requested_n = n0;
     col_request.input_shape = {batch * half_n1, n0};
@@ -8543,18 +9298,34 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
   }
 #endif
 
-  // MACA FP32 path: compile the innermost real boundary directly so
+  // Compile the innermost real boundary directly so
   // the 2D schedule does not materialize a full complex row matrix merely to
   // discard its Hermitian half.  Restrict this to row plans that the existing
-  // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.  Packed
-  // real is disabled for existing MACA/MUSA defaults. HCU can explicitly
-  // screen its resource-bounded fused half-length boundary in this layout.
-  if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
-       musa_compact_real_rows || hcu_2d_compact_real_rows_enabled(request, n0, n1)) &&
+  // 1D real compiler can fuse into a leaf or leaf-pair FourStep node.
+  const bool hcu_compact_rows = hcu_2d_compact_real_rows_enabled(request, n0, n1);
+  if ((maca_2d_real_rows_enabled(request, batch, n0, n1,
+                                 maca_2d_single_policy_, maca_2d_dense_policy_) ||
+       musa_compact_real_rows || hcu_compact_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
-    std::shared_ptr<CompiledRawNode> row_r2c =
-        compile_raw_r2c_node(node->row_plan, row_request, batch * n0,
-                            hcu_2d_compact_real_rows_enabled(request, n0, n1));
+    const bool fp64 = request.input_dtype == "complex128";
+    const bool maca_fused_row = request.device_type == "maca" && request.device_arch == "102" &&
+        n0 == 46189 && n1 == 48 && row_leaf &&
+        (fp64 ? (batch == 1 || batch == 4) &&
+             maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_R2C_ROW", true)
+              : maca_2d_46189_fp32_fused_r2c_enabled(request));
+    std::shared_ptr<CompiledRawNode> row_r2c;
+    if (maca_fused_row) {
+      auto key = KernelKey::leaf(triton_target_for_request(row_request), row_request.direction,
+          row_request.input_dtype, row_leaf->length, row_leaf->factors, row_leaf->lanes,
+          row_leaf->num_warps, row_leaf->generic_radices, row_leaf->smem_size);
+      key.perm_form = fp64 ? "maca_fp64_r2c48_to_columns" : "maca_fp32_r2c48_to_columns";
+      row_r2c = std::make_shared<CompiledRawLeafNode>(n1, compile_kernel(key),
+          make_maca_dif_roots(n1, fp64, /*inverse=*/false));
+    } else {
+      row_r2c = compile_raw_r2c_node(
+          node->row_plan, row_request, batch * n0,
+          hcu_compact_rows || maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
+    }
 
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8574,7 +9345,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
-    auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
+    auto transpose_fwd = maca_fused_row
+        ? nullptr : compile_2d_transpose_kernel(request, n0, half_n1, batch);
     auto transpose_inv = use_col_permuted_store
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
@@ -8606,8 +9378,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
+    const char* maca_rows = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
+    const bool maca_short_fp64_row = request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 2 && request.origin_rank <= 2 && request.real_transform_kind == "d2z" &&
+        request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        n0 == 128 && n1 == 128 && batch == 1 && batch == request.batch &&
+        maca_flag_or_default("FLAGFFT_MACA_2D_128_FP64_COMPACT_R2C",
+                             !maca_rows || std::string_view(maca_rows) != "0");
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
-        (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
+        (maca_short_fp64_row || cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "musa" &&
           flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)) ||
@@ -8718,6 +9498,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     const std::shared_ptr<TwoDimPlanNode> &node, const FFTRequest &request, int64_t batch) {
   const BackendPerformanceScope performance_policy(request.device_type, request.device_arch, request.input_dtype);
   const Maca2dPolicyScope policy_scope(maca_2d_single_policy_, request, batch, node->n0, node->n1);
+  const Maca2dPolicyScope dense_scope(maca_2d_dense_policy_,
+      maca_2d_dense_policy_enabled(request, batch, node->n0, node->n1));
+  const Maca2dPolicyScope dif_scope(maca_2d_fp64_dif_policy_, maca_2d_dense_policy_ &&
+      flag_or_default("FLAGFFT_MACA_2D_FP64_DIF", batch == 1 || batch == 4));
   configure_single_transform_policies(request);
 #if defined(FLAGFFT_BACKEND_NPU)
   if (auto tensor = make_npu_tensor_child(request, {node->n0,node->n1}, NpuAivFFTSmallMode::RealInverse))
@@ -8835,12 +9619,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
   }
 #endif
 
-  // Symmetric MACA FP32 path.  The column inverse and compact-layout
+  // The column inverse and compact-layout
   // transposes run first; the existing 1D C2R boundary node then consumes the
-  // compact rows directly and writes real output. HCU's opt-in route also
-  // screens the fused half-length boundary; existing defaults stay unchanged.
-  if ((maca_2d_real_rows_enabled(request, batch, n0, n1, maca_2d_single_policy_) ||
-       musa_compact_real_rows || hcu_2d_compact_real_rows_enabled(request, n0, n1)) &&
+  // compact rows directly and writes real output.
+  const bool hcu_compact_rows = hcu_2d_compact_real_rows_enabled(request, n0, n1);
+  if ((maca_2d_real_rows_enabled(request, batch, n0, n1,
+                                 maca_2d_single_policy_, maca_2d_dense_policy_) ||
+       musa_compact_real_rows || hcu_compact_rows) &&
       has_real_boundary_row_plan(node->row_plan)) {
     FFTRequest col_request = request;
     col_request.fft_length = n0;
@@ -8860,11 +9645,26 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         ? compile_raw_permuted_store_leaf(*col_leaf, col_request, half_n1, "outer")
         : compile_raw_node(node->col_plan, col_request, batch * half_n1);
 
-    std::shared_ptr<CompiledRawNode> row_c2r =
-        compile_raw_c2r_node(node->row_plan, row_request, batch * n0,
-                            hcu_2d_compact_real_rows_enabled(request, n0, n1));
+    const auto row_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->row_plan);
+    const bool maca_fused_row = request.device_type == "maca" && request.device_arch == "102" &&
+        request.input_dtype == "complex128" && n0 == 46189 && n1 == 48 &&
+        (batch == 1 || batch == 4) && row_leaf &&
+        maca_flag_or_default("FLAGFFT_MACA_2D_46189_FP64_FUSED_C2R_ROW", true);
+    std::shared_ptr<CompiledRawNode> row_c2r;
+    if (maca_fused_row) {
+      auto key = KernelKey::leaf(triton_target_for_request(row_request), row_request.direction,
+          row_request.input_dtype, row_leaf->length, row_leaf->factors, row_leaf->lanes,
+          row_leaf->num_warps, row_leaf->generic_radices, row_leaf->smem_size);
+      key.perm_form = "maca_fp64_c2r48_from_columns";
+      row_c2r = std::make_shared<CompiledRawLeafNode>(n1, compile_kernel(key),
+          make_maca_dif_roots(n1, /*fp64=*/true, /*inverse=*/false));
+    } else {
+      row_c2r = compile_raw_c2r_node(
+          node->row_plan, row_request, batch * n0,
+          hcu_compact_rows || maca_2d_fused_packed_rows_enabled(row_request, maca_2d_dense_policy_));
+    }
     auto transpose_fwd = compile_2d_transpose_kernel(request, n0, half_n1, batch);
-    auto transpose_inv = use_col_permuted_store
+    auto transpose_inv = use_col_permuted_store || maca_fused_row
         ? nullptr : compile_2d_transpose_kernel(request, half_n1, n0, batch);
     const std::size_t compact_bytes = static_cast<std::size_t>(batch * n0 * half_n1 * element_bytes);
     DeviceAllocation temp1 = adaptor::Memory(compact_bytes);
@@ -8881,8 +9681,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
                                                      use_col_permuted_store);
   }
 
-  // RC fast path for inverse real transforms: column IFFT first, then expand,
-  // row IFFT, and real pack -- no transposes.
+  // RC fast path for inverse real transforms: column IFFT first, then
+  // consume the compact rows directly where the real boundary is enabled.
   auto col_leaf = std::dynamic_pointer_cast<LeafPlanNode>(node->col_plan);
   auto col_direct = std::dynamic_pointer_cast<DirectDFTPlanNode>(node->col_plan);
   auto col_four = std::dynamic_pointer_cast<FourStepPlanNode>(node->col_plan);
@@ -8895,8 +9695,18 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
+    const char* maca_rows = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
+    const bool maca_rows_default = !maca_rows || std::string_view(maca_rows) != "0";
+    const bool maca_short_fp64_row = request.device_type == "maca" && request.device_arch == "102" &&
+        request.raw_dim == 2 && request.origin_rank <= 2 && request.real_transform_kind == "z2d" &&
+        request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        batch == 1 && batch == request.batch &&
+        ((n0 == 128 && n1 == 128 &&
+          maca_flag_or_default("FLAGFFT_MACA_2D_128_FP64_COMPACT_C2R", maca_rows_default)) ||
+         (n0 == 64 && n1 == 64 && maca_flag_or_default("FLAGFFT_MACA_2D_64_FP64_COMPACT_C2R", maca_rows_default)));
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
-        (cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
+        (maca_short_fp64_row || cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
          (request.device_type == "musa" &&
           flag_or_default("FLAGFFT_MUSA_2D_REAL_ROWS", n0 == 2048 && n1 == 2048)) ||

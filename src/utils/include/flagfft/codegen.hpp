@@ -40,21 +40,59 @@ inline bool npu_portable_leaf_enabled(const FFTRequest &request) {
        performance_env("FLAGFFT_NPU_PORTABLE_LEAF_MAX") != nullptr);
 }
 
-// The 2D real-row path is intentionally a narrow MACA policy.  Keep
-// the predicate inline so planner-only CPU tests can exercise the contract
-// without constructing a device-backed TritonCompiler.
+inline bool maca_2d_dense_policy_enabled(const FFTRequest &request,
+                                         int64_t batch,
+                                         int64_t n0,
+                                         int64_t n1) {
+  const char *setting = std::getenv("FLAGFFT_MACA_2D_DENSE");
+  // Batch one and four have paired C550 timings in both directions and precisions.
+  const bool enabled = setting ? std::string(setting) == "1" : (batch == 1 || batch == 4);
+  return enabled &&
+         request.device_type == "maca" && request.device_arch == "102" &&
+         request.raw_dim == 2 && (request.origin_rank == 0 || request.origin_rank == 2) &&
+         request.batch == batch && batch > 0 &&
+         request.input_dtype == request.output_dtype &&
+         (request.input_dtype == "complex64" || request.input_dtype == "complex128") &&
+         request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+         n0 == 2048 && n1 == 2048;
+}
+
+inline bool maca_2d_46189_fp32_fused_r2c_enabled(const FFTRequest &request) {
+  const char *setting = std::getenv("FLAGFFT_MACA_2D_46189_FP32_FUSED_R2C_ROW");
+  return request.batch == 4 && request.input_dtype == "complex64" &&
+         request.direction == "forward" && (!setting || std::string(setting) == "1");
+}
+
 inline bool maca_2d_real_rows_enabled(const FFTRequest &request,
                                       int64_t batch,
                                       int64_t n0,
                                       int64_t n1,
-                                      bool default_enabled = false) {
+                                      bool default_enabled = false,
+                                      bool dense_default = false) {
+  if (request.device_type != "maca" || request.raw_dim != 2 ||
+      batch <= 0 || request.batch != batch ||
+      request.input_dtype != request.output_dtype ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      n0 <= 256 || n1 <= 1 || n1 % 2 != 0) {
+    return false;
+  }
   const char *setting = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
-  const bool enabled = setting == nullptr ? default_enabled : std::string(setting) == "1";
-  return enabled && request.device_type == "maca" &&
-         request.raw_dim == 2 && request.batch == 1 && batch == 1 &&
-         request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-         request.input_layout == "contiguous" && !request.requires_contiguous_copy && n0 > 256 &&
-         n1 > 1 && (n1 % 2) == 0;
+  const std::string mode = setting ? setting : (dense_default ? "dense" : (default_enabled ? "1" : "0"));
+  const bool batched_fp32_inverse = batch == 4 &&
+      request.input_dtype == "complex64" && request.direction == "inverse";
+  if ((!setting || mode == "dense") && request.device_arch == "102" &&
+      (request.origin_rank == 0 || request.origin_rank == 2) &&
+      n0 == 46189 && n1 == 48 && (batch == 1 || batch == 4) &&
+      (request.input_dtype == "complex128" || batched_fp32_inverse ||
+       maca_2d_46189_fp32_fused_r2c_enabled(request))) {
+    return true;
+  }
+  if (mode == "dense" && request.device_arch == "102" && n1 >= 256 &&
+      (n0 & (n0 - 1)) == 0 && (n1 & (n1 - 1)) == 0) {
+    return request.input_dtype == "complex64" || request.input_dtype == "complex128";
+  }
+  return (mode == "1" || (mode == "dense" && default_enabled)) &&
+         batch == 1 && request.input_dtype == "complex64";
 }
 
 // In the RC schedule retain the existing batched policy for small mixed leaves.
@@ -127,7 +165,7 @@ struct JitKernel {
   int64_t butterflies_per_block = 128;
   int64_t grid_x_override = 0;
   int64_t grid_y_override = 0;
-  // Nonzero only for the private NPU transpose with a byte-offset table ABI.
+  // MACA tiled transposes and NPU table transposes carry their tile size.
   int64_t transpose_tile_size = 0;
   bool tle_fused_twiddle = false;
   bool npu_permutation_table = false;
@@ -174,6 +212,85 @@ struct CompiledRawNode {
   virtual std::string describe() const = 0;
   virtual bool is_single_kernel() const { return false; }
 };
+
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+struct CompiledRawMacaFp64FFT16Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp64FFT16Node(int direction) : direction(direction) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  int direction;
+};
+
+struct CompiledRawMacaFp64D2Z16Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp64D2Z16Node(int64_t batch)
+      : dense_input_copy(batch > 1 ? DeviceAllocation(static_cast<std::size_t>(batch * 16 * sizeof(double)))
+                                   : DeviceAllocation{}) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation dense_input_copy;
+};
+
+struct CompiledRawMacaFp64FFT23Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp64FFT23Node(DeviceAllocation roots) : roots(std::move(roots)) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+};
+
+struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
+  CompiledRawMacaFp32R2C2048Node(DeviceAllocation roots, bool use_residues, int64_t batch)
+      : roots(std::move(roots)), use_residues(use_residues),
+        dense_input_copy(batch > 1 ? DeviceAllocation(static_cast<std::size_t>(batch * 2048 * sizeof(float)))
+                                   : DeviceAllocation{}) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+  bool use_residues;
+  DeviceAllocation dense_input_copy;
+};
+
+struct CompiledRawMacaFp32FFT210Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp32FFT210Node(DeviceAllocation roots) : roots(std::move(roots)) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+};
+
+struct CompiledRawMacaFp32C2R2048Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp32C2R2048Node(DeviceAllocation roots) : roots(std::move(roots)) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+};
+
+struct CompiledRawMacaLongAxisNode final : CompiledRawNode {
+  enum class Stage {
+    FirstFp64, FirstFp64Radix4, FirstFp32, FirstFp32TwoShuffle, MiddleFp32, LastFp32, LastFp32Wide, PrimeR2CFp32
+  };
+
+  CompiledRawMacaLongAxisNode(DeviceAllocation roots, Stage stage, bool inverse = false)
+      : roots(std::move(roots)), stage(stage), inverse(inverse) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+  Stage stage;
+  bool inverse;
+};
+#endif
 
 // A fused axis permutation is defined within one ND transform. Reuse its
 // scratch and kernels serially rather than folding independent transforms
@@ -458,6 +575,12 @@ struct CompiledRawDirectDftNode final : CompiledRawNode {
 };
 
 struct CompiledRawFourStepFusedNode final : CompiledRawNode {
+  struct ColumnPreparation {
+    std::shared_ptr<JitKernel> kernel;
+    std::vector<DeviceAllocation> tables;
+    DeviceAllocation workspace;
+  };
+
   CompiledRawFourStepFusedNode(int64_t length,
                                int64_t n1,
                                int64_t n2,
@@ -466,7 +589,8 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
                                std::shared_ptr<JitKernel> col_kernel,
                                std::vector<DeviceAllocation> col_tables,
                                DeviceAllocation twiddle,
-                               DeviceAllocation stage1);
+                               DeviceAllocation stage1,
+                               std::optional<ColumnPreparation> column_preparation = std::nullopt);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -481,6 +605,7 @@ struct CompiledRawFourStepFusedNode final : CompiledRawNode {
   std::vector<DeviceAllocation> col_tables;
   DeviceAllocation twiddle;
   DeviceAllocation stage1;
+  std::optional<ColumnPreparation> column_preparation;
 };
 
 struct CompiledRawBluesteinNode final : CompiledRawNode {
@@ -637,6 +762,36 @@ struct CompiledRawBluesteinFourStepNode final : CompiledRawNode {
   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
   mutable std::shared_ptr<CompiledRawNode> layout_fallback;
   mutable std::mutex layout_mutex;
+};
+
+struct CompiledRawMacaRaderFourStepNode final : CompiledRawNode {
+  enum class Boundary { Complex, RealForward, RealInverse };
+
+  struct Kernels {
+    std::shared_ptr<JitKernel> gather;
+    std::shared_ptr<JitKernel> product;
+    std::shared_ptr<JitKernel> inverse_row;
+    std::shared_ptr<JitKernel> scatter;
+    std::shared_ptr<JitKernel> spectrum_row;
+    std::shared_ptr<JitKernel> spectrum_col;
+    bool scatter_uses_row_tables = true;
+  };
+
+  CompiledRawMacaRaderFourStepNode(int64_t n1, int64_t n2, int64_t batch, Boundary boundary,
+                                 Kernels kernels, std::vector<DeviceAllocation> row_tables,
+                                 std::vector<DeviceAllocation> col_tables, DeviceAllocation gather_indices,
+                                 DeviceAllocation scatter_indices,
+                                 DeviceAllocation convolution_input);
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+
+  int64_t n1, n2;
+  Boundary boundary;
+  Kernels kernels;
+  std::vector<DeviceAllocation> row_tables, col_tables;
+  DeviceAllocation gather_indices, scatter_indices;
+  DeviceAllocation stage1, stage2, spectrum, input_zero;
 };
 
 struct CompiledRawRaderNode final : CompiledRawNode {
@@ -837,6 +992,7 @@ struct CompiledRawR2CFourStepRealInHalfOutNode final : CompiledRawNode {
   CompiledRawR2CFourStepRealInHalfOutNode(int64_t length,
                                           int64_t n1,
                                           int64_t n2,
+                                          int64_t column_count,
                                           std::shared_ptr<JitKernel> row_kernel,
                                           std::vector<DeviceAllocation> row_tables,
                                           std::shared_ptr<JitKernel> col_kernel,
@@ -851,6 +1007,7 @@ struct CompiledRawR2CFourStepRealInHalfOutNode final : CompiledRawNode {
   int64_t length;
   int64_t n1;
   int64_t n2;
+  int64_t column_count;
   std::shared_ptr<JitKernel> row_kernel;
   std::vector<DeviceAllocation> row_tables;
   std::shared_ptr<JitKernel> col_kernel;
@@ -1333,6 +1490,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   std::vector<DeviceAllocation> npu_transpose_indices;
   bool npu_pair_fused_store;
   bool final_permuted_store = false;
+  bool maca_fp64_cube_transpose = false;
 };
 
 // Transform a contiguous inner plane, then the outer axis in natural layout.
@@ -1512,16 +1670,18 @@ struct CompiledRaw3DPrimePlaneNode final : CompiledRawNode {
 struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
   CompiledRaw3DFusedCubeNode(std::shared_ptr<JitKernel> fft,
                             DeviceAllocation tw_r,
-                            DeviceAllocation tw_i);
+                            DeviceAllocation tw_i,
+                            std::shared_ptr<CompiledRawNode> overlap_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
-  bool is_single_kernel() const override { return true; }
+  bool is_single_kernel() const override { return !overlap_fallback; }
 
   std::shared_ptr<JitKernel> fft;
   DeviceAllocation tw_r;
   DeviceAllocation tw_i;
+  std::shared_ptr<CompiledRawNode> overlap_fallback;
 };
 
 // Coalesced outer-axis FFT for the small 32-point IX plane route.
@@ -1643,7 +1803,8 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
                           DeviceAllocation temp1,
                           DeviceAllocation temp2,
                           std::shared_ptr<JitKernel> perm_021 = nullptr,
-                          std::shared_ptr<JitKernel> perm_201 = nullptr);
+                          std::shared_ptr<JitKernel> perm_201 = nullptr,
+                          std::shared_ptr<CompiledRawNode> n0_first = nullptr);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -1655,6 +1816,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
   std::shared_ptr<CompiledRawNode> n2_fft;
   std::shared_ptr<CompiledRawNode> n1_fft;
   std::shared_ptr<CompiledRawNode> n0_fft;
+  std::shared_ptr<CompiledRawNode> n0_first;
   std::shared_ptr<JitKernel> perm_210;
   std::shared_ptr<JitKernel> perm_021;
   std::shared_ptr<JitKernel> perm_201;
@@ -1666,7 +1828,7 @@ struct CompiledRaw3DHybridNode final : CompiledRawNode {
 // directly.  A non-leaf middle axis can run between two transposes while the
 // outer leaf still fuses its final permutation.
 struct CompiledRaw3DRealLeafNode final : CompiledRawNode {
-  enum class Layout { Legacy, Strided, FusedStore, Transposed, R2CFirstStore };
+  enum class Layout { Legacy, Strided, FusedStore, Transposed, R2CFirstStore, FusedPrimeAxes, FusedPrimeAxesWide };
   CompiledRaw3DRealLeafNode(int64_t n0,
                             int64_t n1,
                             int64_t n2,
@@ -1902,7 +2064,10 @@ class TritonCompiler {
   bool maca_1d_batch_policy_ = false;
   bool musa_1d_batch_policy_ = false;
   bool maca_2d_single_policy_ = false;
+  bool maca_2d_dense_policy_ = false;
+  bool maca_2d_fp64_dif_policy_ = false;
   bool maca_3d_policy_ = false;
+  bool maca_3d_prime_dif_ = false;
   bool maca_3d_c2c32_single_cube_policy_ = false;
   bool ix_ct_single_policy_ = false;
   bool ix_ct_batch_policy_ = false;
@@ -1915,7 +2080,16 @@ class TritonCompiler {
   // does not support yet; keep it on the native/JIT path.
   bool npu_stockham_tle_allowed_ = true;
 
-  std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
+  enum class MacaLeafLayout {
+    Auto, Contiguous, ContiguousFourWarps, TerminalEight, FirstAxis64, OuterPrepare128, OuterFinish128,
+    OuterPrepareDif128, OuterFinishDif128, RealForward64, RealInverse64,
+    RealPrimeForward64, RealPrimeInverse64, RealPrimeOuter16, RealPrimeOuter16Wide
+  };
+  std::shared_ptr<CompiledRawNode> compile_maca_1d_packed_dif(const LeafPlanNode &leaf,
+                                                            const FFTRequest &request,
+                                                            bool gather_reflection = false);
+  std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request,
+                                                   MacaLeafLayout maca_layout = MacaLeafLayout::Auto);
   std::shared_ptr<CompiledRawNode> compile_ix_split_leaf(
       int64_t length, const FFTRequest &request, const std::string &form,
       std::shared_ptr<CompiledRawNode> fallback);
@@ -1961,7 +2135,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_four_step_real_row_kernel(const LeafPlanNode &leaf,
                                                                const FFTRequest &request,
                                                                int64_t n1,
-                                                               int64_t n2);
+                                                               int64_t n2,
+                                                               bool half_columns);
   std::shared_ptr<JitKernel> compile_four_step_hermitian_row_kernel(const LeafPlanNode &leaf,
                                                                     const FFTRequest &request,
                                                                     int64_t n1,
@@ -1981,7 +2156,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_four_step_r2c_col_kernel(const LeafPlanNode &leaf,
                                                               const FFTRequest &request,
                                                               int64_t n1,
-                                                              int64_t n2);
+                                                              int64_t n2,
+                                                              bool half_columns);
   std::shared_ptr<JitKernel> compile_four_step_c2r_col_kernel(const LeafPlanNode &leaf,
                                                               const FFTRequest &request,
                                                               int64_t n1,
@@ -2010,6 +2186,11 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_leaf_rader_finish_kernel(const LeafPlanNode &leaf,
                                                                const FFTRequest &request,
                                                                int64_t n);
+  std::shared_ptr<CompiledRawNode> compile_raw_maca_rader_four_step(
+      const RaderPlanNode &plan, const FFTRequest &request, int64_t batch,
+      CompiledRawMacaRaderFourStepNode::Boundary boundary);
+  std::shared_ptr<CompiledRawNode> compile_maca_rader_real_boundary(
+      const PlanNodePtr &node, const FFTRequest &request, int64_t batch);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request,
                                                                    int64_t n,
@@ -2055,7 +2236,7 @@ DeviceAllocation build_raw_four_step_twiddle(const FFTRequest &request, int64_t 
 DeviceAllocation build_raw_packed_real_twiddle(const FFTRequest &request, int64_t n);
 DeviceAllocation build_raw_bluestein_chirp(const FFTRequest &request, int64_t n, bool inverse_sign);
 DeviceAllocation build_raw_bluestein_b(const FFTRequest &request, int64_t n, int64_t m);
-DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx);
+DeviceAllocation build_raw_rader_idx_table(const std::vector<int64_t> &idx, bool narrow = false);
 DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              int64_t n,
                                              const std::vector<int64_t> &idx);
