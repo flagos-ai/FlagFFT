@@ -5610,7 +5610,6 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
     case MacaLeafLayout::RealPrimeInverse64: key.perm_form = "maca_3d_prime_c2r64"; break;
     case MacaLeafLayout::RealPrimeOuter16: key.perm_form = "maca_3d_prime_outer16"; break;
     case MacaLeafLayout::RealPrimeOuter16Wide: key.perm_form = "maca_3d_prime_outer16_wide"; break;
-    case MacaLeafLayout::RealPrimeOuter16Narrow: key.perm_form = "maca_3d_prime_outer16_narrow"; break;
   }
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
   const bool packed_boundary = maca_layout == MacaLeafLayout::RealForward64 ||
@@ -7534,16 +7533,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     auto middle = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);
     const bool wide_outer = !inverse && batch == 4 && request.input_dtype == "complex64" &&
         maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_OUTER_WIDE", true);
-    const bool narrow_outer = !inverse && batch == 1 && request.input_dtype == "complex64" &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_OUTER_NARROW", false);
-    const auto outer_kernel_layout = narrow_outer ? MacaLeafLayout::RealPrimeOuter16Narrow
-        : wide_outer ? MacaLeafLayout::RealPrimeOuter16Wide : MacaLeafLayout::RealPrimeOuter16;
-    auto outer = compile_raw_leaf(*n0_leaf, n0_request, outer_kernel_layout);
+    auto outer = compile_raw_leaf(*n0_leaf, n0_request, wide_outer ? MacaLeafLayout::RealPrimeOuter16Wide
+                                                                 : MacaLeafLayout::RealPrimeOuter16);
     const auto bytes = static_cast<std::size_t>(packed * complex_element_bytes(request.input_dtype));
-    using Layout = CompiledRaw3DRealLeafNode::Layout;
-    const auto layout = narrow_outer ? Layout::FusedPrimeAxesNarrow
-        : wide_outer ? Layout::FusedPrimeAxesWide : Layout::FusedPrimeAxes;
-    return std::make_shared<CompiledRaw3DRealLeafNode>(n0, n1, n2, inverse, layout,
+    return std::make_shared<CompiledRaw3DRealLeafNode>(n0, n1, n2, inverse,
+        wide_outer ? CompiledRaw3DRealLeafNode::Layout::FusedPrimeAxesWide
+                   : CompiledRaw3DRealLeafNode::Layout::FusedPrimeAxes,
         std::move(real_axis), std::move(middle), std::move(outer), nullptr, nullptr, nullptr,
         adaptor::Memory(bytes), adaptor::Memory(bytes));
   }

@@ -4932,7 +4932,7 @@ CompiledRaw3DRealLeafNode::CompiledRaw3DRealLeafNode(
       inverse(inverse),
       fused_store(layout == Layout::FusedStore),
       n2_permuted(layout == Layout::R2CFirstStore || layout == Layout::FusedPrimeAxes ||
-                  layout == Layout::FusedPrimeAxesWide || layout == Layout::FusedPrimeAxesNarrow),
+                  layout == Layout::FusedPrimeAxesWide),
       n1_strided_input(false),
       layout(layout),
       n2_real_fft(std::move(n2_real_fft)),
@@ -4975,12 +4975,10 @@ flagfftResult CompiledRaw3DRealLeafNode::execute(adaptor::DevicePtr input,
     RawExecutionContext n1_context {context.request, context.stream, batch * n0 * half};
     RawExecutionContext n0_context {context.request, context.stream, batch * n1 * half};
     flagfftResult result;
-    if (layout == Layout::FusedPrimeAxes || layout == Layout::FusedPrimeAxesWide ||
-        layout == Layout::FusedPrimeAxesNarrow) {
+    if (layout == Layout::FusedPrimeAxes || layout == Layout::FusedPrimeAxesWide) {
       // Account for partial tiles separately in each physical plane or batch.
       n2_context.batch = batch * n0 * ceil_div(n1, 32) * 32;
-      const int64_t forward_half_tile = layout == Layout::FusedPrimeAxesNarrow ? 8
-          : layout == Layout::FusedPrimeAxesWide ? 32 : 16;
+      const int64_t forward_half_tile = layout == Layout::FusedPrimeAxesWide ? 32 : 16;
       const int64_t half_tile = inverse ? 4 : forward_half_tile;
       const int64_t middle_tile = inverse ? 16 : 4;
       n0_context.batch = batch * ceil_div(half, half_tile) * ceil_div(n1, middle_tile) * half_tile * middle_tile;

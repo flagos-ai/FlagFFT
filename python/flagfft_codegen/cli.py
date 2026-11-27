@@ -231,7 +231,6 @@ def main() -> None:
             "maca_3d_prime_c2r64",
             "maca_3d_prime_outer16",
             "maca_3d_prime_outer16_wide",
-            "maca_3d_prime_outer16_narrow",
             "maca_prime_dif_c2c",
             "maca_prime_dif_r2c",
             "maca_prime_dif_c2r",
