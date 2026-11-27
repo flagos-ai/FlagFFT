@@ -422,6 +422,8 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool portable_cuda = adaptor::backend_name() == "cuda" && cuda_portable &&
                               std::string(cuda_portable) == "1";
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
+    // The packed real boundary derives the final radix-two root from the
+    // reconstruction table. Only the preceding stages need twiddles here.
     if (ix_packed_twiddles && stage + 1 == leaf.factors.size()) break;
     int64_t lanes = leaf.lanes;
     if (!ix_fixed_lanes) {
