@@ -1456,6 +1456,7 @@ struct CompiledRaw3DNode final : CompiledRawNode {
   std::vector<DeviceAllocation> npu_transpose_indices;
   bool npu_pair_fused_store;
   bool final_permuted_store = false;
+  bool maca_fp64_cube_transpose = false;
 };
 
 // Transform a contiguous inner plane, then the outer axis in natural layout.

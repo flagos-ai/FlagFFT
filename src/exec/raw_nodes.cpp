@@ -49,6 +49,8 @@ extern "C" int flagfft_maca_launch_long_axis_fp32_middle(const void* input, void
                                                          void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_last_wide(const void* input, void* output, const void* roots,
                                                           unsigned batch, void* stream);
+extern "C" int flagfft_maca_launch_fp64_cube_transpose(const void* input, void* output, unsigned batch,
+                                                      unsigned order, void* stream);
 
 namespace {
 
@@ -3907,6 +3909,7 @@ std::string CompiledRaw3DNode::describe() const {
       << ", npu_pair_fused_store=" << npu_pair_fused_store
       << ", final_permuted_store=" << (final_permuted_store ? 1 : 0) << ")";
   if (triton_transpose) oss << "[triton-transpose3d]";
+  if (maca_fp64_cube_transpose) oss << "[maca-sdk-fp64-cube-transpose]";
   return oss.str();
 }
 
@@ -3939,6 +3942,16 @@ flagfftResult CompiledRaw3DNode::execute(adaptor::DevicePtr input,
                        int32_t axis0,
                        int32_t axis1,
                        int32_t axis2) {
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+      // The SDK loads a double2. Scalar-aligned views use the generated transpose.
+      if (maca_fp64_cube_transpose && (source | destination) % 16 == 0) {
+        const auto order = static_cast<unsigned>(100 * axis0 + 10 * axis1 + axis2);
+        const int result = flagfft_maca_launch_fp64_cube_transpose(
+            reinterpret_cast<const void*>(source), reinterpret_cast<void*>(destination),
+            static_cast<unsigned>(batch), order, context.stream);
+        return result == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+      }
+#endif
       return launch_perm3d_with_optional_npu_native(kernel,
                                                      npu_transpose_indices,
                                                      context.stream,

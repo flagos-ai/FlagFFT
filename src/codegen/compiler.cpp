@@ -7158,7 +7158,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
   DeviceAllocation temp1 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
   DeviceAllocation temp2 = adaptor::Memory(static_cast<std::size_t>(batch * n0 * n1 * n2 * element_bytes));
 
-  return std::make_shared<CompiledRaw3DNode>(n0,
+  auto compiled = std::make_shared<CompiledRaw3DNode>(n0,
                                              n1,
                                              n2,
                                              std::move(n2_fft),
@@ -7173,6 +7173,16 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
                                              std::move(temp1),
                                              std::move(temp2),
                                              std::move(npu_transpose_indices));
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  compiled->maca_fp64_cube_transpose = request.device_type == "maca" && request.device_arch == "102" &&
+      n0 == 256 && n1 == 256 && n2 == 256 && (batch == 1 || batch == 4) && batch == request.batch &&
+      request.raw_dim == 3 && (request.origin_rank == 0 || request.origin_rank == 3) && !request.real_transform &&
+      request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+      request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+      request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1} &&
+      maca_flag_or_default("FLAGFFT_MACA_3D_FP64_CUBE_NATIVE_TRANSPOSE", false);
+#endif
+  return compiled;
 }
 
 std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(

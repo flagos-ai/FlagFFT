@@ -49,7 +49,7 @@ elseif(BACKEND STREQUAL "MACA")
     find_library(FLAGFFT_MACA_COMPILER_RUNTIME mccompiler PATHS "${MACA_PATH}/lib" NO_DEFAULT_PATH)
     if(FLAGFFT_MACA_MXCC AND FLAGFFT_MACA_COMPILER_RUNTIME)
         set(maca_native_objects)
-        foreach(maca_kernel IN ITEMS fft16 fft23 r2c2048 long_axis)
+        foreach(maca_kernel IN ITEMS fft16 fft23 r2c2048 long_axis cube_transpose)
             set(maca_source "${CMAKE_CURRENT_LIST_DIR}/backend/maca/${maca_kernel}.cpp")
             set(maca_object "${CMAKE_CURRENT_BINARY_DIR}/${maca_kernel}_maca.o")
             add_custom_command(OUTPUT "${maca_object}"
