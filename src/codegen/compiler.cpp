@@ -9173,7 +9173,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_c2r_node(
         batch == 1 && batch == request.batch &&
         ((n0 == 128 && n1 == 128 &&
           maca_flag_or_default("FLAGFFT_MACA_2D_128_FP64_COMPACT_C2R", maca_rows_default)) ||
-         (n0 == 64 && n1 == 64 && maca_flag_or_default("FLAGFFT_MACA_2D_64_FP64_COMPACT_C2R", false)));
+         (n0 == 64 && n1 == 64 && maca_flag_or_default("FLAGFFT_MACA_2D_64_FP64_COMPACT_C2R", maca_rows_default)));
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
         (maca_short_fp64_row || cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
