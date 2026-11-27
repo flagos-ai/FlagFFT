@@ -257,6 +257,15 @@ struct CompiledRawMacaFp32R2C2048Node final : CompiledRawNode {
   DeviceAllocation dense_input_copy;
 };
 
+struct CompiledRawMacaFp32FFT210Node final : CompiledRawNode {
+  explicit CompiledRawMacaFp32FFT210Node(DeviceAllocation roots) : roots(std::move(roots)) {}
+  flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                        const RawExecutionContext &context) const override;
+  std::string describe() const override;
+  bool is_single_kernel() const override { return true; }
+  DeviceAllocation roots;
+};
+
 struct CompiledRawMacaFp32C2R2048Node final : CompiledRawNode {
   explicit CompiledRawMacaFp32C2R2048Node(DeviceAllocation roots) : roots(std::move(roots)) {}
   flagfftResult execute(adaptor::DevicePtr input, adaptor::DevicePtr output,

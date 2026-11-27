@@ -5597,6 +5597,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   if (leaf.length == 210 && request.input_dtype == "complex64" &&
       maca_batch_c2c_option_enabled(request, 210, "FLAGFFT_MACA_210_FP32_BATCH_PFA", true)) {
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    if (maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_NATIVE", false)) {
+      return std::make_shared<CompiledRawMacaFp32FFT210Node>(
+          DeviceAllocation::from_floats(make_maca_sdk_roots<float>(210, request.direction == "inverse")));
+    }
+#endif
     key.perm_form = "maca_fp32_fft210_pfa";
     return std::make_shared<CompiledRawLeafNode>(leaf.length, compile_kernel(key),
                                                 std::vector<DeviceAllocation>{});
