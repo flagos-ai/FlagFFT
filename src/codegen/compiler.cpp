@@ -8872,12 +8872,14 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_2d_r2c_node(
     rc_col_fft = compile_raw_four_step_strided_node(*col_four, request, batch * half_n1, half_n1);
   }
   if (rc_col_fft != nullptr) {
+    const char* maca_rows = std::getenv("FLAGFFT_MACA_2D_REAL_ROWS");
     const bool maca_short_fp64_row = request.device_type == "maca" && request.device_arch == "102" &&
         request.raw_dim == 2 && request.origin_rank <= 2 && request.real_transform_kind == "d2z" &&
         request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
         request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
         n0 == 128 && n1 == 128 && batch == 1 && batch == request.batch &&
-        maca_flag_or_default("FLAGFFT_MACA_2D_128_FP64_COMPACT_R2C", false);
+        maca_flag_or_default("FLAGFFT_MACA_2D_128_FP64_COMPACT_R2C",
+                             !maca_rows || std::string_view(maca_rows) != "0");
     const bool use_compact_real_row = has_real_boundary_row_plan(node->row_plan) &&
         (maca_short_fp64_row || cuda_multid_flag(request, "FLAGFFT_CUDA_2D_REAL_ROWS") ||
          (request.device_type == "npu" && flag_or_default("FLAGFFT_NPU_2D_REAL_ROW", true)) ||
