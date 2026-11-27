@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import os
 from .backend_profile import current_profile
+from .target import ix_fourstep_preset
 from typing import Literal
 
 from .kernels_common import (
@@ -1616,6 +1617,26 @@ def _ix_full_cta_disjoint(n, factors, io_mode, prime_n):
     )
 
 
+def _emit_ix_ct210_c2r_load(indent: str, digit: int) -> list[str]:
+    # Only digit three spans the Nyquist index. The other input groups
+    # have a fixed direction and conjugation across all active lanes.
+    index = f"in{digit}"
+    if digit == 3:
+        index = "tl.minimum(in3, 210 - in3)"
+    elif digit > 3:
+        index = f"210 - in{digit}"
+    lines = _emit_vectorized_complex_load(
+        indent, f"in_ptr + 2 * (input_batch_base + ({index}))", "lane_mask",
+        f"r{digit}, i{digit}", "complex64")
+    if digit == 0:
+        lines.append(f"{indent}i0 = tl.where(lane == 0, 0.0, i0)")
+    elif digit == 3:
+        lines.append(f"{indent}i3 = tl.where(lane == 15, 0.0, tl.where(lane < 15, i3, -i3))")
+    elif digit > 3:
+        lines.append(f"{indent}i{digit} = -i{digit}")
+    return lines
+
+
 def _emit_stage_block(
     stage: int,
     factors: tuple[int, ...],
@@ -1664,6 +1685,13 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    ix_ct210_compact = (
+        _ix_backend_active() and not portable_exchange and current_profile().device_arch == "71"
+        and current_profile().policy == "balanced" and ix_fourstep_preset() == 13
+        and io_mode == "contiguous_c2r" and dtype == "complex64" and factors == (7, 6, 5)
+        and stage_lanes == (30, 35, 42) and lane_block == 64 and smem_pack == 16
+        and _maca_knob("WARPS", "") == "16" and _packed_maca_fp32_complex_io(dtype)
+    )
     next_lane_block = None
     if ix_compact_tail:
         # Keep the first exchange at its existing width. The final radix can
@@ -1984,11 +2012,15 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
-        lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
+        if ix_ct210_compact:
+            lines.append(f"{indent}input_base = lane")
+        else:
+            lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
     if is_last:
-        lines.extend(
-            _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
-        )
+        if ix_ct210_compact:
+            lines.append(f"{indent}output_base = lane")
+        else:
+            lines.extend(_emit_output_base(indent, factors, current_lanes, f"group_{stage}"))
         if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
             active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
@@ -2016,6 +2048,10 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}perm_store_mask = perm_lane_mask[:, None] & perm_mask[None, :]"
                 )
+    elif ix_ct210_compact:
+        # Express each shared exchange directly in the next radix's lane order.
+        dst_base = "7 * lane" if stage == 0 else "lane + 35 * (lane // 7)"
+        lines.append(f"{indent}shared_dst_base = {dst_base}")
     else:
         lines.extend(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
@@ -2215,6 +2251,8 @@ def _emit_stage_block(
                         f"{indent}i{j} = packed_sum_i{j} + packed_prod_r{j}",
                     ]
                 )
+            elif ix_ct210_compact:
+                lines.extend(_emit_ix_ct210_c2r_load(indent, j))
             elif io_mode == "contiguous_c2r":
                 half_n = n // 2 + 1
                 nyquist_guard = f" | (in{j} == {n // 2})" if n % 2 == 0 else ""
@@ -3248,9 +3286,10 @@ def _emit_stage_block(
                         f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
                     )
         else:
-            lines.extend(
-                _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
-            )
+            if ix_ct210_compact:
+                lines.append(f"{indent}dst{j} = shared_dst_base + {j * math.prod(factors[:stage])}")
+            else:
+                lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j))
             store_index = f"dst{j}"
             if write_bank_shift:
                 lines.append(
@@ -4094,7 +4133,7 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
-    from .target import ix_ct_batch_default_enabled, ix_fourstep_preset
+    from .target import ix_ct_batch_default_enabled
 
     ix_short_packed_real = (
         ix_packed_tle and io_mode == "packed_r2c"
