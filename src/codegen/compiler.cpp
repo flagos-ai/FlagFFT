@@ -1060,7 +1060,7 @@ namespace {
                   !ragged_prime_real) return;
       key.permutation_span = span;
       if (strided_columns) key.permutation_batch = request.batch;
-      if (request.ix_warp256_dif_chunk > 0 && key.length == 256 && pack == 16 &&
+      if (request.ix_warp256_dif_chunk > 0 && key.length == 256 && (pack == 16 || pack == 32) &&
           (inner || key.perm_form == "outer")) {
         key.perm_form += request.ix_warp256_dif_chunk == 1 ? "_dif_chunk1" : "_dif";
       }
@@ -6785,9 +6785,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     if (ix_nd_pack == 16 && request.real_transform_kind.empty() &&
         n0 == 256 && n1 == 256 && n2 == 256 &&
         flag_or_default("FLAGFFT_IX_3D_C2C_DIF_STORE", true)) {
-      n2_cube_request.ix_warp256_dif_chunk = 1;
-      n1_cube_request.ix_warp256_dif_chunk = 1;
-      n0_cube_request.ix_warp256_dif_chunk = 1;
+      const bool subwave = flag_or_default("FLAGFFT_IX_3D_CUBE_SUBWAVE", true);
+      for (auto *axis : {&n2_cube_request, &n1_cube_request, &n0_cube_request}) {
+        if (subwave) axis->ix_warp_fft_pack_default = 32;
+        axis->ix_warp256_dif_chunk = subwave ? 2 : 1;
+      }
     }
     if (ix_per_cube) {
       n2_cube_request.batch = n0 * n1;
@@ -7640,9 +7642,11 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       n0 == 256 && n1 == 256 && n2 == 256 && fused_first && fused_middle && fused_n0 &&
       flag_or_default("FLAGFFT_IX_3D_R2C_DIF_STORE", true);
   if (dif_store) {
-    n2_request.ix_warp256_dif_chunk = 2;
-    n1_request.ix_warp256_dif_chunk = 2;
-    n0_request.ix_warp256_dif_chunk = 2;
+    const bool subwave = flag_or_default("FLAGFFT_IX_3D_CUBE_SUBWAVE", true);
+    for (auto *axis : {&n2_request, &n1_request, &n0_request}) {
+      if (subwave) axis->ix_warp_fft_pack_default = 32;
+      axis->ix_warp256_dif_chunk = 2;
+    }
   }
   std::vector<DeviceAllocation> npu_transpose_indices;
 #if defined(FLAGFFT_BACKEND_NPU)

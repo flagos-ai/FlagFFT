@@ -79,11 +79,12 @@ def build_ix_prime_r2c_last_source(params):
     return name, "\n".join(lines) + "\n"
 
 
-def _emit_dif64(pack, radix, sign):
+def _emit_wave_dif(pack, radix, sign, lane_width):
     lines = []
-    for half in (32, 16, 8, 4, 2, 1):
+    for stage in reversed(range(lane_width.bit_length() - 1)):
+        half = 1 << stage
         lines.extend([
-            f"    peer = tl.broadcast_to(lane ^ {half}, ({pack}, 64))",
+            f"    peer = tl.broadcast_to(lane ^ {half}, ({pack}, {lane_width}))",
             f"    high = (lane & {half}) != 0",
         ])
         if half > 2:
@@ -316,9 +317,11 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if (mode in {"r2c","contiguous_r2c","packed_r2c","four_step_real_row","four_step_r2c_col"} and inverse) or (mode in {"c2r","packed_c2r","four_step_hermitian_row","four_step_c2r_col"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     if dif_store:
-        supported_layout = (n == 256 and mode in {"outer", "inner", "r2c"}
-                            or n == 2048 and mode == "outer")
-        if (not supported_layout or lane_width != 64 or manual_store or strided_input
+        supported_layout = (
+            n == 256 and mode in {"outer", "inner", "r2c"} and lane_width in {32, 64}
+            or n == 2048 and mode == "outer" and lane_width == 64
+        )
+        if (not supported_layout or manual_store or strided_input
                 or wide or table_roots or packed_gather):
             raise ValueError("DIF store requires a supported FP32 wave with a permuted output")
     if ragged_r2c and (mode != "r2c" or manual_store):
@@ -566,7 +569,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             if recurrence: a+=['    base_wr=wr','    base_wi=wi']
         a+=[f'    tr=r{j}*wr-i{j}*wi',f'    ti=r{j}*wi+i{j}*wr',f'    r{j}=tr',f'    i{j}=ti']
     if dif_store:
-        a += _emit_dif64(pack, radix, sign)
+        a += _emit_wave_dif(pack, radix, sign, lane_width)
     else:
         if lane_width==64:
             a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)']
@@ -675,7 +678,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         a += [f'    freq=tl.arange(0,{lane_width*chunk})']
         if dif_store:
             a += [f"    out_lane = freq // {chunk}",
-                  f"    out_rev = {_reverse_lane_bits('out_lane', 6)}",
+                  f"    out_rev = {_reverse_lane_bits('out_lane', lane_width.bit_length() - 1)}",
                   f"    freq = out_rev * {radix} + freq % {chunk} + {start}"]
         elif chunk!=radix: a += [f'    freq=(freq//{chunk})*{radix}+freq%{chunk}+{start}']
         if frequency_bands:
@@ -810,11 +813,13 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
     packed_output_transpose = mode == "packed_r2c" and perm_form == "outer_packed"
+    cube_subwave = n == 256 and dif_store and pack == 32
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c,
                                     strided_input=strided_columns,
                                     packed_c2r_input=packed_c2r_input,
                                     packed_output_transpose=packed_output_transpose,
+                                    lane_width=32 if cube_subwave else 64, recurrence=cube_subwave,
                                     input_padding=input_padding, output_padding=output_padding)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']

@@ -390,11 +390,13 @@ def _metadata(
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()
         wave_rows = 32 if "_pfa_" in kernel_name and "_batch" in kernel_name else min(plan.length,64)
+        if plan.length == 256 and "_lanes32_" in kernel_name:
+            wave_rows = 32
         physical_warps=max(1,(warp_pack*wave_rows+63)//64)
         profile.validate(physical_warps)
         exchange_points=plan.length
         if "_chunk" in kernel_name:
-            exchange_points=64*int(kernel_name.split("_chunk",1)[1].split("_",1)[0])
+            exchange_points=wave_rows*int(kernel_name.split("_chunk",1)[1].split("_",1)[0])
         element_bytes=4 if "_c2r_" in kernel_name and "_packed_c2r_" not in kernel_name else 8
         if warp_pack * exchange_points * element_bytes > profile.max_dynamic_shared_memory:
             raise ValueError("IX warp FFT output tile exceeds shared-memory capacity")
