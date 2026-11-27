@@ -6691,7 +6691,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         !request.real_transform && request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
         request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
         request.input_strides == std::vector<int64_t>{4096, 256, 16, 1} &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_FUSED16_CUBE", false);
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_FUSED16_CUBE", true);
     if (maca_fused_fp64_cube) {
       auto roots = make_maca_dif_roots(16, true, request.direction == "inverse");
       auto cube_key = KernelKey::fused_16_cube(
