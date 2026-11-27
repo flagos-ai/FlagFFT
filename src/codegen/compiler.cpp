@@ -4929,7 +4929,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       request.input_strides.size() == 2 && request.input_strides.front() == n;
   const bool fused_ix = fused_setting ? std::string(fused_setting) == "1" : !use_full_single;
   const char *ix_batch_pack = std::getenv("FLAGFFT_IX_BATCH_PACK");
-  const bool short_tle_shape = n == 2048 && batch == 64 && request.ix_fourstep_preset == 9;
+  const bool half_512_shape = n == 1024 && batch == 64 && request.ix_fourstep_preset == 11 &&
+      request.input_strides.size() == 2 && request.input_strides.front() % 2 == 0;
+  const bool half_1024_shape = n == 2048 && batch == 64 && request.ix_fourstep_preset == 9;
+  const bool short_tle_shape = half_512_shape || half_1024_shape;
   const bool large_tle_shape = packed_cta && request.ix_fourstep_preset == 8;
   const bool packed_tle = (short_tle_shape || large_tle_shape) &&
       !std::getenv("FLAGFFT_IX_PORTABLE_LEAF") && !std::getenv("FLAGFFT_IX_LEAF_FACTORS") &&
@@ -4940,7 +4943,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
   if (request.device_type == "ix" && request.device_arch == "71" &&
       request.raw_dim == 1 && request.origin_rank <= 1 &&
       request.input_dtype == "complex64" && request.output_dtype == "complex64" &&
-      (n == 2048 || packed_cta || (fused_setting != nullptr && std::string(fused_setting) == "1" &&
+      (n == 2048 || (packed_tle && half_512_shape) || packed_cta ||
+                    (fused_setting != nullptr && std::string(fused_setting) == "1" &&
                      n > 0 && n <= 2048 && n % 2 == 0)) &&
       (batch == 1 || batch == 64) &&
       (batch == 1 ? ix_ct_single_policy_ : ix_ct_batch_policy_) &&
@@ -4961,7 +4965,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
     auto child_leaf = std::dynamic_pointer_cast<LeafPlanNode>(child_plan);
     if (!child_leaf && packed_cta && std::dynamic_pointer_cast<FourStepPlanNode>(child_plan))
       child_leaf=ix_fourstep_cta_leaf(child_request,n/2,batch);
-    if (n == 2048 || child_leaf) {
+    if (n == 2048 || child_leaf || (packed_tle && half_512_shape)) {
       // Preserve the measured default, while honoring the already validated
       // half-length factor override when screening packed R2C leaves.
       const char *factor_override = std::getenv("FLAGFFT_IX_LEAF_FACTORS");
@@ -4969,14 +4973,15 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       const bool explicit_child_factors = child_leaf && factor_override &&
           std::strtoll(factor_override, &factor_end, 10) == n / 2 &&
           factor_end && *factor_end == ':';
-      const std::vector<int64_t> factors = packed_tle && large_tle_shape ? std::vector<int64_t>{16, 16, 16, 2} :
+      const std::vector<int64_t> factors = packed_tle && half_512_shape ? std::vector<int64_t>{8, 4, 8, 2} :
+          packed_tle && large_tle_shape ? std::vector<int64_t>{16, 16, 16, 2} :
           packed_tle ? std::vector<int64_t>{8, 8, 8, 2} :
           n == 2048 && !explicit_child_factors
           ? std::vector<int64_t>{16, 8, 8}
           : child_leaf->factors;
       const int64_t lanes = packed_tle ? (n / 2) / factors.front() :
           packed_cta ? child_leaf->lanes : child_builder.choose_lanes(n / 2, factors);
-      const int64_t warps = packed_tle ? (large_tle_shape ? 8 : 4) :
+      const int64_t warps = packed_tle ? (half_512_shape ? 2 : large_tle_shape ? 8 : 4) :
           packed_cta ? child_leaf->num_warps : child_builder.choose_num_warps(lanes);
       LeafPlanNode packed_leaf(n / 2, factors, 1, lanes, warps, {}, n / 2);
       KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(request),
@@ -4993,7 +4998,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           // The short TLE leaf uses a full-width final radix two. The
           // earlier radix-eight stages retain their original table widths.
           build_raw_leaf_tables(packed_leaf, child_request,
-                               request.ix_fourstep_preset == 7 || request.ix_fourstep_preset == 8,
+                               (packed_tle && half_512_shape) ||
+                                   request.ix_fourstep_preset == 7 || request.ix_fourstep_preset == 8,
                                packed_tle && !short_packed_tle, short_packed_tle),
           build_raw_packed_real_twiddle(request, n));
     }

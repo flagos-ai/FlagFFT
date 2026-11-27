@@ -1449,7 +1449,7 @@ def ix_packed_real_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
     if io_mode == "packed_c2r":
         return ((n, factors) in {(1024, (2, 8, 8, 8)), (8192, (2, 16, 16, 16))}
                 and _maca_knob("PACKED_C2R_TLE", "0") == "1")
-    short = n == 1024 and factors == (8, 8, 8, 2)
+    short = (n, factors) in {(512, (8, 4, 8, 2)), (1024, (8, 8, 8, 2))}
     return io_mode == "packed_r2c" and (short or large) and _maca_knob("PACKED_R2C_TLE", "0") == "1"
 
 
@@ -1493,7 +1493,10 @@ def _leaf_single_smem_buffer_eligible(
     if io_mode not in {"contiguous", "strided"} and not (ix_boundary or ix_packed):
         return False
     stage_lanes = cooperative_stage_lanes_for(plan)
-    if not (ix_boundary or ix_cooperative) and any(lanes != plan.lanes for lanes in stage_lanes):
+    ix_packed_512 = ix_packed and io_mode == "packed_r2c" and plan.length == 512
+    if ix_packed_512:
+        stage_lanes = tuple(plan.length // factor for factor in plan.factors)
+    if not (ix_boundary or ix_cooperative or ix_packed_512) and any(lanes != plan.lanes for lanes in stage_lanes):
         return False
     # The packed inverse emits its first radix-two stage directly into the
     # shared tile. Reuse checks apply to the following in-place stages.

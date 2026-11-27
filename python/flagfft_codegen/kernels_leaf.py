@@ -1648,7 +1648,8 @@ def _emit_stage_block(
     ix_split_c2r: bool = False,
     ix_compact_tail: bool = False,
     ix_real_ct_codelet: bool = False,
-    ix_short_packed_real: bool = False,
+    ix_dif_packed_real: bool = False,
+    ix_packed_twiddles: bool = False,
     ix_packed_bank_shifts: tuple[int, ...] = (),
 ) -> list[str]:
     radix = factors[stage]
@@ -2605,7 +2606,7 @@ def _emit_stage_block(
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
             )
-            if ix_short_packed_real:
+            if ix_packed_twiddles:
                 if j:
                     lines.extend(_emit_complex_boundary_load(
                         indent, f"tw{stage}_ptr + 2 * logical_phys{j}", "lane_mask",
@@ -2675,9 +2676,9 @@ def _emit_stage_block(
         if setting not in {'0','1'}:
             raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
         ix_register_prime=setting=='1'
-    if ix_compact_tail or ix_real_ct_codelet or ix_short_packed_real:
+    if ix_compact_tail or ix_real_ct_codelet or ix_dif_packed_real:
         lines.extend(_emit_ix_register_codelet(
-            indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_short_packed_real
+            indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_dif_packed_real
         ))
     elif ix_register_prime:
         from .ix_prime_codelets import emit_prime_codelet
@@ -4093,17 +4094,23 @@ def _build_leaf_kernel_source_for_io(
         and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
         and n == 1024 and factors == (8, 8, 8, 2) and plan.num_warps == 4
     )
+    ix_512_packed_real = (
+        ix_packed_tle and io_mode == "packed_r2c"
+        and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 11
+        and n == 512 and factors == (8, 4, 8, 2) and plan.num_warps == 2
+    )
+    ix_flat_packed_real = ix_short_packed_real or ix_512_packed_real
     inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
-        if portable_exchange or ix_short_packed_real
+        if portable_exchange or ix_flat_packed_real
         else cooperative_stage_lanes_for(plan)
     )
     uses_cooperative_stage_lanes = portable_exchange or any(
         lanes != plan.lanes for lanes in stage_lanes
     )
-    active_lanes = max(stage_lanes[:-1] if ix_short_packed_real else stage_lanes, default=plan.lanes)
+    active_lanes = max(stage_lanes[:-1] if ix_flat_packed_real else stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     contiguous_modes = {
         "contiguous",
@@ -4213,7 +4220,7 @@ def _build_leaf_kernel_source_for_io(
     # Each exchange uses its own permutation. The final radix two reads
     # contiguous frequency bands directly from the unpermuted tile.
     ix_packed_bank_shifts = (
-        (5, 3, 0) if ix_short_packed_real and _maca_knob("SMEM_SWIZZLE", "0") == "1" else ()
+        (5, 3, 0) if ix_flat_packed_real and _maca_knob("SMEM_SWIZZLE", "0") == "1" else ()
     )
     ix_ct_batch_leaf = (
         _ix_backend_active() and current_profile().device_arch == "71"
@@ -4288,7 +4295,7 @@ def _build_leaf_kernel_source_for_io(
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
-        ix_packed_twiddles=ix_short_packed_real,
+        ix_packed_twiddles=ix_flat_packed_real,
         batched_permutation=batched_permutation,
         include_four_step_twiddle=(
             io_mode
@@ -4660,7 +4667,7 @@ def _build_leaf_kernel_source_for_io(
             body.extend(_emit_ix_packed_c2r_radix2(n))
             continue
         if ix_packed_r2c_finish and stage == len(factors) - 1:
-            if ix_short_packed_real:
+            if ix_flat_packed_real:
                 body.extend(_emit_ix_flat_r2c_finish(n, stage_lanes[stage]))
             else:
                 body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage))
@@ -4699,7 +4706,8 @@ def _build_leaf_kernel_source_for_io(
                 ix_split_c2r=ix_split_c2r,
                 ix_compact_tail=ix_compact_tail,
                 ix_real_ct_codelet=ix_real_ct_codelet,
-                ix_short_packed_real=ix_short_packed_real,
+                ix_dif_packed_real=ix_short_packed_real,
+                ix_packed_twiddles=ix_flat_packed_real,
                 ix_packed_bank_shifts=ix_packed_bank_shifts,
             )
         )
