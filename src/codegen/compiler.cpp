@@ -4993,6 +4993,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       if (packed_tle) key.perm_form = "ix_r2c_tle";
       mark_ix_warp_fft(key,request);
       const bool short_packed_tle = packed_tle && short_tle_shape;
+      const bool large_packed_twiddles = packed_tle && large_tle_shape &&
+          flag_or_default("FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION", true) &&
+          flag_or_default("FLAGFFT_IX_RECURRENCE", true);
       return std::make_shared<CompiledRawR2CLeafNode>(
           n, compile_kernel(key),
           // The short TLE leaf uses a full-width final radix two. The
@@ -5000,7 +5003,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           build_raw_leaf_tables(packed_leaf, child_request,
                                (packed_tle && half_512_shape) ||
                                    request.ix_fourstep_preset == 7 || request.ix_fourstep_preset == 8,
-                               packed_tle && !short_packed_tle, short_packed_tle),
+                               packed_tle && !short_packed_tle, short_packed_tle || large_packed_twiddles),
           build_raw_packed_real_twiddle(request, n));
     }
   }

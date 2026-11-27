@@ -321,6 +321,9 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_16k_packed_r2c) {
     cache_key += ";FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION=" +
         std::string(ix_square_rotation ? ix_square_rotation : "1");
+    if (const char *recurrence = performance_env("FLAGFFT_IX_RECURRENCE")) {
+      cache_key += ";FLAGFFT_IX_RECURRENCE=" + std::string(recurrence);
+    }
   }
   const char *ix_packed_smem_shift =
       square_rotation || (key.perm_form == "ix_c2r_tle" && key.length == 1024) ? "4" : "5";

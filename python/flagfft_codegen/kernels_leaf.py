@@ -2608,9 +2608,16 @@ def _emit_stage_block(
             )
             if ix_packed_twiddles:
                 if j:
-                    lines.extend(_emit_complex_boundary_load(
-                        indent, f"tw{stage}_ptr + 2 * logical_phys{j}", "lane_mask",
-                        "twr", "twi", dtype, _packed_maca_fp32_complex_io(dtype)))
+                    # The 8192-point shared tile reuses its digit-one root
+                    # across all sixteen inputs to the radix.
+                    if n == 8192 and j > 1:
+                        lines.append(f"{indent}twr, twi = _cmul(twr, twi, root_step_r, root_step_i)")
+                    else:
+                        lines.extend(_emit_complex_boundary_load(
+                            indent, f"tw{stage}_ptr + 2 * logical_phys{j}", "lane_mask",
+                            "twr", "twi", dtype, _packed_maca_fp32_complex_io(dtype)))
+                        if n == 8192:
+                            lines.append(f"{indent}root_step_r, root_step_i = twr, twi")
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
             elif recurrence and ix_short_packed_c2r:
                 if j:
@@ -4212,6 +4219,12 @@ def _build_leaf_kernel_source_for_io(
     )
     ix_packed_r2c_finish = (io_mode == "packed_r2c" and ix_packed_tle
                             and single_smem_buffer and batch_pack == 1)
+    ix_large_packed_twiddles = (
+        ix_packed_r2c_finish and n == 8192 and ix_fourstep_preset() == 8
+        and _maca_knob("R2C_FINISH_SQUARE_ROTATION", "0") == "1"
+        and _maca_knob("RECURRENCE") == "1"
+    )
+    ix_packed_twiddles = ix_flat_packed_real or ix_large_packed_twiddles
     ix_c2r_radix2 = (io_mode == "packed_c2r" and ix_packed_tle
                      and single_smem_buffer and batch_pack == 1)
     packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
@@ -4295,7 +4308,7 @@ def _build_leaf_kernel_source_for_io(
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
-        ix_packed_twiddles=ix_flat_packed_real,
+        ix_packed_twiddles=ix_packed_twiddles,
         batched_permutation=batched_permutation,
         include_four_step_twiddle=(
             io_mode
@@ -4707,7 +4720,7 @@ def _build_leaf_kernel_source_for_io(
                 ix_compact_tail=ix_compact_tail,
                 ix_real_ct_codelet=ix_real_ct_codelet,
                 ix_dif_packed_real=ix_short_packed_real,
-                ix_packed_twiddles=ix_flat_packed_real,
+                ix_packed_twiddles=ix_packed_twiddles,
                 ix_packed_bank_shifts=ix_packed_bank_shifts,
             )
         )
