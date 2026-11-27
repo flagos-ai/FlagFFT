@@ -6868,9 +6868,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1};
     if (maca_sdk_shape && maca_first_dif &&
         maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_NATIVE_FIRST", true)) {
-      auto roots = make_maca_sdk_roots<double>(n2, request.direction == "inverse");
-      n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_doubles(roots),
-          CompiledRawMacaLongAxisNode::Stage::FirstFp64);
+      const bool inverse = request.direction == "inverse";
+      auto roots = make_maca_sdk_roots<double>(n2, inverse);
+      using Stage = CompiledRawMacaLongAxisNode::Stage;
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_FIRST_RADIX4", false)
+          ? Stage::FirstFp64Radix4 : Stage::FirstFp64;
+      n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_doubles(roots), stage, inverse);
     }
     if (maca_sdk_shape && request.input_dtype == "complex64" &&
         maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_FIRST", true)) {

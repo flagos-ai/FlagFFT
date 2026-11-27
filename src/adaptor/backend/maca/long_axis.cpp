@@ -223,6 +223,78 @@ __device__ float2 load_complex(const float* input, std::size_t offset) {
   }
 }
 
+template<unsigned Mask>
+__device__ Complex<double> exchange_fp64(Complex<double> value) {
+  return {__shfl_xor_sync(lanes, value.re, Mask, wave),
+          __shfl_xor_sync(lanes, value.im, Mask, wave)};
+}
+
+template<unsigned Stride, bool Inverse>
+__device__ Complex<double> radix4_fp64(Complex<double> value, const Complex<double>* roots, unsigned lane) {
+  const unsigned digit = (lane / Stride) & 3;
+  const auto opposite = exchange_fp64<2 * Stride>(value);
+  auto first = (digit & 2) ? Complex<double>{opposite.re - value.re, opposite.im - value.im}
+                           : Complex<double>{opposite.re + value.re, opposite.im + value.im};
+  if (digit == 3) {
+    first = Inverse ? Complex<double>{-first.im, first.re} : Complex<double>{first.im, -first.re};
+  }
+  const auto partner = exchange_fp64<Stride>(first);
+  const auto second = (digit & 1) ? Complex<double>{partner.re - first.re, partner.im - first.im}
+                                  : Complex<double>{partner.re + first.re, partner.im + first.im};
+  if constexpr (Stride == 1) {
+    return second;
+  } else {
+    const unsigned phase = reverse_radix4_digit(digit) * (lane % Stride) * (wave / (4 * Stride));
+    return rotate(second, roots[phase]);
+  }
+}
+
+constexpr unsigned fp64_first_warps = 8;
+
+template<bool Inverse, bool Aligned>
+__global__ void fft64_fp64_radix4(const double* input, double* output, const Complex<double>* roots) {
+  constexpr unsigned tiles = first_rows_per_plane / first_tile_rows;
+  __shared__ Complex<double> tile[wave][first_tile_rows];
+
+  const unsigned thread = threadIdx.x;
+  const unsigned warp = thread / wave;
+  const unsigned lane = thread % wave;
+  const unsigned plane = blockIdx.x / tiles;
+  const unsigned first_row = (blockIdx.x % tiles) * first_tile_rows;
+  const auto base = static_cast<std::size_t>(plane) * first_rows_per_plane * wave;
+  const unsigned frequency = __brev(lane) >> 26;
+  #pragma unroll
+  for (unsigned group = 0; group < first_tile_rows / fp64_first_warps; ++group) {
+    const unsigned slot = group * fp64_first_warps + warp;
+    const auto index = base + (first_row + slot) * wave + lane;
+    Complex<double> value;
+    if constexpr (Aligned) {
+      const auto pair = reinterpret_cast<const double2*>(input)[index];
+      value = {pair.x, pair.y};
+    } else {
+      value = {input[2 * index], input[2 * index + 1]};
+    }
+    value = radix4_fp64<16, Inverse>(value, roots, lane);
+    value = radix4_fp64<4, Inverse>(value, roots, lane);
+    value = radix4_fp64<1, Inverse>(value, roots, lane);
+    tile[frequency][slot] = value;
+  }
+  __syncthreads();
+
+  for (unsigned index = thread; index < wave * first_tile_rows; index += fp64_first_warps * wave) {
+    const unsigned k = index / first_tile_rows;
+    const unsigned slot = index % first_tile_rows;
+    const auto dst = base + k * first_rows_per_plane + first_row + slot;
+    const auto value = tile[k][slot];
+    if constexpr (Aligned) {
+      reinterpret_cast<double2*>(output)[dst] = make_double2(value.re, value.im);
+    } else {
+      output[2 * dst] = value.re;
+      output[2 * dst + 1] = value.im;
+    }
+  }
+}
+
 constexpr unsigned prime_real_tile_rows = 32;
 constexpr unsigned prime_real_warps = 4;
 
@@ -378,6 +450,19 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_ax
     bool innermost_fp64, void* stream) {
   if (innermost_fp64) return launch<double, 64, 32, 8, 0>(input, output, roots, batch, stream);
   return launch<float, 128, 16, 4, 1>(input, output, roots, batch, stream);
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp64_radix4(
+    const void* input, void* output, const void* roots, unsigned batch, bool inverse, void* stream) {
+  const auto address = reinterpret_cast<std::uintptr_t>(input) | reinterpret_cast<std::uintptr_t>(output);
+  const bool aligned = address % alignof(double2) == 0;
+  const auto kernel = inverse
+      ? (aligned ? fft64_fp64_radix4<true, true> : fft64_fp64_radix4<true, false>)
+      : (aligned ? fft64_fp64_radix4<false, true> : fft64_fp64_radix4<false, false>);
+  void* args[] = {&input, &output, &roots};
+  return mcLaunchKernel(reinterpret_cast<const void*>(kernel),
+                        dim3(batch * 128 * first_rows_per_plane / first_tile_rows),
+                        dim3(fp64_first_warps * wave), args, 0, reinterpret_cast<mcStream_t>(stream));
 }
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_last_wide(

@@ -46,6 +46,8 @@ extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* outpu
 extern "C" int flagfft_maca_launch_fp32_c2r2048(const float* input, float* output, const void* roots, void* stream);
 extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, const void* roots,
                                              unsigned batch, bool innermost_fp64, void* stream);
+extern "C" int flagfft_maca_launch_long_axis_fp64_radix4(const void* input, void* output, const void* roots,
+                                                         unsigned batch, bool inverse, void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_first(const void* input, void* output, const void* roots,
                                                         unsigned batch, bool inverse, bool two_shuffle, void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_middle(const void* input, void* output, unsigned batch,
@@ -174,9 +176,13 @@ flagfftResult CompiledRawMacaLongAxisNode::execute(adaptor::DevicePtr input, ada
   }
   // The hybrid plan passes the number of axis transforms, including all cubes.
   const bool fp32_first = stage == Stage::FirstFp32 || stage == Stage::FirstFp32TwoShuffle;
-  const bool outer_axis_input = stage != Stage::FirstFp64 && !fp32_first;
-  const int64_t rows_per_cube = outer_axis_input ? 2048 * 64 : 128 * 2048;
+  const bool fp64_first = stage == Stage::FirstFp64 || stage == Stage::FirstFp64Radix4;
+  const int64_t rows_per_cube = fp32_first || fp64_first ? 128 * 2048 : 2048 * 64;
   const auto batch = static_cast<unsigned>(context.batch / rows_per_cube);
+  if (stage == Stage::FirstFp64Radix4) {
+    return flagfft_maca_launch_long_axis_fp64_radix4(src, dst, roots.data(), batch, inverse, context.stream) == 0
+        ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+  }
   if (stage == Stage::MiddleFp32) {
     return flagfft_maca_launch_long_axis_fp32_middle(src, dst, batch, context.stream) == 0
         ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
@@ -196,6 +202,8 @@ std::string CompiledRawMacaLongAxisNode::describe() const {
   switch (stage) {
     case Stage::FirstFp64:
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp64_first64_transpose, tile=32, warps=8)";
+    case Stage::FirstFp64Radix4:
+      return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp64_first64_radix4, tile=32, warps=8)";
     case Stage::FirstFp32:
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_first64_transpose, tile=32, warps=4)";
     case Stage::FirstFp32TwoShuffle:
