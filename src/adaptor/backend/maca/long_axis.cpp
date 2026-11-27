@@ -138,8 +138,10 @@ int launch(const void* input, void* output, const void* roots, unsigned batch, v
 constexpr unsigned first_axis = 64;
 constexpr unsigned first_rows_per_plane = 2048;
 constexpr unsigned first_tile_rows = 32;
-constexpr unsigned first_warps = 4;
 constexpr unsigned subgroup = 16;
+
+template<bool TwoShuffle>
+constexpr unsigned first_warps = TwoShuffle ? 2 : 4;
 
 __device__ float2 add(float2 a, float2 b) {
   return make_float2(a.x + b.x, a.y + b.y);
@@ -194,6 +196,24 @@ __device__ float2 radix4_lane(float2 own, unsigned lane) {
   return high ? subtract(turned, even_delta) : add(even_delta, turned);
 }
 
+__device__ unsigned reverse_radix4_digit(unsigned digit) {
+  return ((digit & 1) << 1) | (digit >> 1);
+}
+
+template<unsigned Stride, bool Inverse, bool TwoShuffle>
+__device__ float2 first_axis_radix4(float2 own, unsigned lane) {
+  if constexpr (TwoShuffle) {
+    const unsigned digit = (lane / Stride) & 3;
+    const auto opposite = exchange<2 * Stride>(own);
+    auto value = (digit & 2) ? subtract(opposite, own) : add(own, opposite);
+    if (digit == 3) value = quarter_turn<Inverse>(value);
+    const auto partner = exchange<Stride>(value);
+    // The two radix-2 butterflies leave the frequency digit bit-reversed.
+    return (digit & 1) ? subtract(partner, value) : add(partner, value);
+  }
+  return radix4_lane<Stride, Inverse>(own, lane);
+}
+
 template<bool Aligned>
 __device__ float2 load_complex(const float* input, std::size_t offset) {
   if constexpr (Aligned) {
@@ -203,9 +223,9 @@ __device__ float2 load_complex(const float* input, std::size_t offset) {
   }
 }
 
-template<bool Inverse, bool Aligned>
+template<bool Inverse, bool Aligned, bool TwoShuffle>
 __global__ void fft64_fp32_first(const float* input, float2* output, const float2* roots) {
-  constexpr unsigned threads = first_warps * wave;
+  constexpr unsigned threads = first_warps<TwoShuffle> * wave;
   constexpr unsigned groups = threads / subgroup;
   constexpr unsigned tiles_per_plane = first_rows_per_plane / first_tile_rows;
   __shared__ float2 tile[first_tile_rows][first_axis + 1];
@@ -215,8 +235,10 @@ __global__ void fft64_fp32_first(const float* input, float2* output, const float
   const unsigned plane = blockIdx.x / tiles_per_plane;
   const unsigned row_start = (blockIdx.x % tiles_per_plane) * first_tile_rows;
   const auto base = static_cast<std::size_t>(plane) * first_rows_per_plane * first_axis;
-  const unsigned out_base = ((lane >> 2) << 2) + ((lane & 3) << 4);
-  const unsigned phase = (lane & 3) * (lane >> 2) * 4;
+  const unsigned middle = TwoShuffle ? reverse_radix4_digit(lane >> 2) : lane >> 2;
+  const unsigned last = TwoShuffle ? reverse_radix4_digit(lane & 3) : lane & 3;
+  const unsigned out_base = middle * 4 + last * 16;
+  const unsigned phase = (lane & 3) * middle * 4;
   // Four 16-lane subgroups per wave each transform a separate 64-value row.
   #pragma unroll
   for (unsigned repeat = 0; repeat < first_tile_rows / groups; ++repeat) {
@@ -231,8 +253,8 @@ __global__ void fft64_fp32_first(const float* input, float2* output, const float
     for (unsigned branch = 0; branch < 4; ++branch) {
       auto value = x[branch];
       if (branch != 0) value = multiply(value, roots[branch * lane]);
-      value = radix4_lane<4, Inverse>(value, lane);
-      value = radix4_lane<1, Inverse>(multiply(value, roots[phase]), lane);
+      value = first_axis_radix4<4, Inverse, TwoShuffle>(value, lane);
+      value = first_axis_radix4<1, Inverse, TwoShuffle>(multiply(value, roots[phase]), lane);
       tile[row][out_base + branch] = value;
     }
   }
@@ -243,6 +265,19 @@ __global__ void fft64_fp32_first(const float* input, float2* output, const float
     const unsigned row = element % first_tile_rows;
     output[base + frequency * first_rows_per_plane + row_start + row] = tile[row][frequency];
   }
+}
+
+template<bool TwoShuffle>
+int launch_fp32_first(const void* input, void* output, const void* roots, unsigned batch,
+                     bool inverse, void* stream) {
+  const bool aligned = reinterpret_cast<std::uintptr_t>(input) % alignof(float2) == 0;
+  const auto kernel = inverse
+      ? (aligned ? fft64_fp32_first<true, true, TwoShuffle> : fft64_fp32_first<true, false, TwoShuffle>)
+      : (aligned ? fft64_fp32_first<false, true, TwoShuffle> : fft64_fp32_first<false, false, TwoShuffle>);
+  void* args[] = {&input, &output, &roots};
+  return mcLaunchKernel(reinterpret_cast<const void*>(kernel),
+                        dim3(batch * 128 * first_rows_per_plane / first_tile_rows),
+                        dim3(first_warps<TwoShuffle> * wave), args, 0, reinterpret_cast<mcStream_t>(stream));
 }
 
 constexpr unsigned middle_tile_rows = 32;
@@ -296,15 +331,10 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_ax
 }
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_first(
-    const void* input, void* output, const void* roots, unsigned batch, bool inverse, void* stream) {
-  const bool aligned = reinterpret_cast<std::uintptr_t>(input) % alignof(float2) == 0;
-  const auto kernel = inverse
-      ? (aligned ? fft64_fp32_first<true, true> : fft64_fp32_first<true, false>)
-      : (aligned ? fft64_fp32_first<false, true> : fft64_fp32_first<false, false>);
-  void* args[] = {&input, &output, &roots};
-  return mcLaunchKernel(reinterpret_cast<const void*>(kernel),
-                        dim3(batch * 128 * first_rows_per_plane / first_tile_rows),
-                        dim3(first_warps * wave), args, 0, reinterpret_cast<mcStream_t>(stream));
+    const void* input, void* output, const void* roots, unsigned batch, bool inverse, bool two_shuffle,
+    void* stream) {
+  if (two_shuffle) return launch_fp32_first<true>(input, output, roots, batch, inverse, stream);
+  return launch_fp32_first<false>(input, output, roots, batch, inverse, stream);
 }
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_axis_fp32_middle(

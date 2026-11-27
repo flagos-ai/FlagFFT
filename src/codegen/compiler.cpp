@@ -6826,8 +6826,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
         maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_NATIVE_FIRST", true)) {
       const bool inverse = request.direction == "inverse";
       auto roots = make_maca_sdk_roots<float>(n2, inverse);
-      n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots),
-          CompiledRawMacaLongAxisNode::Stage::FirstFp32, inverse);
+      using Stage = CompiledRawMacaLongAxisNode::Stage;
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_FIRST_TWO_SHUFFLE", false)
+          ? Stage::FirstFp32TwoShuffle : Stage::FirstFp32;
+      n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots), stage, inverse);
     }
     const bool maca_transpose_override = std::getenv("FLAGFFT_MACA_TRANSPOSE3D") ||
         std::getenv("FLAGFFT_MACA_TRANSPOSE3D_WARPS") ||

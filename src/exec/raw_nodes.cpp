@@ -44,7 +44,7 @@ extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* outpu
 extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, const void* roots,
                                              unsigned batch, bool innermost_fp64, void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_first(const void* input, void* output, const void* roots,
-                                                        unsigned batch, bool inverse, void* stream);
+                                                        unsigned batch, bool inverse, bool two_shuffle, void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_middle(const void* input, void* output, unsigned batch,
                                                          void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_last_wide(const void* input, void* output, const void* roots,
@@ -138,7 +138,8 @@ std::string CompiledRawMacaFp32R2C2048Node::describe() const {
 flagfftResult CompiledRawMacaLongAxisNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
                                                  const RawExecutionContext &context) const {
   // The hybrid plan passes the number of axis transforms, including all cubes.
-  const bool outer_axis_input = stage != Stage::FirstFp64 && stage != Stage::FirstFp32;
+  const bool fp32_first = stage == Stage::FirstFp32 || stage == Stage::FirstFp32TwoShuffle;
+  const bool outer_axis_input = stage != Stage::FirstFp64 && !fp32_first;
   const int64_t rows_per_cube = outer_axis_input ? 2048 * 64 : 128 * 2048;
   const auto batch = static_cast<unsigned>(context.batch / rows_per_cube);
   const auto* src = reinterpret_cast<const void*>(input);
@@ -151,8 +152,9 @@ flagfftResult CompiledRawMacaLongAxisNode::execute(adaptor::DevicePtr input, ada
     return flagfft_maca_launch_long_axis_fp32_last_wide(src, dst, roots.data(), batch, context.stream) == 0
         ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
   }
-  const int status = stage == Stage::FirstFp32
-      ? flagfft_maca_launch_long_axis_fp32_first(src, dst, roots.data(), batch, inverse, context.stream)
+  const int status = fp32_first
+      ? flagfft_maca_launch_long_axis_fp32_first(src, dst, roots.data(), batch, inverse,
+                                               stage == Stage::FirstFp32TwoShuffle, context.stream)
       : flagfft_maca_launch_long_axis(src, dst, roots.data(), batch, stage == Stage::FirstFp64, context.stream);
   return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
 }
@@ -163,6 +165,8 @@ std::string CompiledRawMacaLongAxisNode::describe() const {
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp64_first64_transpose, tile=32, warps=8)";
     case Stage::FirstFp32:
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_first64_transpose, tile=32, warps=4)";
+    case Stage::FirstFp32TwoShuffle:
+      return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_first64_transpose_two_shuffle, tile=32, warps=2)";
     case Stage::MiddleFp32:
       return "CompiledRawMacaLongAxis(kernel=maca_sdk_fp32_middle_transpose210, tile=32x32, warps=4)";
     case Stage::LastFp32:
