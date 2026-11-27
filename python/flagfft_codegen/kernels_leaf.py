@@ -1650,6 +1650,7 @@ def _emit_stage_block(
     ix_real_ct_codelet: bool = False,
     ix_short_packed_real: bool = False,
     ix_packed_bank_shifts: tuple[int, ...] = (),
+    ix_packed_twiddles: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2605,7 +2606,15 @@ def _emit_stage_block(
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
             )
-            if recurrence and ix_short_packed_c2r:
+            if ix_packed_twiddles:
+                if j:
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"tw{stage}_ptr + 2 * logical_phys{j}", "lane_mask",
+                        "twr", "twi", dtype, True))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+            elif ix_short_packed_real and j == 0 and _maca_knob("CT_SHORT_SKIP_UNITY", "0") == "1":
+                pass
+            elif recurrence and ix_short_packed_c2r:
                 if j:
                     lines.extend(_emit_ix_twiddle_tree(indent, stage, j))
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
@@ -3331,12 +3340,15 @@ def _leaf_kernel_params_for_io(
     io_mode: LeafIoMode,
     include_four_step_twiddle: bool = False,
     batched_permutation: bool = False,
+    ix_packed_twiddles: bool = False,
 ) -> list[str]:
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=include_four_step_twiddle
     )
     if io_mode == "packed_r2c":
         params.insert(2, "packed_twiddle_ptr")
+        if ix_packed_twiddles:
+            params[3:] = [f"tw{stage}_ptr" for stage in range(1, len(plan.factors) - 1)]
     elif io_mode == "packed_c2r":
         params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
@@ -4084,6 +4096,7 @@ def _build_leaf_kernel_source_for_io(
         and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
         and n == 1024 and factors == (8, 8, 8, 2) and plan.num_warps == 4
     )
+    ix_packed_twiddles = ix_short_packed_real and _maca_knob("CT_SHORT_PACK_TWIDDLES", "0") == "1"
     inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
@@ -4279,6 +4292,7 @@ def _build_leaf_kernel_source_for_io(
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
+        ix_packed_twiddles=ix_packed_twiddles,
         batched_permutation=batched_permutation,
         include_four_step_twiddle=(
             io_mode
@@ -4691,6 +4705,7 @@ def _build_leaf_kernel_source_for_io(
                 ix_real_ct_codelet=ix_real_ct_codelet,
                 ix_short_packed_real=ix_short_packed_real,
                 ix_packed_bank_shifts=ix_packed_bank_shifts,
+                ix_packed_twiddles=ix_packed_twiddles,
             )
         )
 

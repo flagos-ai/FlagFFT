@@ -402,7 +402,8 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
 }
 
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
-                                                   bool portable_default, bool ix_fixed_lanes) {
+                                                   bool portable_default, bool ix_fixed_lanes,
+                                                   bool ix_packed_twiddles) {
   const bool is_double = dtype_is_double(request.input_dtype);
   const char *hcu_conv_buffer = performance_env("FLAGFFT_HCU_CONV_SINGLE_BUFFER");
   const int64_t hcu_convolution_limit = request.device_type == "hcu" &&
@@ -421,6 +422,7 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
   const bool portable_cuda = adaptor::backend_name() == "cuda" && cuda_portable &&
                               std::string(cuda_portable) == "1";
   for (std::size_t stage = 1; stage < leaf.factors.size(); ++stage) {
+    if (ix_packed_twiddles && stage + 1 == leaf.factors.size()) break;
     int64_t lanes = leaf.lanes;
     if (!ix_fixed_lanes) {
       if (adaptor::backend_name() == "maca" || portable_ix || portable_cuda ||
@@ -440,8 +442,17 @@ std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, co
       auto twiddles =
           build_stage_twiddles(leaf.factors, static_cast<int64_t>(stage), lanes, request.direction);
       append_hcu_wave_roots(twiddles, leaf, request, stage);
-      tables.push_back(adaptor::Memory::from_floats(twiddles.first));
-      tables.push_back(adaptor::Memory::from_floats(twiddles.second));
+      if (ix_packed_twiddles) {
+        std::vector<float> interleaved(2 * twiddles.first.size());
+        for (std::size_t i = 0; i < twiddles.first.size(); ++i) {
+          interleaved[2 * i] = twiddles.first[i];
+          interleaved[2 * i + 1] = twiddles.second[i];
+        }
+        tables.push_back(adaptor::Memory::from_floats(interleaved));
+      } else {
+        tables.push_back(adaptor::Memory::from_floats(twiddles.first));
+        tables.push_back(adaptor::Memory::from_floats(twiddles.second));
+      }
     }
   }
   for (int64_t radix : leaf.generic_radices) {
