@@ -293,19 +293,24 @@ def _emit_band_input(n, bands, mode, sign, digit):
     return lines
 
 
-def _build_ix_pfa210(mode, inverse, batch_pack=0):
+def _build_ix_pfa210(mode, inverse, batch_pack=0, fold=False):
     """Seven independent residue classes of the 5 x 6 x 7 prime-factor FFT."""
     name = f"ix_warp210_pfa_{mode}_{'inv' if inverse else 'fwd'}_frequency_bands7_leaf"
     if batch_pack:
         name += f"_batch{batch_pack}"
+    if fold:
+        if inverse or mode != "contiguous_r2c":
+            raise ValueError("folded bands require a forward real FFT")
+        name += "_fold4"
+    active_bands = 4 if fold else 7
     sign = 1 if inverse else -1
     lines = ["import triton", "import triton.language as tl", "@triton.jit",
              f"def {name}(in_ptr,out_ptr,nbatch):"]
     if batch_pack:
         input_n = 106 if mode == "c2r" else 210
         output_n = 106 if mode == "contiguous_r2c" else 210
-        lines += ["    pid=tl.program_id(0)", "    band=pid%7",
-                  f"    batch=(pid//7)*{batch_pack}+tl.arange(0,{batch_pack})[:,None]",
+        lines += ["    pid=tl.program_id(0)", f"    band=pid%{active_bands}",
+                  f"    batch=(pid//{active_bands})*{batch_pack}+tl.arange(0,{batch_pack})[:,None]",
                   "    lane=tl.arange(0,32)[None,:]",
                   "    active=batch<nbatch",
                   f"    input_base=batch*{input_n}",
@@ -370,7 +375,16 @@ def _build_ix_pfa210(mode, inverse, batch_pack=0):
     if mode == "c2r":
         lines += ["    tl.store(out_ptr+output_base+k,yr,valid)"]
     else:
-        if mode == "contiguous_r2c":
+        if fold:
+            # Nonzero positive residues produce their omitted conjugate bands.
+            lines += [
+                "    negative = k > 105",
+                "    valid = valid & (~negative | (band != 0))",
+                "    k = tl.where(negative, 210 - k, k)",
+                "    yi = tl.where(negative, -yi, yi)",
+                "    yi = tl.where((k == 0) | (k == 105), 0.0, yi)",
+            ]
+        elif mode == "contiguous_r2c":
             lines += ["    valid=valid&(k<=105)", "    yi=tl.where((k==0)|(k==105),0.0,yi)"]
         lines += [
             "    out=tl.cast(out_ptr,tl.pointer_type(tl.uint64))",
@@ -382,11 +396,11 @@ def _build_ix_pfa210(mode, inverse, batch_pack=0):
     return _finish_warp_source(name, lines, True, 0, False)
 
 
-def build_ix_warp_bands(plan, bands, mode, permutation_batch=0):
+def build_ix_warp_bands(plan, bands, mode, permutation_batch=0, fold=False):
     if plan.length == 210 and bands == 7:
         from .target import ix_warp_fft_pack
         return _build_ix_pfa210(mode, plan.direction == "inverse",
-                                ix_warp_fft_pack() if permutation_batch else 0)
+                                ix_warp_fft_pack() if permutation_batch else 0, fold)
     name, source = build_ix_warp_source(plan.length, 1, mode, plan.direction == "inverse",
                                         fast_math=True, local_codelet=True, frequency_bands=bands)
     leaf_name = "ix_" + name + "_leaf"

@@ -5417,6 +5417,10 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_ix_wave_bands(
   if (length == 210 && request.batch == 64) {
     key.ix_warp_fft_pack = 2;
     key.permutation_batch = request.batch;
+    if (request.real_transform_kind == "r2c") {
+      key.ix_warp_fft_pack = 1;
+      key.perm_form = "ix_band_r2c_folded";
+    }
   }
   return std::make_shared<CompiledRawLeafNode>(
       length, compile_kernel(key), std::vector<DeviceAllocation>{}, std::move(fallback), request.batch);

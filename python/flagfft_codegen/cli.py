@@ -209,6 +209,7 @@ def main() -> None:
             "outer_c2r_chunk16",
             "ix_band_c2c",
             "ix_band_r2c",
+            "ix_band_r2c_folded",
             "ix_band_c2r",
             "ix_ct_packed_wave_c2r",
             "inner",
