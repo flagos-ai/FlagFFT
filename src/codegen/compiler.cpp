@@ -5245,7 +5245,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
           request.real_transform_kind == "r2c" && request.direction == "forward" &&
           !request.convolution_child && !request.packed_real_child &&
           (!plan || !*plan) && maca_tail_policy_enabled(request) &&
-          maca_flag_or_default("FLAGFFT_MACA_524288_FP32_R2C_HALF_COLUMNS", false);
+          maca_flag_or_default("FLAGFFT_MACA_524288_FP32_R2C_HALF_COLUMNS", true);
       const int64_t column_count = half_columns ? four_step->n1 / 2 + 1 : four_step->n1;
       const int64_t scratch_pitch = half_columns ? (column_count + 7) / 8 * 8 : four_step->n1;
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
@@ -6872,7 +6872,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       const bool inverse = request.direction == "inverse";
       auto roots = make_maca_sdk_roots<double>(n2, inverse);
       using Stage = CompiledRawMacaLongAxisNode::Stage;
-      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_FIRST_RADIX4", false)
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP64_FIRST_RADIX4", true)
           ? Stage::FirstFp64Radix4 : Stage::FirstFp64;
       n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_doubles(roots), stage, inverse);
     }
