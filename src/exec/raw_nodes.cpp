@@ -41,6 +41,7 @@ extern "C" int flagfft_maca_launch_fp64_fft23(const double* input, double* outpu
 extern "C" int flagfft_maca_launch_fp32_r2c2048(const float* input, float* output, const void* roots,
                                                unsigned batch, int64_t input_distance, int64_t output_distance,
                                                bool use_residues, void* stream);
+extern "C" int flagfft_maca_launch_fp32_c2r2048(const float* input, float* output, const void* roots, void* stream);
 extern "C" int flagfft_maca_launch_long_axis(const void* input, void* output, const void* roots,
                                              unsigned batch, bool innermost_fp64, void* stream);
 extern "C" int flagfft_maca_launch_long_axis_fp32_first(const void* input, void* output, const void* roots,
@@ -135,6 +136,17 @@ flagfftResult CompiledRawMacaFp32R2C2048Node::execute(adaptor::DevicePtr input, 
 std::string CompiledRawMacaFp32R2C2048Node::describe() const {
   return use_residues ? "CompiledRawMacaFp32R2C2048(kernel=maca_fp32_r2c2048_sdk_residues)"
                       : "CompiledRawMacaFp32R2C2048(kernel=maca_fp32_r2c2048_sdk_shared)";
+}
+
+flagfftResult CompiledRawMacaFp32C2R2048Node::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,
+                                                   const RawExecutionContext &context) const {
+  const int status = flagfft_maca_launch_fp32_c2r2048(
+      reinterpret_cast<const float*>(input), reinterpret_cast<float*>(output), roots.data(), context.stream);
+  return status == 0 ? FLAGFFT_SUCCESS : FLAGFFT_EXEC_FAILED;
+}
+
+std::string CompiledRawMacaFp32C2R2048Node::describe() const {
+  return "CompiledRawMacaFp32C2R2048(kernel=maca_fp32_c2r2048_sdk)";
 }
 
 flagfftResult CompiledRawMacaLongAxisNode::execute(adaptor::DevicePtr input, adaptor::DevicePtr output,

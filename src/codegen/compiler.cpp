@@ -5364,6 +5364,19 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
   if (use_fused_prime_real_bluestein(node, request, batch)) {
     return compile_raw_node(node, request, batch);
   }
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+  const char* packed = std::getenv("FLAGFFT_PACKED_REAL");
+  const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
+  if (allow_packed && batch == 1 && maca_1d_2048_scope(request, batch, "complex64") &&
+      request.direction == "inverse" && request.real_transform_kind == "c2r" &&
+      request.input_strides == std::vector<int64_t>{1025, 1} &&
+      (!packed || std::string_view(packed) != "0") && (!plan || !*plan) &&
+      maca_tail_policy_enabled(request) &&
+      maca_flag_or_default("FLAGFFT_MACA_2048_FP32_SINGLE_C2R_NATIVE", false)) {
+    return std::make_shared<CompiledRawMacaFp32C2R2048Node>(
+        DeviceAllocation::from_floats(make_maca_sdk_roots<float>(n, false)));
+  }
+#endif
   const bool maca_1d_dif = allow_packed && maca_1d_fp64_2048_dif_enabled(request, batch);
   const bool maca_1d_fused = allow_packed && (maca_1d_dif || maca_1d_fp64_2048_enabled(request, batch));
   const bool maca_packed_rows = allow_packed &&

@@ -182,6 +182,81 @@ __global__ void residue_fft(const float* input, float* output, const float2* roo
   reconstruct(output, k * residues + residue, spectra[0][k], spectra[1][mirror], roots);
 }
 
+__device__ float2 pack_inverse(const float* input, const float2* forward_roots, unsigned k) {
+  auto a = read_pair(input, k);
+  auto b = read_pair(input, half - k);
+  if (k == 0) {
+    a.y = 0.0f;
+    b.y = 0.0f;
+  }
+  const float dr = a.x - b.x;
+  const float di = a.y + b.y;
+  const float co = forward_roots[k].x;
+  const float si = -forward_roots[k].y;
+  // Conjugate the packed spectrum to reuse the forward wave FFT.
+  return make_float2(a.x + b.x - dr * si - di * co,
+                     b.y - a.y - dr * co + di * si);
+}
+
+__device__ void store_inverse(float* output, unsigned k, float2 value) {
+  output[2 * k] = value.x;
+  output[2 * k + 1] = -value.y;
+}
+
+__global__ void inverse_shared_fft(const float* input, float* output, const float2* roots) {
+  constexpr unsigned axis = half / 4;
+  __shared__ float2 first[half];
+  const unsigned thread = threadIdx.x;
+  const unsigned lane = thread & (wave - 1);
+  const unsigned warp = thread / wave;
+  const unsigned rev = __brev(lane) >> 26;
+  float2 values[4];
+  #pragma unroll
+  for (unsigned i = 0; i < 4; ++i) values[i] = pack_inverse(input, roots, thread + axis * i);
+  radix4(values);
+  #pragma unroll
+  for (unsigned i = 1; i < 4; ++i) values[i] = rotate(values[i], roots[2 * thread * i]);
+  #pragma unroll
+  for (unsigned i = 0; i < 4; ++i) first[axis * i + thread] = values[i];
+  __syncthreads();
+  #pragma unroll
+  for (unsigned i = 0; i < 4; ++i) values[i] = first[axis * warp + rev + wave * i];
+  wave_fft(values, roots, lane, rev);
+  #pragma unroll
+  for (unsigned i = 0; i < 4; ++i) store_inverse(output, 4 * (lane * 4 + i) + warp, values[i]);
+}
+
+__device__ float2 load_inverse_residue(const float* input, const float2* roots, unsigned j, unsigned k) {
+  constexpr unsigned step = half / 4;
+  const unsigned first_frequency = k & 3;
+  const auto even = radix4_component(pack_inverse(input, roots, j),
+      pack_inverse(input, roots, j + step), pack_inverse(input, roots, j + 2 * step),
+      pack_inverse(input, roots, j + 3 * step), first_frequency);
+  const unsigned odd_j = j + half / residues;
+  const auto odd = radix4_component(pack_inverse(input, roots, odd_j),
+      pack_inverse(input, roots, odd_j + step), pack_inverse(input, roots, odd_j + 2 * step),
+      pack_inverse(input, roots, odd_j + 3 * step), first_frequency);
+  const auto value = sum(even, rotate(odd, roots[k * (length / residues)]));
+  return rotate(value, roots[2 * j * k]);
+}
+
+__global__ void inverse_residue_fft(const float* input, float* output, const float2* roots) {
+  constexpr unsigned registers = half / (residues * wave);
+  const unsigned residue = blockIdx.x;
+  const unsigned lane = threadIdx.x;
+  const unsigned rev = __brev(lane) >> 26;
+  float2 values[registers];
+  #pragma unroll
+  for (unsigned i = 0; i < registers; ++i) {
+    values[i] = load_inverse_residue(input, roots, rev + wave * i, residue);
+  }
+  wave_fft(values, roots, lane, rev);
+  #pragma unroll
+  for (unsigned i = 0; i < registers; ++i) {
+    store_inverse(output, (lane * registers + i) * residues + residue, values[i]);
+  }
+}
+
 }  // namespace
 
 extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_fp32_r2c2048(
@@ -199,4 +274,18 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_fp32_r2
   void* arguments[] = {&input, &output, &phase, &input_distance, &output_distance};
   return mcLaunchKernel(reinterpret_cast<const void*>(kernel), dim3(batch), dim3(4 * wave),
                         arguments, 0, maca_stream);
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_fp32_c2r2048(
+    const float* input, float* output, const void* roots, void* stream) {
+  const auto source = reinterpret_cast<std::uintptr_t>(input);
+  const auto destination = reinterpret_cast<std::uintptr_t>(output);
+  const bool overlap = destination >= source ? destination - source < (length + 2) * sizeof(float)
+                                             : source - destination < length * sizeof(float);
+  // The shared kernel reads the full spectrum before writing aliased output.
+  const auto kernel = overlap ? inverse_shared_fft : inverse_residue_fft;
+  void* arguments[] = {&input, &output, &roots};
+  return mcLaunchKernel(reinterpret_cast<const void*>(kernel), dim3(overlap ? 1 : residues),
+                        dim3(overlap ? 4 * wave : wave), arguments, 0,
+                        reinterpret_cast<mcStream_t>(stream));
 }
