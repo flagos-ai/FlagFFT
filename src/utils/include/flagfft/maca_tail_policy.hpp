@@ -437,7 +437,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
     const bool use_inverse_pack = request.direction == "inverse" &&
         (!inverse_pack || std::string_view(inverse_pack) == "1");
     const char* row_phase = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE");
-    if (row_phase && std::string_view(row_phase) == "1") {
+    if (!row_phase || std::string_view(row_phase) == "1") {
       return use_inverse_pack ? "c2c340200-inverse-pack-row-phase" : "c2c340200-single-row-phase";
     }
     return use_inverse_pack ? "c2c340200-inverse-pack" : "c2c340200-single";

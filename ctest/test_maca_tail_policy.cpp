@@ -311,28 +311,27 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(row->factors, (std::vector<int64_t>{10, 9, 10}));
   EXPECT_EQ(col->factors, (std::vector<int64_t>{7, 6, 9}));
   const auto mode = flagfft::maca_tail_codegen_root(r);
-  EXPECT_EQ(mode, "c2c340200-single");
+  EXPECT_EQ(mode, "c2c340200-single-row-phase");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow, "complex64", 900, 900, 378), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepCol, "complex64", 900, 900, 378), "off");
   auto inverse = r;
   inverse.direction = "inverse";
   const auto inverse_mode = flagfft::maca_tail_codegen_root(inverse);
-  EXPECT_EQ(inverse_mode, "c2c340200-inverse-pack");
+  EXPECT_EQ(inverse_mode, "c2c340200-inverse-pack-row-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepRow, "complex64", 900, 900, 378),
+            inverse_mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378),
             inverse_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(inverse_mode, KernelKind::FourStepRow, "complex64", 900, 900, 400),
+            "off");
   setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "0", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(inverse), mode);
   setenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK", "1", 1);
   EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode);
-  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE", "1", 1);
-  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), mode + "-row-phase");
-  const auto phase_mode = flagfft::maca_tail_codegen_root(inverse);
-  EXPECT_EQ(phase_mode, inverse_mode + "-row-phase");
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow, "complex64", 900, 900, 378),
-            phase_mode);
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepRow, "complex64", 900, 900, 400),
-            "off");
+  setenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE", "0", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(r), "c2c340200-single");
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(inverse), "c2c340200-inverse-pack");
   unsetenv("FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE");
   auto other = r;
   other.batch = 64;
