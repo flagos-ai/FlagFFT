@@ -131,6 +131,12 @@ _SPECS: tuple[KernelSpec, ...] = (
         requires=_BASE_LEAF_FLAGS + ("rader_n",),
     ),
     KernelSpec(
+        "leaf_rader_full_c2r",
+        CT_LEAF,
+        io_mode="rader_full_leaf_c2r",
+        requires=_BASE_LEAF_FLAGS + ("rader_n",),
+    ),
+    KernelSpec(
         "leaf_rader_prepare",
         CT_LEAF,
         io_mode="rader_prepare_leaf",
@@ -242,8 +248,10 @@ _SPECS: tuple[KernelSpec, ...] = (
         requires=_BASE_LEAF_FLAGS + _FOUR_STEP_FLAGS,
     ),
     KernelSpec("bluestein_prepare", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
+    KernelSpec("bluestein_prepare_r2c", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
     KernelSpec("bluestein_pointwise", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
     KernelSpec("bluestein_finalize", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
+    KernelSpec("bluestein_finalize_r2c", BLUESTEIN, requires=_BLUESTEIN_FLAGS),
     KernelSpec("rader_prepare", RADER, requires=_RADER_FLAGS),
     KernelSpec("rader_pointwise", RADER, requires=_RADER_FLAGS),
     KernelSpec("rader_finalize", RADER, requires=_RADER_FLAGS),
@@ -312,6 +320,7 @@ CONTIGUOUS_BATCH_PACK_KERNELS = frozenset(
         "leaf_bluestein_r2c",
         "leaf_bluestein_c2r",
         "leaf_rader_full",
+        "leaf_rader_full_c2r",
         "leaf_rader_prepare",
         "leaf_rader_finish",
         "leaf_bluestein_prepare",
@@ -372,7 +381,7 @@ def module_name_for(
         return (
             f"flagfft_jit_stockham_{direction_tag}_n{length}_r{factor_tag}_{dtype_tag}"
         )
-    if spec.family == BLUESTEIN_LEAF:
+    if spec.family == BLUESTEIN_LEAF or spec.name == "leaf_rader_full_c2r":
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"
             f"_n{prime_n}_m{length}_l{lanes}_b{lane_block}_{dtype_tag}"
@@ -398,9 +407,10 @@ def module_name_for(
     if spec.name in {"direct_dft_r2c", "direct_dft_c2r"}:
         return f"flagfft_jit_{spec.name}_{direction_tag}_n{length}_{dtype_tag}"
     if spec.name == "leaf":
+        split_tag = f"_{perm_form}" if perm_form in {"ix_split_frequency", "ix_split_c2r_frequency"} else ""
         return (
             f"flagfft_jit_{direction_tag}_{factor_tag}"
-            f"_l{lanes}_b{lane_block}_{dtype_tag}"
+            f"_l{lanes}_b{lane_block}_{dtype_tag}{split_tag}"
         )
     if spec.name in {"leaf_permuted_store", "leaf_strided_permuted_store", "leaf_r2c_permuted_store"}:
         return (
@@ -408,7 +418,9 @@ def module_name_for(
             f"_l{lanes}_b{lane_block}_{dtype_tag}"
         )
     if spec.name in {"leaf_r2c", "leaf_packed_r2c", "leaf_c2r", "leaf_packed_c2r"}:
-        if spec.name == "leaf_packed_r2c" and perm_form == "outer_packed":
+        if (spec.name == "leaf_packed_r2c" and perm_form == "outer_packed") or (
+            spec.name == "leaf_packed_c2r" and perm_form == "ix_ct_packed_wave_c2r"
+        ):
             return f"flagfft_jit_{spec.name}_{perm_form}_{direction_tag}_{factor_tag}_l{lanes}_b{lane_block}_{dtype_tag}"
         return (
             f"flagfft_jit_{spec.name}_{direction_tag}_{factor_tag}"

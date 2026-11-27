@@ -389,11 +389,14 @@ def _metadata(
     if kernel_name.startswith("ix_warp"):
         from .target import ix_warp_fft_pack
         warp_pack = ix_warp_fft_pack()
-        physical_warps=max(1,(warp_pack*min(plan.length,64)+63)//64)
+        wave_rows = 32 if "_pfa_" in kernel_name and "_batch" in kernel_name else min(plan.length,64)
+        if plan.length == 256 and "_lanes32_" in kernel_name:
+            wave_rows = 32
+        physical_warps=max(1,(warp_pack*wave_rows+63)//64)
         profile.validate(physical_warps)
         exchange_points=plan.length
         if "_chunk" in kernel_name:
-            exchange_points=64*int(kernel_name.split("_chunk",1)[1].split("_",1)[0])
+            exchange_points=wave_rows*int(kernel_name.split("_chunk",1)[1].split("_",1)[0])
         element_bytes=4 if "_c2r_" in kernel_name and "_packed_c2r_" not in kernel_name else 8
         if warp_pack * exchange_points * element_bytes > profile.max_dynamic_shared_memory:
             raise ValueError("IX warp FFT output tile exceeds shared-memory capacity")
@@ -406,6 +409,20 @@ def _metadata(
             inner_pack=warp_pack
             tle_fused_twiddle=True
     strided_grid = {}
+    if kernel_name.startswith("ix_warp") and "_stridedinput" in kernel_name:
+        if permutation_span <= 0 or permutation_batch <= 0 or permutation_batch % permutation_span:
+            raise ValueError("IX strided columns require complete compact planes")
+        strided_grid["grid_x_override"] = (
+            (permutation_batch // permutation_span) * ((permutation_span + batch_per_block - 1) // batch_per_block))
+    if kernel_name.startswith("ix_ct_two_wave_") and kernel_name.endswith("_inverse_packed_c2r"):
+        num_warps = 4
+        profile.validate(num_warps)
+        batch_per_block = 1
+    if kernel_name == "ix_prime_r2c_last":
+        from .kernels_ix_warp import IX_PRIME_R2C_LAST_GRID, PRIME_R2C_LAST_TILE
+        num_warps = 1
+        batch_per_block = PRIME_R2C_LAST_TILE * PRIME_R2C_LAST_TILE
+        strided_grid["grid_x_override"] = IX_PRIME_R2C_LAST_GRID
     if kernel_name.startswith("hcu_warp") and "_stridedinput" in kernel_name:
         from .kernels_ix_warp import strided_input_tile_shape
         if permutation_span <= 0 or permutation_batch <= 0 or permutation_batch % permutation_span:

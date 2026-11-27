@@ -153,16 +153,23 @@ namespace {
 
   bool ix_ct_batch_graph_enabled(const RawExecutionContext &context, int64_t length) {
     const FFTRequest &request = context.request;
-    const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH");
-    const bool enabled = setting == nullptr || std::string(setting) == "1";
     const bool measured_shape = length == 1024 ||
         (length == 2048 && (request.real_transform_kind == "r2c" ||
                             request.real_transform_kind == "c2r"));
-    return enabled && measured_shape && request.device_type == "ix" &&
-           request.device_arch == "71" && request.origin_rank <= 1 && request.raw_dim == 1 &&
-           request.requested_n == length &&
-           context.batch == 64 && request.input_dtype == "complex64" &&
-           request.output_dtype == "complex64";
+    if (!measured_shape || request.device_type != "ix" || request.device_arch != "71" ||
+        request.origin_rank > 1 || request.raw_dim != 1 || request.requested_n != length ||
+        context.batch != 64 || request.input_dtype != "complex64" ||
+        request.output_dtype != "complex64") {
+      return false;
+    }
+    if (const char *setting = std::getenv("FLAGFFT_IX_CT_BATCH_GRAPH")) {
+      return std::string(setting) == "1";
+    }
+    const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+    const bool prefer_direct = (length == 1024 || request.real_transform_kind == "r2c") &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        (!policy || std::string(policy) == "balanced");
+    return !prefer_direct;
   }
 
   bool replay_leaf_graph(Raw1DGraphState &state,
@@ -345,8 +352,11 @@ namespace {
 
 CompiledRawLeafNode::CompiledRawLeafNode(int64_t length,
                                          std::shared_ptr<JitKernel> kernel,
-                                         std::vector<DeviceAllocation> tables)
-    : length(length), kernel(std::move(kernel)), tables(std::move(tables)) {
+                                         std::vector<DeviceAllocation> tables,
+                                         std::shared_ptr<CompiledRawNode> layout_fallback,
+                                         int64_t fixed_batch)
+    : length(length), kernel(std::move(kernel)), tables(std::move(tables)),
+      layout_fallback(std::move(layout_fallback)), fixed_batch(fixed_batch) {
 }
 
 std::string CompiledRawLeafNode::describe() const {
@@ -361,6 +371,22 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
                                            adaptor::DevicePtr output,
                                            const RawExecutionContext &context) const {
   try {
+    if (layout_fallback) {
+      const auto separation = input < output ? output - input : input - output;
+      const bool real_inverse = context.request.real_transform_kind == "c2r";
+      const bool real_forward = context.request.real_transform_kind == "r2c";
+      const auto in_elements = real_inverse ? length / 2 + 1 : length;
+      const auto out_elements = real_forward ? length / 2 + 1 : length;
+      const auto complex_bytes = complex_element_bytes(context.request.input_dtype);
+      const auto input_bytes = real_forward ? complex_bytes / 2 : complex_bytes;
+      const auto output_bytes = real_inverse ? complex_bytes / 2 : complex_bytes;
+      const auto bytes = fixed_batch * (input < output ? in_elements * input_bytes : out_elements * output_bytes);
+      if (context.batch != fixed_batch || separation < static_cast<adaptor::DevicePtr>(bytes) ||
+          (context.input_distance > 0 && context.input_distance != in_elements) ||
+          (context.output_distance > 0 && context.output_distance != out_elements)) {
+        return layout_fallback->execute(input, output, context);
+      }
+    }
     const bool graph_enabled = ix_ct_batch_graph_enabled(context, length);
     if (graph_enabled && replay_leaf_graph(graph_state, context, input, output,
                                            context.input_distance, context.output_distance)) {
@@ -376,7 +402,8 @@ flagfftResult CompiledRawLeafNode::execute(adaptor::DevicePtr input,
         std::vector<JitKernelArg> args = raw_kernel_args({input, output}, tables, context.batch);
         kernel->launch(context.stream,
                        args,
-                       ceil_div(context.batch, kernel->batch_per_block),
+                       layout_fallback ? kernel->grid_x_override :
+                                         ceil_div(context.batch, kernel->batch_per_block),
                        1,
                        1);
         return;
@@ -617,7 +644,9 @@ flagfftResult CompiledRawStridedLeafNode::execute(adaptor::DevicePtr input,
       blocks = permuted_store_outer_blocks(context.batch, outer_stride, kernel->batch_per_block);
     }
     if (kernel->grid_x_override > 0) blocks = kernel->grid_x_override;
-    kernel->launch(context.stream, args, blocks, 1, 1);
+    const int64_t volumes = kernel->kernel_name == "ix_prime_r2c_last"
+        ? context.batch / outer_stride : 1;
+    kernel->launch(context.stream, args, blocks, volumes, 1);
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
     std::fprintf(stderr, "[flagfft] StridedLeaf execute failed: %s\n", e.what());
@@ -1165,7 +1194,8 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
                                                    DeviceAllocation a_buf,
                                                    DeviceAllocation work_buf,
                                                    DeviceAllocation b_fft_buf,
-                                                   int64_t batch_chunk)
+                                                   int64_t batch_chunk,
+                                                   std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       batch_chunk(batch_chunk),
@@ -1177,7 +1207,8 @@ CompiledRawBluesteinNode::CompiledRawBluesteinNode(int64_t length,
       b_time(std::move(b_time)),
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
-      b_fft_buf(std::move(b_fft_buf)) {
+      b_fft_buf(std::move(b_fft_buf)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawBluesteinNode::describe() const {
@@ -1207,15 +1238,33 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
                                                 adaptor::DevicePtr output,
                                                 const RawExecutionContext &context) const {
   try {
-    ensure_b_fft(context);
     const int64_t element_bytes = complex_element_bytes(context.request.input_dtype);
-    const int64_t stride_bytes = length * element_bytes;
+    const bool real_boundaries = static_cast<bool>(make_layout_fallback);
+    const int64_t output_length = real_boundaries ? length / 2 + 1 : length;
+    const int64_t input_stride_bytes = length * (real_boundaries ? element_bytes / 2 : element_bytes);
+    const int64_t output_stride_bytes = output_length * element_bytes;
+    if (real_boundaries) {
+      const auto input_bytes = static_cast<std::uintptr_t>(input_stride_bytes * context.batch);
+      const auto output_bytes = static_cast<std::uintptr_t>(output_stride_bytes * context.batch);
+      const bool overlap = input <= output ? output - input < input_bytes : input - output < output_bytes;
+      if (overlap || (context.input_distance > 0 && context.input_distance != length) ||
+          (context.output_distance > 0 && context.output_distance != output_length)) {
+        std::shared_ptr<CompiledRawNode> fallback;
+        {
+          std::lock_guard<std::mutex> lock(layout_mutex);
+          if (!layout_fallback) layout_fallback = make_layout_fallback();
+          fallback = layout_fallback;
+        }
+        return fallback->execute(input, output, context);
+      }
+    }
+    ensure_b_fft(context);
     const int64_t boundary_block = context.request.device_type == "npu" &&
                                    context.request.input_dtype == "complex64" ? 512 : 256;
     for (int64_t batch_offset = 0; batch_offset < context.batch; batch_offset += batch_chunk) {
       const int64_t chunk = std::min(batch_chunk, context.batch - batch_offset);
-      const int64_t input_offset = batch_offset * stride_bytes;
-      const int64_t output_offset = batch_offset * stride_bytes;
+      const int64_t input_offset = batch_offset * input_stride_bytes;
+      const int64_t output_offset = batch_offset * output_stride_bytes;
 
       std::vector<JitKernelArg> prepare_args = {
           JitKernelArg::device(input + input_offset),
@@ -1255,7 +1304,7 @@ flagfftResult CompiledRawBluesteinNode::execute(adaptor::DevicePtr input,
           JitKernelArg::i64(conv_length),
           JitKernelArg::i32(static_cast<int32_t>(chunk)),
       };
-      finalize_kernel->launch(context.stream, finalize_args, ceil_div(length, boundary_block), chunk, 1);
+      finalize_kernel->launch(context.stream, finalize_args, ceil_div(output_length, boundary_block), chunk, 1);
     }
     return FLAGFFT_SUCCESS;
   } catch (const std::exception &e) {
@@ -1581,7 +1630,8 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
                                            std::vector<DeviceAllocation> fused_leaf_tables,
                                            std::shared_ptr<JitKernel> boundary_prepare_kernel,
                                            std::shared_ptr<JitKernel> boundary_finish_kernel,
-                                           std::vector<DeviceAllocation> boundary_tables)
+                                           std::vector<DeviceAllocation> boundary_tables,
+                                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback)
     : length(length),
       conv_length(conv_length),
       fft(std::move(fft)),
@@ -1598,7 +1648,8 @@ CompiledRawRaderNode::CompiledRawRaderNode(int64_t length,
       a_buf(std::move(a_buf)),
       work_buf(std::move(work_buf)),
       b_fft_buf(std::move(b_fft_buf)),
-      input_copy(std::move(input_copy)) {
+      input_copy(std::move(input_copy)),
+      make_layout_fallback(std::move(make_layout_fallback)) {
 }
 
 std::string CompiledRawRaderNode::describe() const {
@@ -1631,6 +1682,17 @@ flagfftResult CompiledRawRaderNode::execute(adaptor::DevicePtr input,
                                             adaptor::DevicePtr output,
                                             const RawExecutionContext &context) const {
   try {
+    if (make_layout_fallback &&
+        (input == output || (context.input_distance > 0 && context.input_distance != length / 2 + 1) ||
+         (context.output_distance > 0 && context.output_distance != length))) {
+      std::shared_ptr<CompiledRawNode> fallback;
+      {
+        std::lock_guard<std::mutex> lock(layout_mutex);
+        if (!layout_fallback) layout_fallback = make_layout_fallback();
+        fallback = layout_fallback;
+      }
+      return fallback->execute(input, output, context);
+    }
     ensure_b_fft(context);
     adaptor::DevicePtr effective_input = input;
     if (input == output) {
@@ -2086,7 +2148,11 @@ flagfftResult CompiledRawR2CLeafNode::execute(adaptor::DevicePtr input,
     }
     args.push_back(JitKernelArg::i32(static_cast<int32_t>(context.batch)));
     auto launch = [&]() {
-      kernel->launch(context.stream, args, ceil_div(context.batch, kernel->batch_per_block), 1, 1);
+      auto blocks = ceil_div(context.batch, kernel->batch_per_block);
+      if (perm_span > 0 && kernel->kernel_name.find("_ragged") != std::string::npos) {
+        blocks = ceil_div(context.batch, perm_span) * ceil_div(perm_span, kernel->batch_per_block);
+      }
+      kernel->launch(context.stream, args, blocks, 1, 1);
     };
     launch();
     if (graph_enabled) capture_leaf_graph(graph_state, context, input, output,

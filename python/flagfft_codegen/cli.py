@@ -198,8 +198,24 @@ def main() -> None:
         "--perm-form",
         choices=(
             "outer",
+            "outer_dif",
+            "outer_dif_chunk1",
+            "outer_dif_chunk4",
+            "outer_dif_chunk4_padinput16",
+            "outer_dif_chunk4_padoutput16",
             "outer_packed",
+            "outer_strided",
+            "outer_strided_chunk16",
+            "outer_c2r_chunk16",
+            "ix_band_c2c",
+            "ix_band_r2c",
+            "ix_band_r2c_folded",
+            "ix_band_c2r",
+            "ix_ct_packed_wave_c2r",
+            "ix_r2c_dense_fourstep",
             "inner",
+            "inner_dif",
+            "inner_dif_chunk1",
             "inner_batched",
             "inner_middle_batched",
             "inner_middle_c2r_cube_batched",
@@ -208,6 +224,9 @@ def main() -> None:
             "inner_middle_c2r_cube",
             "outer_last",
             "npu_single_reduce",
+            "ix_split_frequency",
+            "ix_split_c2r_frequency",
+            "ix_prime_r2c_last",
         ),
         default="outer",
         help="axis placement for the permuted store's fused permutation",
@@ -254,7 +273,7 @@ def main() -> None:
                         help="use one transform per block for IX N=210 real single")
     parser.add_argument("--ix-prime-3d", action="store_true",
                         help="enable parent-qualified IX prime-axis 3D defaults")
-    parser.add_argument("--ix-fourstep-preset", type=int, choices=range(14), default=0,
+    parser.add_argument("--ix-fourstep-preset", type=int, choices=range(15), default=0,
                         help="public-request IX performance preset transported by the native planner")
     parser.add_argument("--ix-ct-single-tle", type=int, choices=(0, 1, 2), default=0,
                         help="IX TLE single preset: 0=off, 1=mixed, 2=1048576")
@@ -781,6 +800,7 @@ def main() -> None:
             direction=args.direction,
             dtype=args.dtype,
             prime_n=(args.rader_n if args.kernel in {"leaf_rader_full",
+                                                    "leaf_rader_full_c2r",
                                                     "leaf_rader_prepare",
                                                     "leaf_rader_finish"}
                      else args.bluestein_n) or 0,

@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import os
 from .backend_profile import current_profile
+from .target import ix_fourstep_preset
 from typing import Literal
 
 from .kernels_common import (
@@ -38,6 +39,7 @@ from .kernels_common import (
     _ix_permuted_single_smem,
     _portable_leaf_backend_active,
     _maca_knob,
+    ix_packed_real_tle,
     _non_nvidia_backend_active,
     _tl_real_dtype,
     _use_single_smem_buffer,
@@ -336,6 +338,87 @@ def _emit_radix16_codelet_call(
     if direction == "inverse":
         for idx in indices:
             lines.append(f"{indent}i{idx} = -i{idx}")
+    return lines
+
+
+def _emit_ix_register_codelet(indent, radix, direction, *, split_radix, decimation_in_frequency=False):
+    """Emit the register butterflies used by the dense IX CT leaves."""
+    lines = []
+    sign = _direction_sign(direction)
+
+    def combine(prefix, a, b, subtract=False):
+        op = "-" if subtract else "+"
+        pair = (prefix + "r", prefix + "i")
+        lines.extend(f"{indent}{dst} = {left} {op} {right}"
+                     for dst, left, right in zip(pair, a, b))
+        return pair
+
+    def rotate(prefix, pair, numerator, length):
+        phase = (4 * numerator) % (4 * length)
+        real, imag = pair
+        if phase == 0:
+            return pair
+        if phase == length:
+            return (f"({-sign:g} * {imag})", f"({sign:g} * {real})")
+        if phase == 2 * length:
+            return (f"(-{real})", f"(-{imag})")
+        if phase == 3 * length:
+            return (f"({sign:g} * {imag})", f"({-sign:g} * {real})")
+        angle = sign * 2.0 * math.pi * numerator / length
+        wr, wi = math.cos(angle), math.sin(angle)
+        result = (prefix + "r", prefix + "i")
+        if abs(abs(wr) - abs(wi)) < 1e-14:
+            sign_w = "+" if wr * wi > 0 else "-"
+            sign_h = "-" if sign_w == "+" else "+"
+            c = _fmt_const(wr)
+            lines.extend([f"{indent}{result[0]} = {c} * ({real} {sign_h} {imag})",
+                          f"{indent}{result[1]} = {c} * ({imag} {sign_w} {real})"])
+        else:
+            lines.append(f"{indent}{result[0]}, {result[1]} = _cmul("
+                         f"{real}, {imag}, {_fmt_const(wr)}, {_fmt_const(wi)})")
+        return result
+
+    def fft(values, prefix):
+        n = len(values)
+        if n == 1:
+            return values
+        if decimation_in_frequency:
+            half = n // 2
+            sums = [combine(f"{prefix}s{k}", values[k], values[k + half]) for k in range(half)]
+            differences = [
+                rotate(f"{prefix}t{k}", combine(f"{prefix}d{k}", values[k], values[k + half], subtract=True), k, n)
+                for k in range(half)
+            ]
+            even = fft(sums, prefix + "e")
+            odd = fft(differences, prefix + "o")
+            return [pair for group in zip(even, odd) for pair in group]
+        even = fft(values[::2], prefix + "e")
+        result = [None] * n
+        if split_radix and n >= 8:
+            odd1 = fft(values[1::4], prefix + "a")
+            odd3 = fft(values[3::4], prefix + "b")
+            quarter = n // 4
+            for k in range(quarter):
+                u = rotate(f"{prefix}u{k}", odd1[k], k, n)
+                v = rotate(f"{prefix}v{k}", odd3[k], 3 * k, n)
+                total = combine(f"{prefix}s{k}", u, v)
+                diff = combine(f"{prefix}d{k}", u, v, subtract=True)
+                rotated = rotate(f"{prefix}h{k}", diff, 1, 4)
+                result[k] = combine(f"{prefix}f{k}", even[k], total)
+                result[k + 2 * quarter] = combine(f"{prefix}g{k}", even[k], total, subtract=True)
+                result[k + quarter] = combine(f"{prefix}j{k}", even[k + quarter], rotated)
+                result[k + 3 * quarter] = combine(f"{prefix}m{k}", even[k + quarter], rotated, subtract=True)
+        else:
+            odd = fft(values[1::2], prefix + "o")
+            for k in range(n // 2):
+                t = rotate(f"{prefix}t{k}", odd[k], k, n)
+                result[k] = combine(f"{prefix}s{k}", even[k], t)
+                result[k + n // 2] = combine(f"{prefix}d{k}", even[k], t, subtract=True)
+        return result
+
+    output = fft([(f"r{i}", f"i{i}") for i in range(radix)], "reg")
+    for i, (real, imag) in enumerate(output):
+        lines.extend([f"{indent}r{i} = {real}", f"{indent}i{i} = {imag}"])
     return lines
 
 
@@ -1133,6 +1216,7 @@ def _emit_portable_exchange(
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
     allow_mixed_direct: bool = True,
+    next_lane_block: int | None = None,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -1182,7 +1266,7 @@ def _emit_portable_exchange(
                     buffer,
                     factors[stage + 1],
                     n,
-                    lane_block,
+                    next_lane_block if next_lane_block is not None else lane_block,
                     pack,
                     interleaved=register_lane_stride > 1,
                 )
@@ -1272,6 +1356,287 @@ def _emit_portable_exchange(
     return lines
 
 
+_IX_DISJOINT_MIXED_LENGTHS = {221, 425, 504, 675, 780, 1500, 1560}
+
+
+def _emit_ix_packed_c2r_radix2(n: int) -> list[str]:
+    # Fuse the Hermitian reconstruction with the first radix-two stage.
+    # The fixed Stockham route places its two digits at 2*k and 2*k+1.
+    half = n // 2
+    shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
+    swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    packed_io = _packed_maca_fp32_complex_io("complex64")
+    lines = [
+        f"    prepare_k = tl.arange(0, {half // 2}) + 1",
+        f"    prepare_q = {half} - prepare_k",
+        "    prepare_mask = batch_id < nbatch",
+        "    prepare_partner_mask = prepare_mask & (prepare_k != prepare_q)",
+    ]
+    for frequency, name in (
+        ("prepare_k", "a"),
+        (f"prepare_k + {half}", "b"),
+        ("prepare_q", "c"),
+        (f"prepare_q + {half}", "d"),
+    ):
+        lines.extend(_emit_complex_boundary_load(
+            "    ", f"in_ptr + 2 * (input_batch_base + {frequency})",
+            "prepare_mask", f"{name}r", f"{name}i", "complex64", packed_io))
+    lines.extend(_emit_complex_boundary_load(
+        "    ", "packed_twiddle_ptr + 2 * prepare_k", "prepare_mask", "wr", "wi",
+        "complex64", packed_io))
+    lines.extend([
+        "    t_r, t_i = _cmul(ar - dr, ai + di, wr, -wi)",
+        "    u_r, u_i = _cmul(br - cr, bi + ci, wi, wr)",
+        "    k0_r, k0_i = ar + dr - t_i, ai - di + t_r",
+        "    k1_r, k1_i = br + cr - u_i, bi - ci + u_r",
+        "    q0_r, q0_i = br + cr + u_i, ci - bi + u_r",
+        "    q1_r, q1_i = ar + dr + t_i, di - ai + t_r",
+    ])
+    for variant, mask in (("k", "prepare_mask"), ("q", "prepare_partner_mask")):
+        for digit, op in ((0, "+"), (1, "-")):
+            index = f"prepare_{variant}_address{digit}"
+            lines.append(f"    {index} = 2 * prepare_{variant} + {digit}")
+            address = f"{index} ^ ({index} >> {shift})" if swizzle else index
+            for component in ("r", "i"):
+                lines.append(
+                    f"    tl.store(tle.gpu.local_ptr(smem_b_{component}, ({address},)), "
+                    f"{variant}0_{component} {op} {variant}1_{component}, {mask})"
+                )
+    lines.extend([
+        "    dc = tl.load(in_ptr + 2 * input_batch_base, prepare_mask, 0.0)",
+        f"    nyquist = tl.load(in_ptr + 2 * (input_batch_base + {n}), prepare_mask, 0.0)",
+        f"    middle_r = 2.0 * tl.load(in_ptr + 2 * (input_batch_base + {half}), prepare_mask, 0.0)",
+        f"    middle_i = -2.0 * tl.load(in_ptr + 2 * (input_batch_base + {half}) + 1, prepare_mask, 0.0)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_r, (0,)), dc + nyquist + middle_r, prepare_mask)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_i, (0,)), dc - nyquist + middle_i, prepare_mask)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_r, (1,)), dc + nyquist - middle_r, prepare_mask)",
+        "    tl.store(tle.gpu.local_ptr(smem_b_i, (1,)), dc - nyquist - middle_i, prepare_mask)",
+        "    tl.debug_barrier()",
+    ])
+    return lines
+
+
+def _emit_ix_twiddle_tree(indent: str, stage: int, digit: int) -> list[str]:
+    if digit == 1:
+        return [
+            f"{indent}tw_r{digit} = tl.load(tw{stage}_r_ptr + logical_phys{digit}, lane_mask, 0.0)",
+            f"{indent}tw_i{digit} = tl.load(tw{stage}_i_ptr + logical_phys{digit}, lane_mask, 0.0)",
+        ]
+    left = digit // 2
+    right = digit - left
+    return [f"{indent}tw_r{digit}, tw_i{digit} = _cmul(tw_r{left}, tw_i{left}, tw_r{right}, tw_i{right})"]
+
+
+def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
+                              swizzle: bool, shift: int) -> list[str]:
+    half = n // 2
+    body = ["    partner_mask = finish_store_mask & (partner_k != k)"]
+    for prefix in ("a", "b"):
+        for digit in (0, 1):
+            index = f"{prefix}{digit}_index"
+            body.append(f"    {index} = {prefix}_offset + {digit * lanes}")
+            address = f"{index} ^ ({index} >> {shift})" if swizzle else index
+            for component in ("r", "i"):
+                body.append(
+                    f"    {prefix}{digit}_{component} = tl.load(tle.gpu.local_ptr("
+                    f"smem_b_{component}, ({address},)), finish_mask, 0.0)"
+                )
+    square_rotation = n == 8192 and _maca_knob("R2C_FINISH_SQUARE_ROTATION", "0") == "1"
+    if square_rotation:
+        # The last radix-2 butterfly uses W_n^k. The real reconstruction
+        # already needs W_(2n)^k, so squaring it removes the stage-table reads.
+        body.extend([
+            "    wr = tl.load(packed_twiddle_ptr + 2 * k, finish_mask, 0.0)",
+            "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
+            "    twr = wr * wr - wi * wi",
+            "    twi = (wr + wr) * wi",
+        ])
+    else:
+        body.extend([
+            f"    twr = tl.load(tw{stage}_r_ptr + a1_index, finish_mask, 0.0)",
+            f"    twi = tl.load(tw{stage}_i_ptr + a1_index, finish_mask, 0.0)",
+        ])
+    body.extend([
+        "    a1_r, a1_i = _cmul(a1_r, a1_i, twr, twi)",
+        "    b1_r, b1_i = _cmul(b1_r, b1_i, -twr, twi)",
+        "    ar, ai = a0_r + a1_r, a0_i + a1_i",
+        "    br, bi = a0_r - a1_r, a0_i - a1_i",
+        "    cr, ci = b0_r + b1_r, b0_i + b1_i",
+        "    dr, di = b0_r - b1_r, b0_i - b1_i",
+    ])
+    if not square_rotation:
+        body.extend([
+            "    wr = tl.load(packed_twiddle_ptr + 2 * k, finish_mask, 0.0)",
+            "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
+        ])
+    for value, partner, frequency, wr, wi, mask in (
+        ("a", "d", "k", "wr", "wi", "finish_store_mask"),
+        ("b", "c", f"k + {half}", "wi", "-wr", "finish_store_mask"),
+        ("c", "b", "partner_k", "-wi", "-wr", "partner_mask"),
+        ("d", "a", f"partner_k + {half}", "-wr", "wi", "partner_mask"),
+    ):
+        body.extend([
+            f"    diff_r = {value}r - {partner}r",
+            f"    sum_i = {value}i + {partner}i",
+            f"    xr_{value} = 0.5 * ({value}r + {partner}r + ({wi}) * diff_r + ({wr}) * sum_i)",
+            f"    xi_{value} = 0.5 * ({value}i - {partner}i - ({wr}) * diff_r + ({wi}) * sum_i)",
+        ])
+        ptr = f"finish_out + 2 * ({frequency})"
+        if _packed_maca_fp32_complex_io("complex64"):
+            body.extend(_emit_vectorized_complex_store(
+                "    ", ptr, f"xr_{value}", f"xi_{value}", mask, "complex64"))
+        else:
+            body.extend([
+                f"    tl.store({ptr}, xr_{value}, {mask})",
+                f"    tl.store({ptr} + 1, xi_{value}, {mask})",
+            ])
+    return body
+
+
+def _emit_ix_flat_r2c_finish(n: int, lanes: int) -> list[str]:
+    # One lane produces k and k+n/2. This gives the real finish two
+    # contiguous output bands and a single masked Nyquist store.
+    half = n // 2
+    body = [
+        "    lane_mask = batch_id < nbatch",
+        f"    k = tl.arange(0, {half})",
+        f"    q = (-k) & {half - 1}",
+        "    finish_out = out_ptr + 2 * batch_id * output_distance",
+    ]
+    for name, index in (("a", "k"), ("b", "q")):
+        for digit in (0, 1):
+            logical = f"{name}{digit}_index"
+            body.append(f"    {logical} = {index} + ({index} & {-lanes}) + {digit*lanes}")
+            for component in ("r", "i"):
+                body.append(f"    {name}{digit}_{component} = tl.load("
+                            f"tle.gpu.local_ptr(smem_b_{component}, ({logical},)), lane_mask, 0.0)")
+    body.extend([
+        "    wr = tl.load(packed_twiddle_ptr + 2 * k, lane_mask, 0.0)",
+        "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, lane_mask, 0.0)",
+    ])
+    # The radix-two rotation is the square of the reconstruction root.
+    body.extend(["    twr = wr * wr - wi * wi", "    twi = (wr + wr) * wi"])
+    body.extend([
+        "    a1_r, a1_i = _cmul(a1_r, a1_i, twr, twi)",
+        "    b1_r, b1_i = _cmul(b1_r, b1_i, -twr, twi)",
+        "    ar, ai = a0_r + a1_r, a0_i + a1_i",
+        "    br, bi = a0_r - a1_r, a0_i - a1_i",
+        "    cr, ci = b0_r + b1_r, b0_i + b1_i",
+        "    dr, di = b0_r - b1_r, b0_i - b1_i",
+    ])
+    for a, b, wr, wi, offset, edge_r, edge_i in (
+        ("a", "d", "wr", "wi", 0, "ar + ai", "0.0"),
+        ("b", "c", "wi", "-wr", half, "br", "-bi"),
+    ):
+        body.extend([
+            f"    diff_r = {a}r - {b}r",
+            f"    sum_i = {a}i + {b}i",
+            f"    out_r = 0.5 * ({a}r + {b}r + ({wi}) * diff_r + ({wr}) * sum_i)",
+            f"    out_i = 0.5 * ({a}i - {b}i - ({wr}) * diff_r + ({wi}) * sum_i)",
+            f"    out_r = tl.where(k == 0, {edge_r}, out_r)",
+            f"    out_i = tl.where(k == 0, {edge_i}, out_i)",
+        ])
+        pointer = f"finish_out + 2 * (k + {offset})"
+        if _packed_maca_fp32_complex_io("complex64"):
+            body.extend(_emit_vectorized_complex_store("    ", pointer, "out_r", "out_i", "lane_mask", "complex64"))
+        else:
+            body.extend([f"    tl.store({pointer}, out_r, lane_mask)",
+                         f"    tl.store({pointer} + 1, out_i, lane_mask)"])
+    body.extend([
+        f"    tl.store(finish_out + {2*n} + 2*k, ar - ai, lane_mask & (k == 0))",
+        f"    tl.store(finish_out + {2*n+1} + 2*k, 0.0, lane_mask & (k == 0))",
+    ])
+    return body
+
+
+def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
+    # Both final butterflies for k and n/2-k feed the same packed real
+    # reconstruction. Keep intermediate FFT values in the original tile.
+    half = n // 2
+    shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
+    swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    body = [
+        "    finish_mask = batch_id < nbatch",
+        "    finish_out = out_ptr + 2 * batch_id * output_distance",
+    ]
+    if n == 8192:
+        # This narrow tile retains the fast lowering away from group
+        # boundaries. Compute the four boundary pairs with constant strides.
+        body.extend([
+            f"    k = tl.arange(0, {half // 2}) + 1",
+            f"    partner_k = {half} - k",
+            f"    a_offset = k + {lanes} * (k // {lanes})",
+            f"    b_offset = partner_k + {lanes} * (partner_k // {lanes})",
+            f"    finish_store_mask = finish_mask & ((k & {lanes - 1}) != 0)",
+        ])
+        body.extend(_emit_ix_r2c_finish_pairs(n, lanes, stage, swizzle, shift))
+        body.extend([
+            f"    k = (tl.arange(0, {half // (2 * lanes)}) + 1) * {lanes}",
+            f"    partner_k = {half} - k",
+            "    a_offset = 2 * k",
+            "    b_offset = 2 * partner_k",
+        ])
+    else:
+        body.extend([
+            f"    k_lane = tl.arange(0, {half // 2})",
+            f"    k = tl.where(k_lane == 0, {half // 2}, k_lane)",
+            f"    partner_k = {half} - k",
+            f"    a_offset = k + (k & {-lanes})",
+            f"    b_offset = partner_k + (partner_k & {-lanes})",
+        ])
+    body.append("    finish_store_mask = finish_mask")
+    body.extend(_emit_ix_r2c_finish_pairs(n, lanes, stage, swizzle, shift))
+    second = lanes ^ (lanes >> shift) if swizzle else lanes
+    for digit, address in enumerate((0, second)):
+        for component in ("r", "i"):
+            body.append(
+                f"    edge{digit}_{component} = tl.load(tle.gpu.local_ptr("
+                f"smem_b_{component}, ({address},)), finish_mask, 0.0)"
+            )
+    body.extend([
+        "    dc_r = edge0_r + edge1_r",
+        "    dc_i = edge0_i + edge1_i",
+        "    tl.store(finish_out, dc_r + dc_i, finish_mask)",
+        "    tl.store(finish_out + 1, 0.0, finish_mask)",
+        f"    tl.store(finish_out + {n}, edge0_r - edge1_r, finish_mask)",
+        f"    tl.store(finish_out + {n + 1}, edge1_i - edge0_i, finish_mask)",
+        f"    tl.store(finish_out + {2 * n}, dc_r - dc_i, finish_mask)",
+        f"    tl.store(finish_out + {2 * n + 1}, 0.0, finish_mask)",
+    ])
+    return body
+
+
+def _ix_full_cta_disjoint(n, factors, io_mode, prime_n):
+    if ix_packed_real_tle(n, factors, io_mode):
+        return _maca_knob("TLE_DISJOINT_CTA", "0") == "1"
+    return (
+        n == 16384 and factors == (16, 16, 16, 4)
+        and (io_mode == "contiguous" or
+             (prime_n == 8191 and io_mode in {"bluestein_prepare_leaf", "bluestein_finish_leaf"}))
+        and _maca_knob("TLE_DISJOINT_CTA", "0") == "1"
+    )
+
+
+def _emit_ix_ct210_c2r_load(indent: str, digit: int) -> list[str]:
+    # Only digit three spans the Nyquist index. The other input groups
+    # have a fixed direction and conjugation across all active lanes.
+    index = f"in{digit}"
+    if digit == 3:
+        index = "tl.minimum(in3, 210 - in3)"
+    elif digit > 3:
+        index = f"210 - in{digit}"
+    lines = _emit_vectorized_complex_load(
+        indent, f"in_ptr + 2 * (input_batch_base + ({index}))", "lane_mask",
+        f"r{digit}, i{digit}", "complex64")
+    if digit == 0:
+        lines.append(f"{indent}i0 = tl.where(lane == 0, 0.0, i0)")
+    elif digit == 3:
+        lines.append(f"{indent}i3 = tl.where(lane == 15, 0.0, tl.where(lane < 15, i3, -i3))")
+    elif digit > 3:
+        lines.append(f"{indent}i{digit} = -i{digit}")
+    return lines
+
+
 def _emit_stage_block(
     stage: int,
     factors: tuple[int, ...],
@@ -1300,15 +1665,41 @@ def _emit_stage_block(
     perm_inner: bool = False,
     perm_batched: bool = False,
     packed_smem_alias: bool = False,
+    ix_split_frequency: bool = False,
+    ix_split_c2r: bool = False,
+    ix_compact_tail: bool = False,
+    ix_real_ct_codelet: bool = False,
+    ix_dif_packed_real: bool = False,
+    ix_packed_twiddles: bool = False,
+    ix_packed_bank_shifts: tuple[int, ...] = (),
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
+    ix_short_packed_c2r = (
+        io_mode == "packed_c2r" and n == 1024 and not portable_exchange
+        and ix_packed_real_tle(n, factors, io_mode)
+    )
     next_lanes = (
         stage_lanes[stage + 1]
         if stage_lanes is not None and stage + 1 < len(stage_lanes)
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    ix_ct210_compact = (
+        _ix_backend_active() and not portable_exchange and current_profile().device_arch == "71"
+        and current_profile().policy == "balanced" and ix_fourstep_preset() == 13
+        and io_mode == "contiguous_c2r" and dtype == "complex64" and factors == (7, 6, 5)
+        and stage_lanes == (30, 35, 42) and lane_block == 64 and smem_pack == 16
+        and _maca_knob("WARPS", "") == "16" and _packed_maca_fp32_complex_io(dtype)
+    )
+    next_lane_block = None
+    if ix_compact_tail:
+        # Keep the first exchange at its existing width. The final radix can
+        # use its exact lane count when the preceding exchange emits it.
+        if stage == 2:
+            lane_block = current_lanes
+        elif stage == 1:
+            next_lane_block = next_lanes
     compact_npu_stage = (portable_exchange and _npu_backend_active()
         and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"
         and any(factor & (factor-1) for factor in factors)
@@ -1422,6 +1813,10 @@ def _emit_stage_block(
         if not 1 <= swizzle_shift <= 8:
             raise ValueError("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
+    read_bank_shift = write_bank_shift = swizzle_shift if smem_swizzle else 0
+    if ix_packed_bank_shifts:
+        read_bank_shift = ix_packed_bank_shifts[stage - 1] if stage > 0 else 0
+        write_bank_shift = ix_packed_bank_shifts[stage] if not is_last else 0
     source_buffer = (
         None
         if stage == 0
@@ -1483,6 +1878,8 @@ def _emit_stage_block(
                 lines.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
         else:
             lines.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
+    if ix_compact_tail:
+        lines.extend([f"    lane = tl.arange(0, {lane_block})", f"    base_lane_mask = lane < {current_lanes}"])
     if compact_npu_stage:
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
@@ -1544,6 +1941,27 @@ def _emit_stage_block(
     ) and vector_io_allowed and (
         not _hcu_backend_active() or io_mode == "permuted_store" or _hcu_vector_io(dtype)
     )
+    ix_prime_vector_io = (
+        io_mode == "bluestein_full_leaf" and bluestein_real_kind == "r2c"
+        and prime_n == 1009 and _ix_backend_active() and dtype == "complex64"
+        and _packed_maca_fp32_complex_io(dtype)
+        and _maca_knob("BLUESTEIN_LEAF_VEC_IO", "0") == "1"
+    )
+    ix_rader_vector_io = (
+        io_mode == "rader_full_leaf" and _ix_backend_active()
+        and _packed_maca_fp32_complex_io(dtype)
+    )
+    ix_column_twiddle_recurrence = (
+        _ix_backend_active() and dtype == "complex64"
+        and stage == 0 and io_mode == "four_step_col" and not fuse_twiddle_into_row
+        and (four_step_n1, four_step_n2) in {
+            (1024, 512), (504, 675), (1560, 425), (425, 1560),
+        }
+        and _maca_knob("FOURSTEP_COL_TWIDDLE_RECURRENCE", "0") == "1"
+    )
+    ix_524_column = ((four_step_n1, four_step_n2) == (1024, 512)
+                     and ix_fourstep_preset() == 14 and factors == (32, 16))
+    col_twiddle_period = 16 if ix_524_column else 4
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
         and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
@@ -1560,10 +1978,9 @@ def _emit_stage_block(
         # the LLVM dependence check can still require an acyclic function.
         mixed_disjoint = (_ix_backend_active() and dtype == "complex64"
                           and _maca_knob("TLE_DISJOINT_STAGE","0") == "1"
-                          and ((n in {221,425,780,1500,1560}
+                          and ((n in _IX_DISJOINT_MIXED_LENGTHS
                                 and _maca_knob("TLE_DISJOINT_MIXED","0") == "1")
-                               or (n==16384 and factors==(16,16,16,4) and io_mode=="contiguous"
-                                   and _maca_knob("TLE_DISJOINT_CTA","0") == "1")))
+                               or _ix_full_cta_disjoint(n, factors, io_mode, prime_n)))
         loop = "static_range" if mixed_disjoint else "range"
         lines.append(f"    for group_{stage} in tl.{loop}(0, {groups}):")
         indent = "        "
@@ -1586,10 +2003,10 @@ def _emit_stage_block(
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
             lines.append(f"{indent}phys{j} = logical_phys{j}")
-        if smem_swizzle and stage > 0:
+        if read_bank_shift and stage > 0:
             lines.append(
                 f"{indent}smem_phys{j} = logical_phys{j} ^ "
-                f"(logical_phys{j} >> {swizzle_shift})"
+                f"(logical_phys{j} >> {read_bank_shift})"
             )
             if smem_interleave:
                 lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + {interleave_slot}")
@@ -1598,11 +2015,15 @@ def _emit_stage_block(
             elif smem_pack > 1:
                 lines.append(f"{indent}smem_phys{j} += smem_offset")
     if stage == 0:
-        lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
+        if ix_ct210_compact:
+            lines.append(f"{indent}input_base = lane")
+        else:
+            lines.extend(_emit_input_base(indent, factors, current_lanes, f"group_{stage}"))
     if is_last:
-        lines.extend(
-            _emit_output_base(indent, factors, current_lanes, f"group_{stage}")
-        )
+        if ix_ct210_compact:
+            lines.append(f"{indent}output_base = lane")
+        else:
+            lines.extend(_emit_output_base(indent, factors, current_lanes, f"group_{stage}"))
         if io_mode in {"permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}:
             active_lanes = max(stage_lanes) if stage_lanes is not None else lanes
             lines.append(f"{indent}lane_only = tl.arange(0, {lane_block})")
@@ -1630,6 +2051,10 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}perm_store_mask = perm_lane_mask[:, None] & perm_mask[None, :]"
                 )
+    elif ix_ct210_compact:
+        # Express each shared exchange directly in the next radix's lane order.
+        dst_base = "7 * lane" if stage == 0 else "lane + 35 * (lane // 7)"
+        lines.append(f"{indent}shared_dst_base = {dst_base}")
     else:
         lines.extend(
             _emit_route_base(indent, stage, factors, current_lanes, f"group_{stage}")
@@ -1644,6 +2069,11 @@ def _emit_stage_block(
             f"(compact_rows < nbatch) & (compact_cols < {2*(n//2+1)}), 0.0)",
             f"{indent}compact_input = tl.reshape(compact_input,({smem_pack*compact_row},))",
         ]
+    if ix_column_twiddle_recurrence:
+        twiddle_stride = _time_major_stride(factors, 0) * four_step_n1
+        lines.extend(_emit_complex_boundary_load(
+            indent, f"twiddle_ptr + 2 * ({twiddle_stride} + four_step_inner)",
+            "lane_mask", "col_step_r", "col_step_i", dtype, vectorized_complex_io))
     for j in range(radix):
         if stage == 0:
             lines.extend(_emit_input_index(indent, f"in{j}", factors, j))
@@ -1695,7 +2125,27 @@ def _emit_stage_block(
                             f"tw_r{j}", f"tw_i{j}", lane_block, inner_pack, current_lanes, offset, width, "0"))
                     lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
                 continue
-            if io_mode in {"contiguous", "permuted_store"}:
+            if ix_split_frequency:
+                other = f"({n} - in{j})" if ix_split_c2r else f"(in{j} + {n})"
+                for tag, index in [("a", f"in{j}"), ("b", other),
+                                   ("root", f"(in{j} + split_band * {n})")]:
+                    ptr = "split_roots_ptr" if tag == "root" else "in_ptr"
+                    lines.extend([
+                        f"{indent}pair = tl.load(tl.cast({ptr}, tl.pointer_type(tl.uint64)) + {index}, lane_mask, 0)",
+                        f"{indent}{tag}r = tl.cast(tl.cast(pair, tl.uint32), tl.float32, bitcast=True)",
+                        f"{indent}{tag}i = tl.cast(tl.cast(pair >> 32, tl.uint32), tl.float32, bitcast=True)",
+                    ])
+                if ix_split_c2r:
+                    lines.extend([
+                        f"{indent}ai = tl.where(in{j} == 0, 0.0, ai)",
+                        f"{indent}bi = tl.where(in{j} == 0, 0.0, -bi)",
+                    ])
+                lines.extend([
+                    f"{indent}sr = ar + tl.where(split_band == 0, br, -br)",
+                    f"{indent}si = ai + tl.where(split_band == 0, bi, -bi)",
+                    f"{indent}r{j}, i{j} = _cmul(sr, si, rootr, rooti)",
+                ])
+            elif io_mode in {"contiguous", "permuted_store"}:
                 if hcu_u64_load:
                     lines.append(
                         f"{indent}packed{j} = tl.load(tl.cast(in_ptr, tl.pointer_type(tl.uint64)) "
@@ -1804,6 +2254,8 @@ def _emit_stage_block(
                         f"{indent}i{j} = packed_sum_i{j} + packed_prod_r{j}",
                     ]
                 )
+            elif ix_ct210_compact:
+                lines.extend(_emit_ix_ct210_c2r_load(indent, j))
             elif io_mode == "contiguous_c2r":
                 half_n = n // 2 + 1
                 nyquist_guard = f" | (in{j} == {n // 2})" if n % 2 == 0 else ""
@@ -1911,15 +2363,11 @@ def _emit_stage_block(
                         lines.append(f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + in{j}) * 2")
                         lines.append(f"{indent}r{j} = tl.load(src_ptr{j}, mask=prime_mask{j}, other={zero})")
                         lines.append(f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=prime_mask{j}, other={zero})")
-                    lines.append(
-                        f"{indent}chirp_r{j} = tl.load(chirp_ptr + in{j} * 2, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}chirp_i{j} = tl.load(chirp_ptr + in{j} * 2 + 1, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"chirp_ptr + in{j} * 2", f"prime_mask{j}",
+                        f"chirp_r{j}", f"chirp_i{j}", dtype, ix_prime_vector_io,
+                    ))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, chirp_r{j}, chirp_i{j})")
                 else:
                     intermediate_index = f"in{j}"
                     if smem_pack > 1:
@@ -1942,15 +2390,23 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}src_idx{j} = tl.load(idx_ptr + inv_idx{j}, mask=lane_mask, other=0)"
                     )
-                    lines.append(
-                        f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
-                    )
-                    lines.append(
-                        f"{indent}r{j} = tl.load(src_ptr{j}, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}i{j} = tl.load(src_ptr{j} + 1, mask=lane_mask, other={zero})"
-                    )
+                    if bluestein_real_kind == "c2r":
+                        half = prime_n // 2 + 1
+                        lines.extend([
+                            f"{indent}reflected{j} = src_idx{j} >= {half}",
+                            f"{indent}compact_idx{j} = tl.where(reflected{j}, {prime_n} - src_idx{j}, src_idx{j})",
+                            f"{indent}src_ptr{j} = in_ptr + (current_batch * {half} + compact_idx{j}) * 2",
+                        ])
+                    else:
+                        lines.append(
+                            f"{indent}src_ptr{j} = in_ptr + (current_batch * {prime_n} + src_idx{j}) * 2"
+                        )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"src_ptr{j}", "lane_mask", f"r{j}", f"i{j}", dtype,
+                        ix_rader_vector_io,
+                    ))
+                    if bluestein_real_kind == "c2r":
+                        lines.append(f"{indent}i{j} = tl.where(reflected{j}, -i{j}, i{j})")
                 else:
                     intermediate_index = f"in{j}"
                     if smem_pack > 1:
@@ -2099,7 +2555,21 @@ def _emit_stage_block(
                 lines.append(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
-                if fuse_twiddle_into_row:
+                if ix_column_twiddle_recurrence:
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                        "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io))
+                    # Restart the recurrence from an exact table value.
+                    if j % col_twiddle_period == 0:
+                        lines.extend(_emit_complex_boundary_load(
+                            indent, f"twiddle_ptr + src_idx{j} * 2",
+                            "lane_mask", "col_tw_r", "col_tw_i", dtype, vectorized_complex_io))
+                    else:
+                        lines.append(
+                            f"{indent}col_tw_r, col_tw_i = _cmul(col_tw_r, col_tw_i, col_step_r, col_step_i)"
+                        )
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, col_tw_r, col_tw_i)")
+                elif fuse_twiddle_into_row:
                     if vectorized_complex_io:
                         lines.extend(
                             _emit_vectorized_complex_load(
@@ -2158,7 +2628,7 @@ def _emit_stage_block(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
         else:
-            load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
+            load_index = f"smem_phys{j}" if read_bank_shift else f"phys{j}"
             lines.extend(
                 _emit_exchange_load(
                     indent, source_buffer, load_index, j, portable_exchange,
@@ -2176,7 +2646,24 @@ def _emit_stage_block(
                 _ix_backend_active() and _maca_knob("RECURRENCE") == "1"
                 and dtype == "complex64"
             )
-            if recurrence:
+            if ix_packed_twiddles:
+                if j:
+                    # The 8192-point shared tile reuses its digit-one root
+                    # across all sixteen inputs to the radix.
+                    if n == 8192 and j > 1:
+                        lines.append(f"{indent}twr, twi = _cmul(twr, twi, root_step_r, root_step_i)")
+                    else:
+                        lines.extend(_emit_complex_boundary_load(
+                            indent, f"tw{stage}_ptr + 2 * logical_phys{j}", "lane_mask",
+                            "twr", "twi", dtype, _packed_maca_fp32_complex_io(dtype)))
+                        if n == 8192:
+                            lines.append(f"{indent}root_step_r, root_step_i = twr, twi")
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, twr, twi)")
+            elif recurrence and ix_short_packed_c2r:
+                if j:
+                    lines.extend(_emit_ix_twiddle_tree(indent, stage, j))
+                    lines.append(f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})")
+            elif recurrence:
                 # Each butterfly consumes powers of the digit-one root. The
                 # digit-zero root is exactly one, so it needs neither a load
                 # nor a multiply. Keep the recurrence scoped to measured FP32.
@@ -2236,7 +2723,11 @@ def _emit_stage_block(
         if setting not in {'0','1'}:
             raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
         ix_register_prime=setting=='1'
-    if ix_register_prime:
+    if ix_compact_tail or ix_real_ct_codelet or ix_dif_packed_real:
+        lines.extend(_emit_ix_register_codelet(
+            indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_dif_packed_real
+        ))
+    elif ix_register_prime:
         from .ix_prime_codelets import emit_prime_codelet
         lines.extend(emit_prime_codelet(indent,radix,direction))
     elif radix == 16:
@@ -2352,7 +2843,16 @@ def _emit_stage_block(
                     f"r{j}", f"i{j}", lane_block, inner_pack, current_lanes,
                     j * math.prod(factors[:-1]), four_step_n1, io_mode == "four_step_row", four_step_n2))
                 continue
-            if io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
+            if ix_split_c2r:
+                lines.append(f"{indent}tl.store(out_ptr + 2 * out_idx{j} + split_band, r{j}, lane_mask)")
+            elif ix_split_frequency:
+                lines.extend([
+                    f"{indent}split_lo = tl.cast(tl.cast(r{j}, tl.uint32, bitcast=True), tl.uint64)",
+                    f"{indent}split_hi = tl.cast(tl.cast(i{j}, tl.uint32, bitcast=True), tl.uint64)",
+                    f"{indent}split_dst = tl.cast(out_ptr, tl.pointer_type(tl.uint64)) + 2 * out_idx{j} + split_band",
+                    f"{indent}tl.store(split_dst, split_lo | (split_hi << 32), lane_mask)",
+                ])
+            elif io_mode in {"contiguous", "strided", "packed_c2r", "bluestein_prepare_leaf",
                            "rader_prepare_leaf"}:
                 if io_mode == "strided":
                     lines.append(
@@ -2500,12 +3000,10 @@ def _emit_stage_block(
                 )
             elif io_mode == "bluestein_full_leaf":
                 if bluestein_pass == 0:
-                    lines.append(
-                        f"{indent}br{j} = tl.load(b_fft_ptr + out_idx{j} * 2, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}bi{j} = tl.load(b_fft_ptr + out_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"b_fft_ptr + out_idx{j} * 2", "lane_mask",
+                        f"br{j}", f"bi{j}", dtype, ix_prime_vector_io,
+                    ))
                     lines.append(
                         f"{indent}point_r{j}, point_i{j} = _cmul(r{j}, i{j}, br{j}, bi{j})"
                     )
@@ -2531,12 +3029,10 @@ def _emit_stage_block(
                     lines.append(f"{indent}prime_mask{j} = lane_mask & (out_idx{j} < {output_length})")
                     lines.append(f"{indent}scaled_r{j} = r{j} / {n}")
                     lines.append(f"{indent}scaled_i{j} = -i{j} / {n}")
-                    lines.append(
-                        f"{indent}chirp_r{j} = tl.load(chirp_ptr + out_idx{j} * 2, mask=prime_mask{j}, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}chirp_i{j} = tl.load(chirp_ptr + out_idx{j} * 2 +1, mask=prime_mask{j}, other={zero})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"chirp_ptr + out_idx{j} * 2", f"prime_mask{j}",
+                        f"chirp_r{j}", f"chirp_i{j}", dtype, ix_prime_vector_io,
+                    ))
                     lines.append(
                         f"{indent}final_r{j}, final_i{j} = _cmul(scaled_r{j}, scaled_i{j}, chirp_r{j}, chirp_i{j})"
                     )
@@ -2546,16 +3042,24 @@ def _emit_stage_block(
                     else:
                         output_distance = prime_n // 2 + 1 if bluestein_real_kind == "r2c" else prime_n
                         lines.append(f"{indent}dst_ptr{j} = out_ptr + (current_batch * {output_distance} + out_idx{j}) * 2")
-                        lines.append(f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})")
-                        lines.append(f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})")
+                        if ix_prime_vector_io:
+                            lines.extend(_emit_vectorized_complex_store(
+                                indent, f"dst_ptr{j}", f"final_r{j}", f"final_i{j}",
+                                f"prime_mask{j}", dtype,
+                            ))
+                        else:
+                            lines += [
+                                f"{indent}tl.store(dst_ptr{j}, final_r{j}, mask=prime_mask{j})",
+                                f"{indent}tl.store(dst_ptr{j} + 1, final_i{j}, mask=prime_mask{j})",
+                            ]
             elif io_mode == "rader_full_leaf":
+                compact_inverse = bluestein_real_kind == "c2r"
+                input_distance = prime_n // 2 + 1 if compact_inverse else prime_n
                 if bluestein_pass == 0:
-                    lines.append(
-                        f"{indent}br{j} = tl.load(b_fft_ptr + out_idx{j} * 2, mask=lane_mask, other={zero})"
-                    )
-                    lines.append(
-                        f"{indent}bi{j} = tl.load(b_fft_ptr + out_idx{j} * 2 + 1, mask=lane_mask, other={zero})"
-                    )
+                    lines.extend(_emit_complex_boundary_load(
+                        indent, f"b_fft_ptr + out_idx{j} * 2", "lane_mask",
+                        f"br{j}", f"bi{j}", dtype, ix_rader_vector_io,
+                    ))
                     lines.append(
                         f"{indent}point_r{j}, point_i{j} = _cmul(r{j}, i{j}, br{j}, bi{j})"
                     )
@@ -2571,34 +3075,32 @@ def _emit_stage_block(
                         )
                     )
                     lines.append(f"{indent}dc_mask{j} = lane_mask & (out_idx{j} == 0)")
-                    lines.append(
-                        f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
-                    )
-                    lines.append(
-                        f"{indent}dc_ptr{j} = out_ptr + current_batch * {prime_n} * 2"
-                    )
+                    lines.append(f"{indent}x0_ptr{j} = in_ptr + current_batch * {input_distance} * 2")
+                    output_scalars = prime_n if compact_inverse else 2 * prime_n
+                    lines.append(f"{indent}dc_ptr{j} = out_ptr + current_batch * {output_scalars}")
                     lines.append(
                         f"{indent}tl.store(dc_ptr{j} + out_idx{j}, r{j} + tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
                     )
-                    lines.append(
-                        f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
-                    )
+                    if not compact_inverse:
+                        lines.append(
+                            f"{indent}tl.store(dc_ptr{j} + out_idx{j} + 1, i{j} + tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}), mask=dc_mask{j})"
+                        )
                 else:
                     lines.append(
                         f"{indent}dst_idx{j} = tl.load(idx_ptr + out_idx{j}, mask=lane_mask, other=0)"
                     )
+                    output_stride = 1 if compact_inverse else 2
                     lines.append(
-                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * 2"
+                        f"{indent}dst_ptr{j} = out_ptr + (current_batch * {prime_n} + dst_idx{j}) * {output_stride}"
                     )
-                    lines.append(
-                        f"{indent}x0_ptr{j} = in_ptr + current_batch * {prime_n} * 2"
-                    )
+                    lines.append(f"{indent}x0_ptr{j} = in_ptr + current_batch * {input_distance} * 2")
                     lines.append(
                         f"{indent}tl.store(dst_ptr{j}, tl.load(x0_ptr{j}, mask=current_batch < nbatch, other={zero}) + r{j} / {n}, mask=lane_mask)"
                     )
-                    lines.append(
-                        f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}) - i{j} / {n}, mask=lane_mask)"
-                    )
+                    if not compact_inverse:
+                        lines.append(
+                            f"{indent}tl.store(dst_ptr{j} + 1, tl.load(x0_ptr{j} + 1, mask=current_batch < nbatch, other={zero}) - i{j} / {n}, mask=lane_mask)"
+                        )
             elif io_mode == "bluestein_four_step_finish_col":
                 lines.append(
                     f"{indent}dst_idx{j} = out_idx{j} * {four_step_n1} + four_step_inner"
@@ -2786,14 +3288,15 @@ def _emit_stage_block(
                         f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
                     )
         else:
-            lines.extend(
-                _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
-            )
+            if ix_ct210_compact:
+                lines.append(f"{indent}dst{j} = shared_dst_base + {j * math.prod(factors[:stage])}")
+            else:
+                lines.extend(_emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j))
             store_index = f"dst{j}"
-            if smem_swizzle:
+            if write_bank_shift:
                 lines.append(
                     f"{indent}smem_dst{j} = dst{j} ^ "
-                    f"(dst{j} >> {swizzle_shift})"
+                    f"(dst{j} >> {write_bank_shift})"
                 )
                 if smem_interleave:
                     lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + {interleave_slot}")
@@ -2851,6 +3354,7 @@ def _emit_stage_block(
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
                     allow_mixed_direct=mixed_direct_layout,
+                    next_lane_block=next_lane_block,
                 )
             )
     elif not is_last:
@@ -2882,12 +3386,15 @@ def _leaf_kernel_params_for_io(
     io_mode: LeafIoMode,
     include_four_step_twiddle: bool = False,
     batched_permutation: bool = False,
+    ix_packed_twiddles: bool = False,
 ) -> list[str]:
     params = _leaf_kernel_params(
         plan, include_four_step_twiddle=include_four_step_twiddle
     )
     if io_mode == "packed_r2c":
         params.insert(2, "packed_twiddle_ptr")
+        if ix_packed_twiddles:
+            params[3:] = [f"tw{stage}_ptr" for stage in range(1, len(plan.factors) - 1)]
     elif io_mode == "packed_c2r":
         params.insert(2, "packed_twiddle_ptr")
     if io_mode == "strided":
@@ -3494,6 +4001,19 @@ def _build_leaf_kernel_source_for_io(
     permutation_batch: int = 0,
     hcu_full_smem: bool = False,
 ) -> tuple[str, str]:
+    ix_band_modes = {"ix_band_c2c": "contiguous",
+                     "ix_band_r2c": "contiguous_r2c",
+                     "ix_band_r2c_folded": "contiguous_r2c",
+                     "ix_band_c2r": "c2r"}
+    if _ix_backend_active() and perm_form in ix_band_modes and io_mode == "contiguous":
+        from .kernels_ix_warp import build_ix_warp_bands
+        return build_ix_warp_bands(plan, permutation_span, ix_band_modes[perm_form], permutation_batch,
+                                  fold=perm_form == "ix_band_r2c_folded")
+    if (_ix_backend_active() and perm_form == "ix_prime_r2c_last" and
+            io_mode == "strided_permuted_store" and plan.length == 16 and
+            plan.direction == "forward" and plan.dtype == "complex64"):
+        from .kernels_ix_warp import build_ix_prime_r2c_last_source
+        return build_ix_prime_r2c_last_source(_leaf_kernel_params_for_io(plan, io_mode=io_mode))
     kernel_perm_form = perm_form
     batched_permutation = perm_form.endswith("_batched")
     if batched_permutation:
@@ -3501,12 +4021,22 @@ def _build_leaf_kernel_source_for_io(
         if io_mode not in {"permuted_store", "strided_permuted_store"} or not perm_form.startswith("inner"):
             raise ValueError("batched permutation requires an inner permuted store")
     kernel_io_mode = io_mode
+    ix_prime_packed_rows = (
+        _ix_backend_active() and io_mode == "packed_r2c" and perm_form == "outer_packed"
+        and plan.length == 32 and plan.dtype == "complex64" and permutation_span == 997
+    )
     if permutation_span < 0 or (permutation_span and io_mode not in {
         "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
-    }):
+    } and not ix_prime_packed_rows):
         raise ValueError("a static permutation span requires a permuted-store leaf")
     if permutation_batch < 0 or (permutation_batch and not permutation_span):
         raise ValueError("a static permutation batch requires a positive span")
+    if ix_prime_packed_rows:
+        from .target import ix_warp_fft_pack
+        from .kernels_ix_warp import build_ix_warp256_leaf_source
+        return build_ix_warp256_leaf_source(
+            plan, io_mode, perm_form, _leaf_kernel_params_for_io(plan, io_mode=io_mode),
+            ix_warp_fft_pack(), permutation_span)
     from .kernels_hcu_small import small_wave_pack, build_small_wave
     short_pack = small_wave_pack(plan, io_mode)
     if short_pack:
@@ -3544,12 +4074,18 @@ def _build_leaf_kernel_source_for_io(
             hcu_warp_pack, permutation_span, permutation_batch, io_mode,
         )
     bluestein_real_kind = ""
-    if io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r")):
+    if (io_mode.startswith("bluestein_") and io_mode.endswith(("_r2c", "_c2r"))
+            or io_mode == "rader_full_leaf_c2r"):
         bluestein_real_kind = io_mode.rsplit("_", 1)[1]
         io_mode = io_mode.rsplit("_", 1)[0]
     from .target import ix_warp_fft_pack
     warp_pack = ix_warp_fft_pack()
     from .backend_profile import current_profile
+    if (_ix_backend_active() and perm_form == "ix_ct_packed_wave_c2r"
+            and plan.dtype == "complex64" and plan.length in {512, 1024}
+            and plan.direction == "inverse" and io_mode == "packed_c2r"):
+        from .kernels_ix_warp import build_ix_ct_packed_inverse_source
+        return build_ix_ct_packed_inverse_source(plan, _leaf_kernel_params_for_io(plan, io_mode=io_mode))
     if (warp_pack and _ix_backend_active() and current_profile().device_arch=='71'
             and current_profile().warp_size==64 and plan.dtype=='complex64'
             and io_mode in {'four_step_row','four_step_col','four_step_real_row',
@@ -3557,11 +4093,18 @@ def _build_leaf_kernel_source_for_io(
         from .kernels_ix_warp import build_ix_warp_four_step_source
         return build_ix_warp_four_step_source(plan,io_mode,four_step_n1,four_step_n2,
             _leaf_kernel_params_for_io(plan,io_mode=io_mode,
-                include_four_step_twiddle=io_mode in {'four_step_row','four_step_real_row','four_step_hermitian_row'}),warp_pack)
+                include_four_step_twiddle=io_mode in {'four_step_row','four_step_real_row','four_step_hermitian_row'}),
+            warp_pack, dense_io=perm_form == "ix_r2c_dense_fourstep")
     if (warp_pack and _ix_backend_active() and current_profile().device_arch == "71"
             and current_profile().warp_size == 64 and plan.dtype == "complex64" and plan.length in {16,64,128,256,512,1024,2048}
-            and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "packed_r2c", "packed_c2r", "permuted_store", "permuted_r2c", "permuted_store_r2c"}
-            and perm_form in {"outer", "inner"}):
+            and io_mode in {"contiguous", "contiguous_c2r", "contiguous_r2c", "packed_r2c", "packed_c2r", "permuted_store",
+                            "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"}
+            and perm_form.removesuffix("_padinput16").removesuffix("_padoutput16") in {
+                "outer", "inner", "outer_dif", "inner_dif", "outer_dif_chunk1",
+                "inner_dif_chunk1", "outer_dif_chunk4", "outer_strided",
+                "outer_strided_chunk16", "outer_c2r_chunk16"}
+            and (io_mode == "strided_permuted_store") == (
+                perm_form in {"outer_strided", "outer_strided_chunk16"})):
         from .kernels_ix_warp import build_ix_warp256_leaf_source
         return build_ix_warp256_leaf_source(
             plan,io_mode,perm_form,_leaf_kernel_params_for_io(plan,io_mode=io_mode),
@@ -3582,25 +4125,40 @@ def _build_leaf_kernel_source_for_io(
         )
 
     portable_exchange = _portable_leaf_backend_active()
+    ix_packed_tle = (plan.dtype == "complex64" and not portable_exchange
+                     and ix_packed_real_tle(plan.length, plan.factors, io_mode))
     native_packed_r2c = (io_mode == "packed_r2c" and (
         (current_profile().backend == "cuda" and os.getenv("FLAGFFT_CUDA_FUSED_PACKED_REAL") == "1")
         or (_hcu_backend_active() and os.getenv("FLAGFFT_HCU_FUSED_PACKED_REAL") == "1")
-        or native_packed_cta))
+        or native_packed_cta or ix_packed_tle))
     if io_mode == "packed_r2c" and not portable_exchange and not native_packed_r2c:
         raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
+    from .target import ix_ct_batch_default_enabled
+
+    ix_short_packed_real = (
+        ix_packed_tle and io_mode == "packed_r2c"
+        and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
+        and n == 1024 and factors == (8, 8, 8, 2) and plan.num_warps == 4
+    )
+    ix_512_packed_real = (
+        ix_packed_tle and io_mode == "packed_r2c"
+        and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 11
+        and n == 512 and factors == (8, 4, 8, 2) and plan.num_warps == 2
+    )
+    ix_flat_packed_real = ix_short_packed_real or ix_512_packed_real
     inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
-        if portable_exchange
+        if portable_exchange or ix_flat_packed_real
         else cooperative_stage_lanes_for(plan)
     )
     uses_cooperative_stage_lanes = portable_exchange or any(
         lanes != plan.lanes for lanes in stage_lanes
     )
-    active_lanes = max(stage_lanes, default=plan.lanes)
+    active_lanes = max(stage_lanes[:-1] if ix_flat_packed_real else stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     contiguous_modes = {
         "contiguous",
@@ -3700,9 +4258,38 @@ def _build_leaf_kernel_source_for_io(
         four_step_n1=four_step_n1,
         four_step_n2=four_step_n2,
     )
+    ix_packed_r2c_finish = (io_mode == "packed_r2c" and ix_packed_tle
+                            and single_smem_buffer and batch_pack == 1)
+    ix_large_packed_twiddles = (
+        ix_packed_r2c_finish and n == 8192 and ix_fourstep_preset() == 8
+        and _maca_knob("R2C_FINISH_SQUARE_ROTATION", "0") == "1"
+        and _maca_knob("RECURRENCE") == "1"
+    )
+    ix_packed_twiddles = ix_flat_packed_real or ix_large_packed_twiddles
+    ix_c2r_radix2 = (io_mode == "packed_c2r" and ix_packed_tle
+                     and single_smem_buffer and batch_pack == 1)
     packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
                          and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
+    # Each exchange uses its own permutation. The final radix two reads
+    # contiguous frequency bands directly from the unpermuted tile.
+    ix_packed_bank_shifts = (
+        (5, 3, 0) if ix_flat_packed_real and _maca_knob("SMEM_SWIZZLE", "0") == "1" else ()
+    )
+    ix_ct_batch_leaf = (
+        _ix_backend_active() and current_profile().device_arch == "71"
+        and ix_ct_batch_default_enabled() and plan.dtype == "complex64"
+        and portable_exchange and smem_pack == 1
+    )
+    ix_compact_tail = (
+        ix_ct_batch_leaf and ix_fourstep_preset() == 9 and n == 2048
+        and factors == (16, 8, 16) and plan.num_warps == 4 and io_mode == "contiguous"
+        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+    )
+    ix_real_ct_codelet = (
+        ix_ct_batch_leaf and ix_fourstep_preset() == 11 and n == 1024
+        and factors == (16, 8, 8) and plan.num_warps == 2 and io_mode == "contiguous_r2c"
+    )
     if portable_exchange and len(factors) > 1:
         # The MetaX plugin cannot lower the warp-shuffle path, so the exchange
         # must gather from a tensor wider than one 64-thread warp.  Packing
@@ -3762,6 +4349,7 @@ def _build_leaf_kernel_source_for_io(
     params = _leaf_kernel_params_for_io(
         plan,
         io_mode=io_mode,
+        ix_packed_twiddles=ix_packed_twiddles,
         batched_permutation=batched_permutation,
         include_four_step_twiddle=(
             io_mode
@@ -3784,6 +4372,14 @@ def _build_leaf_kernel_source_for_io(
         ),
     )
 
+    ix_split_c2r = perm_form == "ix_split_c2r_frequency"
+    ix_split_frequency = ix_split_c2r or perm_form == "ix_split_frequency"
+    if ix_split_frequency:
+        if not (_ix_backend_active() and n == 1024 and plan.dtype == "complex64"
+                and io_mode == "contiguous" and batch_pack == 1
+                and (not ix_split_c2r or plan.direction == "inverse")):
+            raise ValueError("IX split frequencies require a single 1024-point FP32 half transform")
+        params.insert(-1, "split_roots_ptr")
     suffix = "_".join(str(x) for x in factors)
     if io_mode == "contiguous":
         kernel_prefix = "ifft" if plan.direction == "inverse" else "fft"
@@ -3812,7 +4408,8 @@ def _build_leaf_kernel_source_for_io(
     elif io_mode == "bluestein_full_leaf":
         kernel_name = f"bluestein_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}{'_' + bluestein_real_kind if bluestein_real_kind else ''}"
     elif io_mode == "rader_full_leaf":
-        kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
+        real_tag = "_c2r" if bluestein_real_kind == "c2r" else ""
+        kernel_name = f"rader_full_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}{real_tag}"
     elif io_mode == "rader_prepare_leaf":
         kernel_name = f"rader_prepare_leaf_kernel_{suffix}_n{prime_n}_m{n}_l{plan.lanes}_b{lane_block}"
     elif io_mode == "rader_finish_leaf":
@@ -3841,18 +4438,24 @@ def _build_leaf_kernel_source_for_io(
         )
     if permuted_smem_store:
         kernel_name += "_smstore"
+    if ix_split_frequency:
+        kernel_name += "_split_frequency"
+    if ix_split_c2r:
+        kernel_name += "_c2r"
+    if ix_packed_r2c_finish:
+        kernel_name += "_tle_finish"
+    if ix_c2r_radix2:
+        kernel_name += "_radix2_prepare"
     if permutation_span:
         kernel_name += f"_s{permutation_span}"
     if permutation_batch:
         kernel_name += f"_nb{permutation_batch}"
-    cta_disjoint = (n==16384 and factors==(16,16,16,4) and batch_pack==1
-        and io_mode=="contiguous"
-        and math.prod(factors)==n
-        and all(n % (radix*width)==0 for radix,width in zip(factors,stage_lanes))
-        and _maca_knob("TLE_DISJOINT_CTA","0")=="1")
+    cta_disjoint = (batch_pack == 1 and _ix_full_cta_disjoint(n, factors, io_mode, prime_n)
+        and all(n % (radix * width) == 0 for radix, width in zip(factors, stage_lanes)))
     real_disjoint = (
-        io_mode == "contiguous_r2c" and n == 210 and factors == (7,6,5)
-        and batch_pack == 16 and _maca_knob("WARPS", "") == "16"
+        ((io_mode == "contiguous_r2c" and batch_pack in {1, 16})
+         or (io_mode == "contiguous_c2r" and batch_pack == 16))
+        and n == 210 and factors == (7,6,5) and _maca_knob("WARPS", "") == str(batch_pack)
         and all(n == radix * width for radix,width in zip(factors,stage_lanes))
         and _maca_knob("TLE_REAL_DISJOINT", "0") == "1"
     )
@@ -3862,7 +4465,7 @@ def _build_leaf_kernel_source_for_io(
         and ((64<=n<=256 and len(factors)==2
               and all(radix & (radix-1)==0 for radix in factors)
               and all(n==radix*lanes for radix,lanes in zip(factors,stage_lanes)))
-             or (n in {221,425,780,1500,1560} and 2<=len(factors)<=3
+             or (n in _IX_DISJOINT_MIXED_LENGTHS and 2<=len(factors)<=3
                  and all(n % (radix*lanes)==0 for radix,lanes in zip(factors,stage_lanes))
                  and _maca_knob("TLE_DISJOINT_MIXED","0")=="1"))
         and (io_mode.startswith("four_step_") or io_mode.startswith("bluestein_four_step_"))
@@ -3901,7 +4504,9 @@ def _build_leaf_kernel_source_for_io(
         and _maca_knob("STATIC_SINGLE", "0") == "1"
     )
     if io_mode in contiguous_modes:
-        if static_single:
+        if ix_split_frequency:
+            body.extend(["    split_band = tl.program_id(0)", "    nbatch = 1", "    pid = 0", "    batch_id = 0"])
+        elif static_single:
             # The native policy identifies a single transform. Keep the runtime
             # ABI while specializing its batch bound and base in this experiment.
             body.extend(["    nbatch = 1", "    pid = 0", "    batch_id = 0"])
@@ -4097,7 +4702,7 @@ def _build_leaf_kernel_source_for_io(
             f"nv_mma_shared_layout=False)"
         )
 
-    if native_packed_r2c and not portable_exchange:
+    if native_packed_r2c and not portable_exchange and not ix_packed_r2c_finish:
         tl_dtype = _tl_real_dtype(plan.dtype)
         if packed_smem_alias:
             body.extend(["    packed_r = smem_b_r", "    packed_i = smem_b_i"])
@@ -4112,6 +4717,15 @@ def _build_leaf_kernel_source_for_io(
         intermediate_buffer = "smem_b" if single_smem_buffer else ("smem_a" if last_source == "smem_b" else "smem_b")
 
     for stage in range(len(factors)):
+        if ix_c2r_radix2 and stage == 0:
+            body.extend(_emit_ix_packed_c2r_radix2(n))
+            continue
+        if ix_packed_r2c_finish and stage == len(factors) - 1:
+            if ix_flat_packed_real:
+                body.extend(_emit_ix_flat_r2c_finish(n, stage_lanes[stage]))
+            else:
+                body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage))
+            break
         body.extend(
             _emit_stage_block(
                 stage,
@@ -4142,10 +4756,17 @@ def _build_leaf_kernel_source_for_io(
                 perm_inner=inner_perm_form,
                 perm_batched=batched_permutation,
                 packed_smem_alias=packed_smem_alias,
+                ix_split_frequency=ix_split_frequency,
+                ix_split_c2r=ix_split_c2r,
+                ix_compact_tail=ix_compact_tail,
+                ix_real_ct_codelet=ix_real_ct_codelet,
+                ix_dif_packed_real=ix_short_packed_real,
+                ix_packed_twiddles=ix_packed_twiddles,
+                ix_packed_bank_shifts=ix_packed_bank_shifts,
             )
         )
 
-    if io_mode == "packed_r2c":
+    if io_mode == "packed_r2c" and not ix_packed_r2c_finish:
         # The final codelet outputs were gathered into natural frequency order
         # by the portable exchange. Reconstruct the real FFT's half spectrum
         # without a second kernel launch or a global intermediate buffer.

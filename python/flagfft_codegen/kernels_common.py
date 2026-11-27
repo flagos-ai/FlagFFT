@@ -369,15 +369,21 @@ def _maca_knob(name: str, default: str = "") -> str:
         elif preset==12 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", RECURRENCE="1")
         elif preset==13 and current_profile().policy=="balanced":
+            pack = "1" if ix_real_single_pack_enabled() else "16"
             defaults.update(VEC_IO="packed", RECURRENCE="1", PORTABLE_LEAF="0",
-                            WARPS="16", BATCH_PACK="16", TLE_DISJOINT_STAGE="1",
+                            WARPS=pack, BATCH_PACK=pack, TLE_DISJOINT_STAGE="1",
                             TLE_REAL_DISJOINT="1")
         elif preset==10 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", RECURRENCE="1", SMEM_INTERLEAVE="1",
                             TLE_INNER_PACK="8")
+            if ix_ct_single_tle_default() == 1:
+                defaults.update(TLE_DISJOINT_STAGE="1", TLE_DISJOINT_MIXED="1")
         elif preset==11 and current_profile().policy=="balanced":
             defaults.update(VEC_IO="packed", PORTABLE_LEAF="1", RECURRENCE="1",
                             WARPS="2", BATCH_PACK="1")
+        elif preset==14 and current_profile().policy=="balanced":
+            if ix_large_fourstep_default_enabled():
+                defaults.update(FOURSTEP_COL_TWIDDLE_RECURRENCE="1")
         elif preset and current_profile().policy == "balanced":
             defaults.update(RECURRENCE="1", VEC_IO="packed")
             if preset >= 7:
@@ -1436,6 +1442,17 @@ def use_four_step_row_fused_twiddle(n1: int, n2: int, dtype: str = "complex64") 
     )
 
 
+def ix_packed_real_tle(n: int, factors: tuple[int, ...], io_mode: str) -> bool:
+    if not _ix_backend_active() or current_profile().device_arch != "71":
+        return False
+    large = n == 8192 and factors == (16, 16, 16, 2)
+    if io_mode == "packed_c2r":
+        return ((n, factors) in {(1024, (2, 8, 8, 8)), (8192, (2, 16, 16, 16))}
+                and _maca_knob("PACKED_C2R_TLE", "0") == "1")
+    short = (n, factors) in {(512, (8, 4, 8, 2)), (1024, (8, 8, 8, 2))}
+    return io_mode == "packed_r2c" and (short or large) and _maca_knob("PACKED_R2C_TLE", "0") == "1"
+
+
 def _leaf_single_smem_buffer_eligible(
     plan: LeafPlan,
     *,
@@ -1472,12 +1489,19 @@ def _leaf_single_smem_buffer_eligible(
         and 64 <= plan.length <= 4096 and plan.length & (plan.length - 1) == 0
         and all(radix in {2,4,8} for radix in plan.factors)
     )
-    if io_mode not in {"contiguous", "strided"} and not ix_boundary:
+    ix_packed = ix_packed_real_tle(plan.length, plan.factors, io_mode)
+    if io_mode not in {"contiguous", "strided"} and not (ix_boundary or ix_packed):
         return False
     stage_lanes = cooperative_stage_lanes_for(plan)
-    if not (ix_boundary or ix_cooperative) and any(lanes != plan.lanes for lanes in stage_lanes):
+    ix_packed_512 = ix_packed and io_mode == "packed_r2c" and plan.length == 512
+    if ix_packed_512:
+        stage_lanes = tuple(plan.length // factor for factor in plan.factors)
+    if not (ix_boundary or ix_cooperative or ix_packed_512) and any(lanes != plan.lanes for lanes in stage_lanes):
         return False
-    for index in range(len(plan.factors) - 1):
+    # The packed inverse emits its first radix-two stage directly into the
+    # shared tile. Reuse checks apply to the following in-place stages.
+    first_shared_stage = 1 if ix_packed and io_mode == "packed_c2r" else 0
+    for index in range(first_shared_stage, len(plan.factors) - 1):
         if plan.length // (stage_lanes[index] * plan.factors[index]) != 1:
             return False
     batch_pack = contiguous_batch_pack_for(plan)
@@ -1485,7 +1509,7 @@ def _leaf_single_smem_buffer_eligible(
     smem_slot_stride = plan.smem_size + 1 if batch_pack >= 4 else plan.smem_size
     smem_n = lane_block_for(smem_slot_stride * smem_pack)
     smem_bytes = 4 * smem_n * _real_element_bytes(plan.dtype)
-    return smem_bytes >= profile.max_dynamic_shared_memory // 4
+    return ix_packed or smem_bytes >= profile.max_dynamic_shared_memory // 4
 
 
 def _use_single_smem_buffer(

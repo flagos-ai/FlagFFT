@@ -543,10 +543,12 @@ def read_exactly(stream, count: int) -> bytes:
     return blocks[0] if len(blocks) == 1 else b"".join(blocks)
 
 
-def kill_process_group(process: subprocess.Popen) -> None:
-    """Kill the whole capture session; the child may have spawned helpers."""
+def kill_test_process(process: subprocess.Popen, own_session: bool) -> None:
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        if own_session:
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
     except (ProcessLookupError, PermissionError):
         pass
 
@@ -1321,21 +1323,22 @@ def probe_env(build_dir: Path, gpu_id: int | None = None) -> None:
         ENV_INFO["device"] = {"status": "unknown", "reason": str(exc)}
 
 
-def capture_env(gpu_id: int) -> dict[str, str]:
+def capture_env(gpu_id: int | None) -> dict[str, str]:
     env = os.environ.copy()
-    for variable in (
-        "CUDA_VISIBLE_DEVICES",
-        "MUSA_VISIBLE_DEVICES",
-        "PPU_VISIBLE_DEVICES",
-        "IX_VISIBLE_DEVICES",
-        "MACA_VISIBLE_DEVICES",
-        "MC_VISIBLE_DEVICES",
-        "ASCEND_VISIBLE_DEVICES",
-        "ASCEND_RT_VISIBLE_DEVICES",
-        "NPU_VISIBLE_DEVICES",
-        "HIP_VISIBLE_DEVICES",
-    ):
-        env[variable] = str(gpu_id)
+    if gpu_id is not None:
+        for variable in (
+            "CUDA_VISIBLE_DEVICES",
+            "MUSA_VISIBLE_DEVICES",
+            "PPU_VISIBLE_DEVICES",
+            "IX_VISIBLE_DEVICES",
+            "MACA_VISIBLE_DEVICES",
+            "MC_VISIBLE_DEVICES",
+            "ASCEND_VISIBLE_DEVICES",
+            "ASCEND_RT_VISIBLE_DEVICES",
+            "NPU_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+        ):
+            env[variable] = str(gpu_id)
     env["PYTHONPATH"] = str(ROOT / "python") + os.pathsep + env.get("PYTHONPATH", "")
     return env
 
@@ -1436,16 +1439,15 @@ def run_accuracy_capture(
     capture_bin: Path,
     case_scratch: Path,
     implementation: str,
-    gpu_id: int,
+    gpu_id: int | None,
     timeout: int,
     *, preserve_batch: bool = False,
 ) -> dict:
     """Run one native capture and judge its streamed output against NumPy.
 
     The input arrives on stdin and the output leaves on stdout, so neither the
-    multi-gigabyte input nor the output is written anywhere.  A watchdog kills
-    the whole process group at the deadline, which also unblocks the reader and
-    the writer thread.
+    multi-gigabyte input nor the output is written anywhere. A watchdog stops
+    the capture at the deadline, unblocking the reader and writer thread.
     """
     limits = accuracy_limit(case["api"], product(case["shape"]))
     case_scratch.mkdir(parents=True, exist_ok=True)
@@ -1463,6 +1465,8 @@ def run_accuracy_capture(
     timed_out = threading.Event()
     stop = threading.Event()
     process = None
+    # OpTest owns the device mask and process group when it calls pytest.
+    own_session = gpu_id is not None
     writer = None
     watchdog = None
     # Unbounded on purpose -- see offer_group.  Gating the writer on the reader
@@ -1478,10 +1482,10 @@ def run_accuracy_capture(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=log_stream,
-                start_new_session=True,
+                start_new_session=own_session,
             )
             watchdog = threading.Timer(
-                timeout, lambda: (timed_out.set(), kill_process_group(process))
+                timeout, lambda: (timed_out.set(), kill_test_process(process, own_session))
             )
             watchdog.daemon = True
             watchdog.start()
@@ -1546,7 +1550,7 @@ def run_accuracy_capture(
         result.update({"status": "Error", "error": str(error)})
     except BaseException:
         if process is not None and process.poll() is None:
-            kill_process_group(process)
+            kill_test_process(process, own_session)
             process.wait()
         raise
     finally:
@@ -1559,7 +1563,7 @@ def run_accuracy_capture(
             close_quietly(process.stdin)
             close_quietly(process.stdout)
             if process.poll() is None:
-                kill_process_group(process)
+                kill_test_process(process, own_session)
                 process.wait()
         result["duration"] = time.monotonic() - started
     try:
@@ -1602,7 +1606,7 @@ def run_accuracy_case(
     case: dict,
     capture_bin: Path,
     output_dir: Path,
-    gpu_id: int,
+    gpu_id: int | None,
     timeout: int,
     scratch_dir: Path,
     backend: str = "cuda",
@@ -1712,12 +1716,13 @@ def parse_perf_result(
 
 
 def run_logged_command(
-    command: list[str], timeout: int, gpu_id: int, cwd: Path, log_path: Path
+    command: list[str], timeout: int, gpu_id: int | None, cwd: Path, log_path: Path
 ) -> dict:
     """Run a command with both streams captured to one scratch log file."""
     started = time.monotonic()
     result: dict[str, Any] = {"command": command, "log_file": str(log_path)}
     process = None
+    own_session = gpu_id is not None
     try:
         with log_path.open("wb") as log_stream:
             process = subprocess.Popen(
@@ -1726,7 +1731,7 @@ def run_logged_command(
                 env=capture_env(gpu_id),
                 stdout=log_stream,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                start_new_session=own_session,
             )
             returncode = process.wait(timeout=timeout)
         result.update(
@@ -1742,14 +1747,14 @@ def run_logged_command(
         if returncode != 0:
             result["error"] = f"process exited with code {returncode}"
     except subprocess.TimeoutExpired:
-        kill_process_group(process)
+        kill_test_process(process, own_session)
         process.wait()
         result.update({"status": "Timeout", "error": f"exceeded {timeout}s timeout"})
     except OSError as error:
         result.update({"status": "Error", "error": str(error)})
     except BaseException:
         if process is not None and process.poll() is None:
-            kill_process_group(process)
+            kill_test_process(process, own_session)
             process.wait()
         raise
     finally:
@@ -1765,7 +1770,7 @@ def run_performance_case(
     case: dict,
     build_dir: Path,
     output_dir: Path,
-    gpu_id: int,
+    gpu_id: int | None,
     timeout: int,
     warmup: int,
     iters: int,

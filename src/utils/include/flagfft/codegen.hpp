@@ -220,7 +220,9 @@ struct Raw1DGraphState {
 struct CompiledRawLeafNode final : CompiledRawNode {
   CompiledRawLeafNode(int64_t length,
                       std::shared_ptr<JitKernel> kernel,
-                      std::vector<DeviceAllocation> tables);
+                      std::vector<DeviceAllocation> tables,
+                      std::shared_ptr<CompiledRawNode> layout_fallback = nullptr,
+                      int64_t fixed_batch = 1);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -230,6 +232,8 @@ struct CompiledRawLeafNode final : CompiledRawNode {
   int64_t length;
   std::shared_ptr<JitKernel> kernel;
   std::vector<DeviceAllocation> tables;
+  std::shared_ptr<CompiledRawNode> layout_fallback;
+  int64_t fixed_batch;
   mutable Raw1DGraphState graph_state;
 };
 
@@ -491,7 +495,8 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
                            DeviceAllocation a_buf,
                            DeviceAllocation work_buf,
                            DeviceAllocation b_fft_buf,
-                           int64_t batch_chunk);
+                           int64_t batch_chunk,
+                           std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback);
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -512,6 +517,9 @@ struct CompiledRawBluesteinNode final : CompiledRawNode {
   mutable DeviceAllocation b_fft_buf;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawBluesteinLeafNode final : CompiledRawNode {
@@ -648,7 +656,8 @@ struct CompiledRawRaderNode final : CompiledRawNode {
                        std::vector<DeviceAllocation> fused_leaf_tables = {},
                        std::shared_ptr<JitKernel> boundary_prepare_kernel = nullptr,
                        std::shared_ptr<JitKernel> boundary_finish_kernel = nullptr,
-                       std::vector<DeviceAllocation> boundary_tables = {});
+                       std::vector<DeviceAllocation> boundary_tables = {},
+                       std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
@@ -674,6 +683,9 @@ struct CompiledRawRaderNode final : CompiledRawNode {
   DeviceAllocation input_copy;
   mutable bool b_fft_ready = false;
   mutable std::mutex b_fft_mutex;
+  const std::function<std::shared_ptr<CompiledRawNode>()> make_layout_fallback;
+  mutable std::shared_ptr<CompiledRawNode> layout_fallback;
+  mutable std::mutex layout_mutex;
 };
 
 struct CompiledRawFourStepGenericNode final : CompiledRawNode {
@@ -1904,6 +1916,12 @@ class TritonCompiler {
   bool npu_stockham_tle_allowed_ = true;
 
   std::shared_ptr<CompiledRawNode> compile_raw_leaf(const LeafPlanNode &leaf, const FFTRequest &request);
+  std::shared_ptr<CompiledRawNode> compile_ix_split_leaf(
+      int64_t length, const FFTRequest &request, const std::string &form,
+      std::shared_ptr<CompiledRawNode> fallback);
+  std::shared_ptr<CompiledRawNode> compile_ix_wave_bands(
+      int64_t length, int64_t bands, const FFTRequest &request,
+      std::shared_ptr<CompiledRawNode> fallback);
   std::shared_ptr<CompiledRawNode> compile_raw_permuted_store_leaf(const LeafPlanNode &leaf,
                                                                     const FFTRequest &request,
                                                                     int64_t perm_span,
@@ -1930,7 +1948,8 @@ class TritonCompiler {
   std::shared_ptr<JitKernel> compile_leaf_r2c_kernel(const LeafPlanNode &leaf, const FFTRequest &request);
   std::shared_ptr<JitKernel> compile_leaf_r2c_permuted_store_kernel(
       const LeafPlanNode &leaf, const FFTRequest &request);
-  std::shared_ptr<JitKernel> compile_leaf_c2r_kernel(const LeafPlanNode &leaf, const FFTRequest &request);
+  std::shared_ptr<JitKernel> compile_leaf_c2r_kernel(const LeafPlanNode &leaf, const FFTRequest &request,
+                                                      const std::string &perm_form = "outer");
   std::shared_ptr<JitKernel> compile_four_step_row_kernel(const LeafPlanNode &leaf,
                                                           const FFTRequest &request,
                                                           int64_t n1,
@@ -1969,19 +1988,22 @@ class TritonCompiler {
                                                               int64_t n2);
   std::shared_ptr<JitKernel> compile_bluestein_prepare_kernel(const FFTRequest &request,
                                                               int64_t n,
-                                                              int64_t m);
+                                                              int64_t m,
+                                                              bool real_boundaries = false);
   std::shared_ptr<JitKernel> compile_bluestein_pointwise_kernel(const FFTRequest &request,
                                                                 int64_t n,
                                                                 int64_t m);
   std::shared_ptr<JitKernel> compile_bluestein_finalize_kernel(const FFTRequest &request,
                                                                int64_t n,
-                                                               int64_t m);
+                                                               int64_t m,
+                                                               bool real_boundaries = false);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_kernel(const LeafPlanNode &leaf,
                                                            const FFTRequest &request,
                                                            int64_t n);
   std::shared_ptr<JitKernel> compile_leaf_rader_full_kernel(const LeafPlanNode &leaf,
                                                             const FFTRequest &request,
-                                                            int64_t n);
+                                                            int64_t n,
+                                                            bool compact_inverse);
   std::shared_ptr<JitKernel> compile_leaf_rader_prepare_kernel(const LeafPlanNode &leaf,
                                                                 const FFTRequest &request,
                                                                 int64_t n);
@@ -1990,10 +2012,12 @@ class TritonCompiler {
                                                                int64_t n);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_prepare_kernel(const LeafPlanNode &leaf,
                                                                    const FFTRequest &request,
-                                                                   int64_t n);
+                                                                   int64_t n,
+                                                                   const std::string &perm_form);
   std::shared_ptr<JitKernel> compile_leaf_bluestein_finish_kernel(const LeafPlanNode &leaf,
                                                                   const FFTRequest &request,
-                                                                  int64_t n);
+                                                                  int64_t n,
+                                                                  const std::string &perm_form);
   std::shared_ptr<JitKernel> compile_rader_prepare_kernel(const FFTRequest &request, int64_t n, int64_t m);
   std::shared_ptr<JitKernel> compile_rader_pointwise_kernel(const FFTRequest &request, int64_t n, int64_t m);
   std::shared_ptr<JitKernel> compile_rader_finalize_kernel(const FFTRequest &request, int64_t n, int64_t m);
@@ -2036,7 +2060,9 @@ DeviceAllocation build_raw_rader_conv_kernel(const FFTRequest &request,
                                              int64_t n,
                                              const std::vector<int64_t> &idx);
 std::vector<DeviceAllocation> build_raw_leaf_tables(const LeafPlanNode &leaf, const FFTRequest &request,
-                                                   bool portable_default = false);
+                                                   bool portable_default = false,
+                                                   bool ix_fixed_lanes = false,
+                                                   bool ix_packed_twiddles = false);
 int64_t permuted_store_outer_blocks(int64_t transforms, int64_t span, int64_t pack);
 bool hcu_wave_3d_c2c_policy_enabled(const FFTRequest &request,
                                     int64_t n0, int64_t n1, int64_t n2);
@@ -2046,6 +2072,7 @@ int64_t hcu_packed_grid_pack_limit(int64_t batch, int64_t compute_units, int64_t
 bool ix_ct_single_policy_enabled(const FFTRequest &request);
 bool ix_real_single_pack_policy_enabled(const FFTRequest &request);
 bool ix_ct_batch_policy_enabled(const FFTRequest &request);
+bool ix_rader1009_policy_enabled(const FFTRequest &request);
 int ix_fourstep_default_preset(const FFTRequest &request);
 bool ix_packed_real_policy_enabled(const FFTRequest &request);
 int ix_ct_single_tle_policy(const FFTRequest &request);

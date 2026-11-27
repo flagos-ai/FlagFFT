@@ -120,10 +120,10 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
       throw std::runtime_error("FLAGFFT_IX_CT_BATCH_PACKED_IO must be 0 or 1");
     if (!packed || std::string(packed)=="1") {
       preset=request.requested_n==1024 ? 11 : 9;
-      if (request.requested_n==210 && request.real_transform_kind!="r2c") preset=12;
-      if (request.requested_n==210 && request.real_transform_kind=="r2c") preset=13;
+      if (request.requested_n==210) preset=request.real_transform_kind.empty() ? 12 : 13;
     }
   }
+  if (request.batch==1 && request.requested_n==210 && request.real_transform_kind=="r2c") preset=13;
   if (request.batch==64 && request.requested_n==8191) preset=1;
   if (request.batch==64 && request.requested_n==16381) preset=2;
   if (request.requested_n==16384 && request.real_transform_kind.empty())
@@ -131,7 +131,13 @@ int ix_fourstep_default_preset(const FFTRequest &request) {
   if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="c2r") preset=7;
   if (request.requested_n==16384 && request.batch==64 && request.real_transform_kind=="r2c") preset=8;
   if (request.requested_n==663000) preset=request.batch==1 ? 5 : 6;
-  if (request.requested_n==340200 && request.batch==64 && request.real_transform_kind.empty()) preset=10;
+  if (request.requested_n==340200 && request.real_transform_kind.empty() &&
+      (request.batch==64 || request.origin_real_transform_kind.empty())) preset=10;
+  if (request.requested_n==524288 && request.batch==1 && request.real_transform_kind.empty() &&
+      request.origin_real_transform_kind.empty()) {
+    const char *large = std::getenv("FLAGFFT_IX_LARGE_FOURSTEP");
+    if (!large || std::string(large)=="1") preset=14;
+  }
   if (!preset) return 0;
   const char *setting=std::getenv("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS");
   if (setting && std::string(setting)!="0" && std::string(setting)!="1")
@@ -205,8 +211,12 @@ bool ix_prime_3d_default_enabled(const FFTRequest &request, int64_t batch,
 
 int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
                                 int64_t n0, int64_t n1, int64_t n2) {
-  const bool matrix=request.origin_rank==2 && request.raw_dim==2 &&
-                    n0==2048 && n1==2048 && n2==0;
+  const bool small_matrix = n0 == 128 && n1 == 128 && request.real_transform_kind.empty();
+  const bool small_real_matrix = n0 == 64 && n1 == 64 && batch == 1 &&
+      request.real_transform_kind == "r2c";
+  const bool large_matrix = n0 == 2048 && n1 == 2048;
+  const bool matrix = request.origin_rank == 2 && request.raw_dim == 2 && n2 == 0 &&
+                      (small_matrix || small_real_matrix || large_matrix);
   const bool cube=request.origin_rank==3 && request.raw_dim==3 &&
                   n0==256 && n1==256 && n2==256;
   const bool elongated=request.origin_rank==3 && request.raw_dim==3 &&
@@ -226,7 +236,12 @@ int64_t ix_nd_warp_default_pack(const FFTRequest &request, int64_t batch,
     throw std::runtime_error(std::string(name)+" must be 0 or 1");
   };
   if (!enabled("FLAGFFT_IX_ND_WARP",true) || !enabled("FLAGFFT_IX_WARP_FFT",true)) return 0;
-  if (matrix) return enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE",true) ? 16 : 0;
+  if (matrix) {
+    if (small_real_matrix) return enabled("FLAGFFT_IX_2D_R2C_WAVE", true) ? 1 : 0;
+    if (!enabled("FLAGFFT_IX_2D_TRANSPOSE_STORE", true)) return 0;
+    if (small_matrix) return 8;
+    return request.real_transform_kind == "c2r" ? 4 : 16;
+  }
   if (!enabled("FLAGFFT_IX_WARP256",true) || !enabled("FLAGFFT_3D_FUSED_STORE",true) ||
       enabled("FLAGFFT_IX_3D_HYBRID",false)) return 0;
   if (!request.real_transform_kind.empty() &&
@@ -293,6 +308,25 @@ bool ix_ct_batch_policy_enabled(const FFTRequest &request) {
   if (!setting || std::string(setting) == "1") return true;
   if (std::string(setting) == "0") return false;
   throw std::runtime_error("FLAGFFT_IX_CT_BATCH must be 0 or 1");
+}
+
+bool ix_rader1009_policy_enabled(const FFTRequest &request) {
+  if (request.device_type != "ix" || request.device_arch != "71" ||
+      request.raw_dim != 1 || request.origin_rank > 1 || request.batch != 64 ||
+      request.requested_n != 1009 || request.fft_length != 1009 || request.packed_real_child ||
+      request.input_dtype != "complex64" || request.output_dtype != "complex64" ||
+      request.input_layout != "contiguous" || request.requires_contiguous_copy ||
+      request.input_strides.empty() || request.input_strides.back() != 1 ||
+      (!request.real_transform_kind.empty() && request.real_transform_kind != "c2r") ||
+      (!request.origin_real_transform_kind.empty() && request.origin_real_transform_kind != "c2r")) {
+    return false;
+  }
+  const char *policy = std::getenv("FLAGFFT_EXECUTION_POLICY");
+  if (policy && std::string(policy) != "balanced") return false;
+  const char *setting = std::getenv("FLAGFFT_IX_RADER1009");
+  if (!setting || std::string(setting) == "1") return true;
+  if (std::string(setting) == "0") return false;
+  throw std::runtime_error("FLAGFFT_IX_RADER1009 must be 0 or 1");
 }
 
 bool ix_packed_real_policy_enabled(const FFTRequest &request) {

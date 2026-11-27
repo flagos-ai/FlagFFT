@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <sys/file.h>
 #include <unistd.h>
+#include <utility>
 
 #if defined(BACKEND_MACA)
 #include "triton_jit/jit_utils.h"
@@ -27,6 +28,40 @@
 
 namespace flagfft {
 namespace {
+
+  constexpr std::pair<const char *, const char *> kIxBluesteinCtaDefaults[] = {
+      {"FLAGFFT_IX_BLUESTEIN_SINGLE_SMEM", "1"},
+      {"FLAGFFT_IX_WARPS", "16"},
+      {"FLAGFFT_IX_SMEM_SWIZZLE", "1"},
+      {"FLAGFFT_IX_SMEM_SWIZZLE_SHIFT", "5"},
+      {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
+  };
+
+  constexpr std::pair<const char *, const char *> kIxPackedRecurrenceDefaults[] = {
+      {"FLAGFFT_IX_RECURRENCE", "1"},
+      {"FLAGFFT_IX_VEC_IO", "packed"},
+  };
+
+  constexpr char kIxFourStepColTwiddle[] = "FLAGFFT_IX_FOURSTEP_COL_TWIDDLE_RECURRENCE";
+  constexpr std::pair<const char *, const char *> kIxMixedFourStepTileDefaults[] = {
+      {"FLAGFFT_IX_TLE_DISJOINT_STAGE", "1"},
+      {"FLAGFFT_IX_TLE_DISJOINT_MIXED", "1"},
+      {"FLAGFFT_IX_RECURRENCE", "1"},
+      {"FLAGFFT_IX_VEC_IO", "packed"},
+      {"FLAGFFT_IX_SMEM_INTERLEAVE", "1"},
+      {"FLAGFFT_IX_TLE_INNER_PACK", "8"},
+  };
+
+  constexpr std::pair<const char *, const char *> kIxPackedRealTleDefaults[] = {
+      {"FLAGFFT_IX_PACKED_R2C_TLE", "1"},
+      {"FLAGFFT_IX_PACKED_R2C_INPUT", "1"},
+      {"FLAGFFT_IX_PACKED_C2R_TLE", "1"},
+      {"FLAGFFT_IX_PORTABLE_LEAF", "0"},
+      {"FLAGFFT_IX_BATCH_PACK", "1"},
+      {"FLAGFFT_IX_SMEM_SWIZZLE", "1"},
+      {"FLAGFFT_IX_TLE_DISJOINT_STAGE", "1"},
+      {"FLAGFFT_IX_TLE_DISJOINT_CTA", "1"},
+  };
 
   bool npu_auto_blockify_for(const KernelKey &key) {
     if (key.perm_form=="npu_paired_real_boundary_auto") return true;
@@ -251,6 +286,67 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                 ";ix-fourstep-preset=" + std::to_string(ix_fourstep_preset_) +
                                 (adaptor::backend_name() == "maca"
                                      ? maca_tail_codegen_identity(tail_mode) : "");
+  const bool ix_bluestein_cta = key.perm_form == "ix_bluestein_cta";
+  const bool ix_bluestein_packed_r2c = key.perm_form == "ix_bluestein_recurrence_r2c";
+  const bool ix_bluestein_recurrence =
+      ix_bluestein_packed_r2c || key.perm_form == "ix_bluestein_recurrence";
+  const bool ix_rader_packed_c2r = key.perm_form == "ix_rader_packed_c2r";
+  const bool ix_single_prime_cube = key.perm_form == "ix_bluestein_997_single_r2c";
+  const bool ix_packed_recurrence = ix_bluestein_recurrence || ix_rader_packed_c2r ||
+      key.perm_form == "ix_rader_packed" || ix_single_prime_cube;
+  const char *ix_single_prime_warps = ix_single_prime_cube ? performance_env("FLAGFFT_IX_WARPS") : nullptr;
+  if (ix_single_prime_cube) {
+    cache_key += ";FLAGFFT_IX_WARPS=" + std::string(ix_single_prime_warps ? ix_single_prime_warps : "2");
+  }
+  const char *ix_bluestein_vector_io = ix_bluestein_packed_r2c
+      ? performance_env("FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO") : nullptr;
+  if (ix_bluestein_packed_r2c)
+    cache_key += ";ix-bluestein-vector-io=" + std::string(ix_bluestein_vector_io ? ix_bluestein_vector_io : "1");
+  const bool ix_packed_real_tle = key.perm_form == "ix_r2c_tle" || key.perm_form == "ix_c2r_tle";
+  const bool ix_mixed_fourstep_tile = key.perm_form == "ix_mixed_fourstep_tile8";
+  const bool ix_mixed_col_twiddle = key.kind == KernelKind::FourStepCol &&
+      (ix_mixed_fourstep_tile || key.perm_form == "ix_mixed_fourstep_recurrence");
+  if (ix_mixed_fourstep_tile) {
+    for (const auto &[name, default_value] : kIxMixedFourStepTileDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+  }
+  const bool ix_16k_packed_r2c = key.perm_form == "ix_r2c_tle" && key.length == 8192 &&
+                                 ix_fourstep_preset_ == 8;
+  const char *ix_square_rotation = ix_16k_packed_r2c
+      ? performance_env("FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION") : nullptr;
+  const bool square_rotation = ix_16k_packed_r2c &&
+      (!ix_square_rotation || std::string(ix_square_rotation) == "1");
+  if (ix_16k_packed_r2c) {
+    cache_key += ";FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION=" +
+        std::string(ix_square_rotation ? ix_square_rotation : "1");
+    if (const char *recurrence = performance_env("FLAGFFT_IX_RECURRENCE")) {
+      cache_key += ";FLAGFFT_IX_RECURRENCE=" + std::string(recurrence);
+    }
+  }
+  const char *ix_packed_smem_shift =
+      square_rotation || (key.perm_form == "ix_c2r_tle" && key.length == 1024) ? "4" : "5";
+  if (ix_bluestein_cta) {
+    for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+  }
+  if (ix_packed_recurrence) {
+    for (const auto &[name, default_value] : kIxPackedRecurrenceDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+  }
+  if (ix_packed_real_tle) {
+    for (const auto &[name, default_value] : kIxPackedRealTleDefaults) {
+      const char *value = performance_env(name);
+      cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
+    }
+    const char *shift = performance_env("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT");
+    cache_key += ";FLAGFFT_IX_SMEM_SWIZZLE_SHIFT=" + std::string(shift ? shift : ix_packed_smem_shift);
+  }
   if (adaptor::backend_name() == "hcu") {
     cache_key += ";" + hcu_performance_identity();
     const char *vector_io = performance_env("FLAGFFT_HCU_VECTOR_IO");
@@ -423,6 +519,19 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
                                                      std::string(pair_store) == "1" ? "1" : "0");
     cache_key += ";ix-3d-pack=" + std::string(pack != nullptr ? pack : "auto");
   }
+  if (adaptor::backend_name() == "ix" && key.length == 2048 && key.ix_warp_fft_pack > 0) {
+    for (const char *name : {"FLAGFFT_IX_WARP2048_CODELET", "FLAGFFT_IX_WARP2048_RECURRENCE",
+                             "FLAGFFT_IX_WARP2048_CHUNK"}) {
+      if (const char *value = performance_env(name)) cache_key += ";" + std::string(name) + "=" + value;
+    }
+  }
+  if (key.kind == KernelKind::FourStepCol && adaptor::backend_name() == "ix") {
+    if (const char *setting = performance_env(kIxFourStepColTwiddle)) {
+      cache_key += ";" + std::string(kIxFourStepColTwiddle) + "=" + setting;
+    } else if (ix_mixed_col_twiddle) {
+      cache_key += ";" + std::string(kIxFourStepColTwiddle) + "=1";
+    }
+  }
   if (key.kind == KernelKind::LeafPermutedStore && adaptor::backend_name() == "npu") {
     const char *transpose_store = performance_env("FLAGFFT_NPU_2D_TRANSPOSE_STORE");
     const char *portable_leaf = performance_env("FLAGFFT_NPU_FOURSTEP_LEAF");
@@ -561,10 +670,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "leaf_packed_c2r";
       break;
     case KernelKind::LeafBluestein:
-      kernel_kind = key.perm_form == "outer" ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form;
+      kernel_kind = ix_bluestein_packed_r2c ? "leaf_bluestein_r2c" :
+          (key.perm_form == "outer" || ix_bluestein_recurrence
+               ? "leaf_bluestein" : "leaf_bluestein_" + key.perm_form);
       break;
     case KernelKind::LeafRaderFull:
-      kernel_kind = "leaf_rader_full";
+      kernel_kind = ix_rader_packed_c2r ? "leaf_rader_full_c2r" : "leaf_rader_full";
       break;
     case KernelKind::LeafRaderPrepare:
       kernel_kind = "leaf_rader_prepare";
@@ -644,13 +755,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       kernel_kind = "four_step_c2r_col";
       break;
     case KernelKind::BluesteinPrepare:
-      kernel_kind = "bluestein_prepare";
+      kernel_kind = key.perm_form == "r2c" ? "bluestein_prepare_r2c" : "bluestein_prepare";
       break;
     case KernelKind::BluesteinPointwise:
       kernel_kind = "bluestein_pointwise";
       break;
     case KernelKind::BluesteinFinalize:
-      kernel_kind = "bluestein_finalize";
+      kernel_kind = key.perm_form == "r2c" ? "bluestein_finalize_r2c" : "bluestein_finalize";
       break;
     case KernelKind::RaderPrepare:
       kernel_kind = "rader_prepare";
@@ -757,6 +868,40 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     ++state.misses;
   }
   std::ostringstream jit_command;
+  if (ix_mixed_col_twiddle && !performance_env(kIxFourStepColTwiddle))
+    jit_command << kIxFourStepColTwiddle << "=1 ";
+  if (ix_mixed_fourstep_tile) {
+    for (const auto &[name, value] : kIxMixedFourStepTileDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+  }
+  if (ix_bluestein_packed_r2c && !ix_bluestein_vector_io)
+    jit_command << "FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO=1 ";
+  if (ix_bluestein_cta) {
+    for (const auto &[name, value] : kIxBluesteinCtaDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+  }
+  if (ix_packed_recurrence) {
+    for (const auto &[name, value] : kIxPackedRecurrenceDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+  }
+  if (ix_single_prime_cube && !ix_single_prime_warps)
+    jit_command << "FLAGFFT_IX_WARPS=2 ";
+  if (ix_packed_real_tle) {
+    if (square_rotation && !ix_square_rotation) jit_command << "FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION=1 ";
+    for (const auto &[name, value] : kIxPackedRealTleDefaults) {
+      if (!performance_env(name)) jit_command << name << "=" << value << " ";
+    }
+    if (!performance_env("FLAGFFT_IX_WARPS")) jit_command << "FLAGFFT_IX_WARPS=" << key.num_warps << " ";
+    if (!performance_env("FLAGFFT_IX_SMEM_SWIZZLE_SHIFT")) {
+      jit_command << "FLAGFFT_IX_SMEM_SWIZZLE_SHIFT=" << ix_packed_smem_shift << " ";
+    }
+  }
+  const bool ix_split_frequency = key.kind == KernelKind::Leaf &&
+      (key.perm_form == "ix_split_frequency" || key.perm_form == "ix_split_c2r_frequency");
+  const bool ix_wave_bands = key.kind == KernelKind::Leaf && key.perm_form.rfind("ix_band_", 0) == 0;
   if (npu_performance_defaults_active) {
     for (const auto &setting : kNpuPerformanceDefaults) {
       jit_command << setting.name << "=" << shell_quote(performance_env(setting.name)) << " ";
@@ -846,9 +991,12 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --npu-portable-leaf";
     }
   }
-  if (key.kind == KernelKind::LeafPermutedStore ||
+  if (ix_split_frequency || ix_wave_bands || key.perm_form == "ix_ct_packed_wave_c2r" ||
+      key.perm_form == "ix_r2c_dense_fourstep" ||
+      key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
+      (key.kind == KernelKind::LeafC2R && key.perm_form == "outer_c2r_chunk16") ||
       (key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed")) {
     jit_command << " --perm-form " << shell_quote(key.perm_form);
     if (key.permutation_span > 0) jit_command << " --permutation-span " << key.permutation_span;
@@ -1192,12 +1340,34 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
        kernel->kernel_name == "power_cube_finish" ||
        kernel->kernel_name == "power_cube_finish_batch");
   kernel->batch_per_block = json_int_field(artifact_json, "batch_per_block");
+  if (ix_split_frequency) {
+    if (kernel->batch_per_block != 1 ||
+        kernel->kernel_name.find("_split_frequency") == std::string::npos)
+      throw std::runtime_error("invalid IX split-frequency leaf");
+    kernel->grid_x_override = 2;
+  }
+  if (ix_wave_bands) {
+    const bool batched_pfa = key.length == 210 && key.permutation_batch > 0;
+    const int64_t pack = batched_pfa ? key.ix_warp_fft_pack : 1;
+    if (kernel->batch_per_block != pack || kernel->num_warps != (pack + 1) / 2 ||
+        kernel->kernel_name.find("_frequency_bands") == std::string::npos)
+      throw std::runtime_error("invalid IX wave frequency-band leaf");
+    const bool fold_r2c = key.perm_form == "ix_band_r2c_folded" ||
+                          (key.perm_form == "ix_band_r2c" && key.length != 210);
+    const int64_t bands = fold_r2c ? key.permutation_span / 2 + 1 : key.permutation_span;
+    const int64_t tiles = batched_pfa ? (key.permutation_batch + pack - 1) / pack : 1;
+    kernel->grid_x_override = bands * tiles;
+  }
   if (key.kind == KernelKind::LeafStridedPermutedStore &&
-      kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
-      kernel->kernel_name.find("_stridedinput") != std::string::npos) {
+      (kernel->kernel_name == "ix_prime_r2c_last" ||
+       ((key.perm_form == "outer_strided" || key.perm_form == "outer_strided_chunk16") &&
+        kernel->kernel_name.rfind("ix_warp", 0) == 0 &&
+        kernel->kernel_name.find("_stridedinput") != std::string::npos) ||
+       (kernel->kernel_name.rfind("hcu_warp", 0) == 0 &&
+        kernel->kernel_name.find("_stridedinput") != std::string::npos))) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");
     if (kernel->grid_x_override <= 0)
-      throw std::runtime_error("HCU strided wave requires a positive tile-derived launch grid");
+      throw std::runtime_error("strided wave requires a positive tile-derived launch grid");
   }
   if (key.kind == KernelKind::Hcu3DCTFirst || key.kind == KernelKind::Hcu3DCTLast) {
     kernel->grid_x_override = json_int_field(artifact_json, "grid_x_override");

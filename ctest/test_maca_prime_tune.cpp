@@ -894,6 +894,16 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   request.raw_dim=request.origin_rank=2;
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),16);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,2048,2048),16);
+  request.real_transform_kind = "c2r";
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),4);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,2048,2048),4);
+  request.real_transform_kind.clear();
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),8);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,128,128),8);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,3,128,128),0);
+  request.real_transform_kind = "r2c";
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),0);
+  request.real_transform_kind.clear();
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,3,2048,2048),0);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,1024,2048),0);
   request.input_dtype="complex128";
@@ -910,6 +920,7 @@ TEST(IXNDPolicy, QualifiedShapesAndExplicitRollbackAreScoped) {
   unsetenv("FLAGFFT_IX_WARP_FFT");
   setenv("FLAGFFT_IX_2D_TRANSPOSE_STORE","0",1);
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,2048,2048),0);
+  EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,1,128,128),0);
   unsetenv("FLAGFFT_IX_2D_TRANSPOSE_STORE");
   request.raw_dim=request.origin_rank=3;
   EXPECT_EQ(flagfft::ix_nd_warp_default_pack(request,4,256,256,256),16);
@@ -1163,7 +1174,7 @@ TEST(IXLeafPlan, CtBatchDefaultsKeepPublicDenseScopeAndQualifiedFactors) {
     for (const auto &kind : {"","r2c","c2r"}) {
       request.real_transform_kind=kind;
       request.input_strides={std::string(kind)=="c2r" ? n/2+1 : n,1};
-      const int preset=n==1024 ? 11 : n==210 ? (std::string(kind)=="r2c" ? 13 : 12) : 9;
+      const int preset=n==1024 ? 11 : n==210 ? (request.real_transform_kind.empty() ? 12 : 13) : 9;
       EXPECT_EQ(flagfft::ix_fourstep_default_preset(request),preset);
       request.ix_fourstep_preset=0;
       flagfft::PlanBuilder before;
@@ -1195,10 +1206,11 @@ TEST(IXLeafPlan, CtBatchDefaultsKeepPublicDenseScopeAndQualifiedFactors) {
 }
 
 
-TEST(IXLeafPlan, MixedBatch340200DefaultPreservesGeometryAndTypedPublicScope) {
+TEST(IXLeafPlan, Mixed340200DefaultsPreserveGeometryAndTypedPublicScope) {
   ScopedEnv policy("FLAGFFT_EXECUTION_POLICY","balanced");
   ScopedEnv gate("FLAGFFT_IX_TLE_FOURSTEP_DEFAULTS",nullptr);
   ScopedEnv rollback("FLAGFFT_IX_CT_BATCH",nullptr);
+  ScopedEnv rollback_single("FLAGFFT_IX_CT_SINGLE",nullptr);
   flagfft::FFTRequest request;
   request.device_type="ix"; request.device_arch="71";
   request.input_dtype=request.output_dtype="complex64";
@@ -1219,7 +1231,9 @@ TEST(IXLeafPlan, MixedBatch340200DefaultPreservesGeometryAndTypedPublicScope) {
   }
   auto other=request; other.origin_rank=3;
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
-  other=request; other.batch=1;
+  other=request; other.batch=1; other.input_shape.front()=1;
+  EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),10);
+  other.origin_real_transform_kind="r2c";
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);
   other=request; other.input_strides.front()++;
   EXPECT_EQ(flagfft::ix_fourstep_default_preset(other),0);

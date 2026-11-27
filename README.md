@@ -756,6 +756,49 @@ pass; unsupported fp64 dtypes are omitted from the totals. Exit code 1
 indicates a failure, incomplete phase, or unexpected skip; 2 is a configuration
 error and 130 is interruption. Platform correctness is reported independently.
 
+### FlagOS OpTest
+
+Use a vendor runtime with PyTorch, FlagTree/Triton, and the SDK and reference
+FFT library for the device under test. The build needs CMake, Ninja, a C++
+toolchain and the SQLite development files. Install FlagFFT and
+[OpTest](https://github.com/flagos-ai/optest) with FlagFFT support in the same
+Python environment. From the FlagFFT checkout, run:
+
+```bash
+uv pip install -e '.[test]'
+flagos-gpu-check --format json
+export FLAGOS_GPU_VENDOR=nvidia
+export FLAGFFT_BUILD_DIR="$PWD/build-optest"
+tools/build_optest.sh
+flagos-optest --ops 1d_ct_single_c2c,2d_batch_r2c,3d_c2r \
+  --gpus "$AVAILABLE_GPUS" --quick --dump-output --output-dir "$RESULT_DIR"
+flagos-add-labels "$RESULT_DIR"
+flagos-psum-html "$RESULT_DIR" -o "$RESULT_DIR/result.html"
+python tools/check_optest_summary.py "$RESULT_DIR" \
+  --ops 1d_ct_single_c2c,2d_batch_r2c,3d_c2r
+```
+
+Set `FLAGOS_GPU_VENDOR` and `AVAILABLE_GPUS` from the device check, and use a
+unique absolute `RESULT_DIR` outside the checkout. Install the vendor SDK and
+activate its environment in the build and test shell. Set `FLAGFFT_PYTHON` to
+the active interpreter if it differs from `python3`. The build script accepts
+additional CMake arguments after the vendor name. For example, SDKs with a
+custom CMake executable can set `FLAGFFT_CMAKE`.
+
+Accuracy uses the NumPy reference and existing case matrix. `--quick` in
+OpTest and `--level core` in the benchmark suite select one shape per operator
+with its supported precisions, directions and batches. For the full default
+matrix, set `FLAGFFT_OPTEST_FULL=1` and run OpTest with `--stages stable` and
+`--dump-output`. Use `--timeout` for the whole pytest subprocess per operator.
+Set `FLAGFFT_CASE_TIMEOUT`, `FLAGFFT_BENCH_WARMUP` and `FLAGFFT_BENCH_ITERS` to
+adjust native timeouts and timing rounds. The defaults are 200 seconds,
+10 warmups and 100 iterations.
+
+The detailed JSON records each supported case and the native reference verdict.
+Only timings with a validated vendor reference contribute to the speedup.
+Keep the per-operator directories with `summary.json` when archiving a run.
+Use an independent checkout for each concurrent OpTest job.
+
 ### C++ Tests (ctest/)
 
 Built with `-DFLAGFFT_BUILD_TESTS=ON`. Each test binary compares FlagFFT

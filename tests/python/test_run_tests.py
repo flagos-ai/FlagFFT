@@ -70,7 +70,7 @@ if args.get("input") != "-" or args.get("output-dir") != "-":
     sys.exit(2)
 implementation = args["implementation"]
 api, direction = args["api"], args["direction"]
-shape = tuple(int(n) for n in args["shape"].split(","))
+shape = tuple(int(n) for n in args["shape"].replace("x", ",").split(","))
 batch = int(args["batch"])
 if os.environ.get("FAKE_CAPTURE_BATCH_REPORT", "1") == "1":
     execution_batch = int(os.environ.get("FAKE_CAPTURE_EXECUTION_BATCH", str(batch)))
@@ -129,6 +129,66 @@ def fake_capture(tmp_path):
     )
     script.chmod(0o755)
     return script
+
+
+def test_optest_records_cases_on_the_scheduled_device(tmp_path):
+    build = tmp_path / "build"
+    capture_dir = build / "ctest"
+    capture_dir.mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text("BACKEND:STRING=PPU\n")
+    fake_capture(capture_dir).rename(capture_dir / "numpy_fft_capture")
+    cli = build / "flagfft-cli"
+    cli.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os\n"
+        "assert os.environ['CUDA_VISIBLE_DEVICES'] == '3'\n"
+        "assert os.environ['PPU_VISIBLE_DEVICES'] == '3'\n"
+        "print(json.dumps({'cases': [{'timing': {"
+        "'flagfft_median_ms': 0.01, 'ref_median_ms': 0.02, 'speedup': 2.0"
+        "}}]}))\n"
+    )
+    cli.chmod(0o755)
+    env = {
+        **os.environ,
+        "FLAGFFT_BUILD_DIR": str(build),
+        "FLAGFFT_OPTEST_FULL": "0",
+        "FLAGFFT_NUMPY_CAPTURE_FULL_BATCH": "0",
+        "FAKE_CAPTURE_PLATFORM_MODE": "corrupt",
+        "CUDA_VISIBLE_DEVICES": "3",
+        "PPU_VISIBLE_DEVICES": "0",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
+    op = "1d_ct_single_c2c"
+    for path, option, argument, phase in (
+        ("tests/", "--ref", "cpu", "accuracy"),
+        ("benchmark/", "--level", "core", "performance"),
+    ):
+        output = tmp_path / f"{phase}.json"
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             path, "-m", op, "--quick", "--record", "json", "--output", str(output),
+             option, argument],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        data = json.loads(output.read_text())
+        if phase == "accuracy":
+            assert len(data) == 4
+            assert all(case["result"] == "passed" for case in data.values())
+            assert all(case["platform_accuracy"]["status"] == "Failed" for case in data.values())
+        else:
+            assert data[op]["result"] == "passed"
+            assert len(data[op]["details"]) == 2
+            for dtype in data[op]["details"]:
+                assert dtype["native_baseline_skip_reason"]
+                assert len(dtype["result"]) == 2
+                for timing in dtype["result"]:
+                    assert timing["latency"] == 0.01
+                    assert timing["speedup"] is None
 
 
 def summary_op_entry(summary, op_id):

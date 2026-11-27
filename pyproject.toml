@@ -25,7 +25,7 @@ requires-python = ">=3.10"
 license = {file = "LICENSE"}
 
 [project.optional-dependencies]
-test = ["numpy>=1.24", "PyYAML>=6", "pytest>=7"]
+test = ["numpy>=1.24", "PyYAML>=6", "pytest>=7", "pybind11"]
 
 [tool.setuptools]
 package-dir = {"" = "python"}
@@ -39,5 +39,6 @@ flagfft_codegen = ["codelet/*.py"]
 
 [tool.pytest.ini_options]
 addopts = ""
+testpaths = ["tests/python", "tests/npu"]
 pythonpath = ["."]
 markers = ["codegen: Python codegen unit tests"]

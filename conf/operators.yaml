@@ -17,6 +17,12 @@
 # FlagFFT C2C/R2C/C2R or Z2Z/D2Z/Z2D API.
 ops:
   - id: 1d_ct_single_c2c
+    description: Single 1D complex-to-complex FFT on the Cooley-Tukey size set.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 1d, single, ct]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 1
     algorithm: ct
@@ -24,6 +30,12 @@ ops:
     sizes: sizes_1d_ct
     dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_single_c2r
+    description: Single 1D complex-to-real inverse FFT on the Cooley-Tukey size set.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 1d, single, ct]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 1
     algorithm: ct
@@ -31,6 +43,12 @@ ops:
     sizes: sizes_1d_ct
     dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_single_r2c
+    description: Single 1D real-to-complex forward FFT on the Cooley-Tukey size set.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 1d, single, ct]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 1
     algorithm: ct
@@ -38,6 +56,12 @@ ops:
     sizes: sizes_1d_ct
     dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_batch_c2c
+    description: Batched 1D complex-to-complex FFT on the Cooley-Tukey size set.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 1d, batch, ct]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 1
     algorithm: ct
@@ -45,6 +69,12 @@ ops:
     sizes: sizes_1d_ct
     dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_batch_c2r
+    description: Batched 1D complex-to-real inverse FFT on the Cooley-Tukey size set.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 1d, batch, ct]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 1
     algorithm: ct
@@ -52,6 +82,12 @@ ops:
     sizes: sizes_1d_ct
     dtypes: [torch.float32, torch.float64]
   - id: 1d_ct_batch_r2c
+    description: Batched 1D real-to-complex forward FFT on the Cooley-Tukey size set.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 1d, batch, ct]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 1
     algorithm: ct
@@ -59,6 +95,12 @@ ops:
     sizes: sizes_1d_ct
     dtypes: [torch.float32, torch.float64]
   - id: 1d_fourstep_single_c2c
+    description: Single 1D complex-to-complex FFT on the four-step size set.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 1d, single, fourstep]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 1
     algorithm: fourstep
@@ -66,6 +108,12 @@ ops:
     sizes: sizes_1d_fourstep
     dtypes: [torch.float32, torch.float64]
   - id: 1d_fourstep_single_c2r
+    description: Single 1D complex-to-real inverse FFT on the four-step size set.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 1d, single, fourstep]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 1
     algorithm: fourstep
@@ -73,6 +121,12 @@ ops:
     sizes: sizes_1d_fourstep
     dtypes: [torch.float32, torch.float64]
   - id: 1d_fourstep_single_r2c
+    description: Single 1D real-to-complex forward FFT on the four-step size set.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 1d, single, fourstep]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 1
     algorithm: fourstep
@@ -80,6 +134,12 @@ ops:
     sizes: sizes_1d_fourstep
     dtypes: [torch.float32, torch.float64]
   - id: 1d_fourstep_batch_c2c
+    description: Batched 1D complex-to-complex FFT on the four-step size set.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 1d, batch, fourstep]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 1
     algorithm: fourstep
@@ -87,6 +147,12 @@ ops:
     sizes: sizes_1d_fourstep
     dtypes: [torch.float32, torch.float64]
   - id: 1d_fourstep_batch_c2r
+    description: Batched 1D complex-to-real inverse FFT on the four-step size set.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 1d, batch, fourstep]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 1
     algorithm: fourstep
@@ -94,6 +160,12 @@ ops:
     sizes: sizes_1d_fourstep
     dtypes: [torch.float32, torch.float64]
   - id: 1d_fourstep_batch_r2c
+    description: Batched 1D real-to-complex forward FFT on the four-step size set.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 1d, batch, fourstep]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 1
     algorithm: fourstep
@@ -101,6 +173,12 @@ ops:
     sizes: sizes_1d_fourstep
     dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_single_c2c
+    description: Single 1D complex-to-complex FFT on the prime-length size set.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 1d, single, prime]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 1
     algorithm: prime
@@ -108,6 +186,12 @@ ops:
     sizes: sizes_1d_prime
     dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_single_c2r
+    description: Single 1D complex-to-real inverse FFT on the prime-length size set.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 1d, single, prime]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 1
     algorithm: prime
@@ -115,6 +199,12 @@ ops:
     sizes: sizes_1d_prime
     dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_single_r2c
+    description: Single 1D real-to-complex forward FFT on the prime-length size set.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 1d, single, prime]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 1
     algorithm: prime
@@ -122,6 +212,12 @@ ops:
     sizes: sizes_1d_prime
     dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_batch_c2c
+    description: Batched 1D complex-to-complex FFT on the prime-length size set.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 1d, batch, prime]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 1
     algorithm: prime
@@ -129,6 +225,12 @@ ops:
     sizes: sizes_1d_prime
     dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_batch_c2r
+    description: Batched 1D complex-to-real inverse FFT on the prime-length size set.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 1d, batch, prime]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 1
     algorithm: prime
@@ -136,6 +238,12 @@ ops:
     sizes: sizes_1d_prime
     dtypes: [torch.float32, torch.float64]
   - id: 1d_prime_batch_r2c
+    description: Batched 1D real-to-complex forward FFT on the prime-length size set.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 1d, batch, prime]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 1
     algorithm: prime
@@ -143,72 +251,144 @@ ops:
     sizes: sizes_1d_prime
     dtypes: [torch.float32, torch.float64]
   - id: 2d_c2c
+    description: Single 2D complex-to-complex FFT.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 2d, single]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 2
     batch: single
     sizes: sizes_2d
     dtypes: [torch.float32, torch.float64]
   - id: 2d_c2r
+    description: Single 2D complex-to-real inverse FFT.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 2d, single]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 2
     batch: single
     sizes: sizes_2d
     dtypes: [torch.float32, torch.float64]
   - id: 2d_r2c
+    description: Single 2D real-to-complex forward FFT.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 2d, single]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 2
     batch: single
     sizes: sizes_2d
     dtypes: [torch.float32, torch.float64]
   - id: 3d_c2c
+    description: Single 3D complex-to-complex FFT.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 3d, single]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 3
     batch: single
     sizes: sizes_3d
     dtypes: [torch.float32, torch.float64]
   - id: 3d_c2r
+    description: Single 3D complex-to-real inverse FFT.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 3d, single]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 3
     batch: single
     sizes: sizes_3d
     dtypes: [torch.float32, torch.float64]
   - id: 3d_r2c
+    description: Single 3D real-to-complex forward FFT.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 3d, single]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 3
     batch: single
     sizes: sizes_3d
     dtypes: [torch.float32, torch.float64]
   - id: 2d_batch_c2c
+    description: Batched 2D complex-to-complex FFT.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 2d, batch]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 2
     batch: batch
     sizes: sizes_2d
     dtypes: [torch.float32, torch.float64]
   - id: 2d_batch_c2r
+    description: Batched 2D complex-to-real inverse FFT.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 2d, batch]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 2
     batch: batch
     sizes: sizes_2d
     dtypes: [torch.float32, torch.float64]
   - id: 2d_batch_r2c
+    description: Batched 2D real-to-complex forward FFT.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 2d, batch]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 2
     batch: batch
     sizes: sizes_2d
     dtypes: [torch.float32, torch.float64]
   - id: 3d_batch_c2c
+    description: Batched 3D complex-to-complex FFT.
+    for: [flagfftExecC2C, flagfftExecZ2Z]
+    labels: [fft, 3d, batch]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2c
     rank: 3
     batch: batch
     sizes: sizes_3d
     dtypes: [torch.float32, torch.float64]
   - id: 3d_batch_c2r
+    description: Batched 3D complex-to-real inverse FFT.
+    for: [flagfftExecC2R, flagfftExecZ2D]
+    labels: [fft, 3d, batch]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: c2r
     rank: 3
     batch: batch
     sizes: sizes_3d
     dtypes: [torch.float32, torch.float64]
   - id: 3d_batch_r2c
+    description: Batched 3D real-to-complex forward FFT.
+    for: [flagfftExecR2C, flagfftExecD2Z]
+    labels: [fft, 3d, batch]
+    kind: [Math]
+    stages:
+      - stable: "0.1.0"
     api: r2c
     rank: 3
     batch: batch
