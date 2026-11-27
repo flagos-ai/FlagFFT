@@ -340,6 +340,77 @@ def _emit_radix16_codelet_call(
     return lines
 
 
+def _emit_ix_split_radix_codelet(indent, radix, direction):
+    """Emit the register butterflies for the dense IX 2048-point leaf."""
+    lines = []
+    sign = _direction_sign(direction)
+
+    def combine(prefix, a, b, subtract=False):
+        op = "-" if subtract else "+"
+        pair = (prefix + "r", prefix + "i")
+        lines.extend(f"{indent}{dst} = {left} {op} {right}"
+                     for dst, left, right in zip(pair, a, b))
+        return pair
+
+    def rotate(prefix, pair, numerator, length):
+        phase = (4 * numerator) % (4 * length)
+        real, imag = pair
+        if phase == 0:
+            return pair
+        if phase == length:
+            return (f"({-sign:g} * {imag})", f"({sign:g} * {real})")
+        if phase == 2 * length:
+            return (f"(-{real})", f"(-{imag})")
+        if phase == 3 * length:
+            return (f"({sign:g} * {imag})", f"({-sign:g} * {real})")
+        angle = sign * 2.0 * math.pi * numerator / length
+        wr, wi = math.cos(angle), math.sin(angle)
+        result = (prefix + "r", prefix + "i")
+        if abs(abs(wr) - abs(wi)) < 1e-14:
+            sign_w = "+" if wr * wi > 0 else "-"
+            sign_h = "-" if sign_w == "+" else "+"
+            c = _fmt_const(wr)
+            lines.extend([f"{indent}{result[0]} = {c} * ({real} {sign_h} {imag})",
+                          f"{indent}{result[1]} = {c} * ({imag} {sign_w} {real})"])
+        else:
+            lines.append(f"{indent}{result[0]}, {result[1]} = _cmul("
+                         f"{real}, {imag}, {_fmt_const(wr)}, {_fmt_const(wi)})")
+        return result
+
+    def fft(values, prefix):
+        n = len(values)
+        if n == 1:
+            return values
+        even = fft(values[::2], prefix + "e")
+        result = [None] * n
+        if n >= 8:
+            odd1 = fft(values[1::4], prefix + "a")
+            odd3 = fft(values[3::4], prefix + "b")
+            quarter = n // 4
+            for k in range(quarter):
+                u = rotate(f"{prefix}u{k}", odd1[k], k, n)
+                v = rotate(f"{prefix}v{k}", odd3[k], 3 * k, n)
+                total = combine(f"{prefix}s{k}", u, v)
+                diff = combine(f"{prefix}d{k}", u, v, subtract=True)
+                rotated = rotate(f"{prefix}h{k}", diff, 1, 4)
+                result[k] = combine(f"{prefix}f{k}", even[k], total)
+                result[k + 2 * quarter] = combine(f"{prefix}g{k}", even[k], total, subtract=True)
+                result[k + quarter] = combine(f"{prefix}j{k}", even[k + quarter], rotated)
+                result[k + 3 * quarter] = combine(f"{prefix}m{k}", even[k + quarter], rotated, subtract=True)
+        else:
+            odd = fft(values[1::2], prefix + "o")
+            for k in range(n // 2):
+                t = rotate(f"{prefix}t{k}", odd[k], k, n)
+                result[k] = combine(f"{prefix}s{k}", even[k], t)
+                result[k + n // 2] = combine(f"{prefix}d{k}", even[k], t, subtract=True)
+        return result
+
+    output = fft([(f"r{i}", f"i{i}") for i in range(radix)], "reg")
+    for i, (real, imag) in enumerate(output):
+        lines.extend([f"{indent}r{i} = {real}", f"{indent}i{i} = {imag}"])
+    return lines
+
+
 def _emit_local_radix32_codelet_call(
     indent: str, direction: Literal["forward", "inverse"]
 ) -> list[str]:
@@ -1134,6 +1205,7 @@ def _emit_portable_exchange(
     register_lane_stride: int = 1,
     register_slot_stride: int | None = None,
     allow_mixed_direct: bool = True,
+    next_lane_block: int | None = None,
 ) -> list[str]:
     """Invert the codelet routing and gather from each register tensor.
 
@@ -1183,7 +1255,7 @@ def _emit_portable_exchange(
                     buffer,
                     factors[stage + 1],
                     n,
-                    lane_block,
+                    next_lane_block if next_lane_block is not None else lane_block,
                     pack,
                     interleaved=register_lane_stride > 1,
                 )
@@ -1508,6 +1580,7 @@ def _emit_stage_block(
     packed_smem_alias: bool = False,
     ix_split_frequency: bool = False,
     ix_split_c2r: bool = False,
+    ix_compact_tail: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1521,6 +1594,14 @@ def _emit_stage_block(
         else current_lanes
     )
     groups = n // (current_lanes * radix)
+    next_lane_block = None
+    if ix_compact_tail:
+        # Keep the first exchange at its existing width. The final radix can
+        # use its exact lane count when the preceding exchange emits it.
+        if stage == 2:
+            lane_block = current_lanes
+        elif stage == 1:
+            next_lane_block = next_lanes
     compact_npu_stage = (portable_exchange and _npu_backend_active()
         and os.environ.get("FLAGFFT_NPU_COMPACT_STAGES") == "1"
         and any(factor & (factor-1) for factor in factors)
@@ -1695,6 +1776,8 @@ def _emit_stage_block(
                 lines.append("    perm_gbase_vector = perm_i1_vector * (nbatch // perm_span) + perm_i0_vector")
         else:
             lines.append(f"    perm_gbase_vector = perm_i0_vector * ({n} * perm_span) + perm_i1_vector")
+    if ix_compact_tail:
+        lines.extend([f"    lane = tl.arange(0, {lane_block})", f"    base_lane_mask = lane < {current_lanes}"])
     if compact_npu_stage:
         lines.append(f"    lane_vec = tl.arange(0, {lane_block*smem_pack})")
         if inner_pack > 1:
@@ -2513,7 +2596,9 @@ def _emit_stage_block(
         if setting not in {'0','1'}:
             raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
         ix_register_prime=setting=='1'
-    if ix_register_prime:
+    if ix_compact_tail:
+        lines.extend(_emit_ix_split_radix_codelet(indent, radix, direction))
+    elif ix_register_prime:
         from .ix_prime_codelets import emit_prime_codelet
         lines.extend(emit_prime_codelet(indent,radix,direction))
     elif radix == 16:
@@ -3139,6 +3224,7 @@ def _emit_stage_block(
                     register_lane_stride=inner_pack if inner_pack > 1 else 1,
                     register_slot_stride=1 if inner_pack > 1 else lane_block,
                     allow_mixed_direct=mixed_direct_layout,
+                    next_lane_block=next_lane_block,
                 )
             )
     elif not is_last:
@@ -4033,6 +4119,15 @@ def _build_leaf_kernel_source_for_io(
     packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
                          and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
+    from .target import ix_ct_batch_default_enabled, ix_fourstep_preset
+
+    ix_compact_tail = (
+        _ix_backend_active() and current_profile().device_arch == "71"
+        and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
+        and n == 2048 and factors == (16, 8, 16) and plan.dtype == "complex64" and plan.num_warps == 4
+        and io_mode == "contiguous" and portable_exchange and smem_pack == 1
+        and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
+    )
     if portable_exchange and len(factors) > 1:
         # The MetaX plugin cannot lower the warp-shuffle path, so the exchange
         # must gather from a tensor wider than one 64-thread warp.  Packing
@@ -4497,6 +4592,7 @@ def _build_leaf_kernel_source_for_io(
                 packed_smem_alias=packed_smem_alias,
                 ix_split_frequency=ix_split_frequency,
                 ix_split_c2r=ix_split_c2r,
+                ix_compact_tail=ix_compact_tail,
             )
         )
 
