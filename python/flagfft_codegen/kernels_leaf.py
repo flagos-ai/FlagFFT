@@ -340,7 +340,7 @@ def _emit_radix16_codelet_call(
     return lines
 
 
-def _emit_ix_register_codelet(indent, radix, direction, *, split_radix=False, real_input=False):
+def _emit_ix_register_codelet(indent, radix, direction, *, split_radix):
     """Emit the register butterflies used by the dense IX CT leaves."""
     lines = []
     sign = _direction_sign(direction)
@@ -407,9 +407,6 @@ def _emit_ix_register_codelet(indent, radix, direction, *, split_radix=False, re
 
     output = fft([(f"r{i}", f"i{i}") for i in range(radix)], "reg")
     for i, (real, imag) in enumerate(output):
-        if real_input and i > radix // 2:
-            real, imag = output[radix - i]
-            imag = f"-{imag}"
         lines.extend([f"{indent}r{i} = {real}", f"{indent}i{i} = {imag}"])
     return lines
 
@@ -1584,7 +1581,7 @@ def _emit_stage_block(
     ix_split_frequency: bool = False,
     ix_split_c2r: bool = False,
     ix_compact_tail: bool = False,
-    ix_real_input_codelet: bool = False,
+    ix_real_ct_codelet: bool = False,
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -2600,10 +2597,8 @@ def _emit_stage_block(
         if setting not in {'0','1'}:
             raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
         ix_register_prime=setting=='1'
-    if ix_compact_tail:
-        lines.extend(_emit_ix_register_codelet(indent, radix, direction, split_radix=True))
-    elif ix_real_input_codelet:
-        lines.extend(_emit_ix_register_codelet(indent, radix, direction, real_input=stage == 0))
+    if ix_compact_tail or ix_real_ct_codelet:
+        lines.extend(_emit_ix_register_codelet(indent, radix, direction, split_radix=ix_compact_tail))
     elif ix_register_prime:
         from .ix_prime_codelets import emit_prime_codelet
         lines.extend(emit_prime_codelet(indent,radix,direction))
@@ -2673,9 +2668,6 @@ def _emit_stage_block(
 
     for j in range(radix):
         if is_last:
-            if ix_real_input_codelet and j * math.prod(factors[:-1]) > n // 2:
-                # The remaining radix outputs lie outside the Hermitian spectrum.
-                continue
             if (io_mode == "contiguous_r2c" and _npu_backend_active()
                     and j * math.prod(factors[:-1]) >= n//2+1):
                 # These frequencies are outside the compact spectrum. Avoid
@@ -4140,7 +4132,7 @@ def _build_leaf_kernel_source_for_io(
         and factors == (16, 8, 16) and plan.num_warps == 4 and io_mode == "contiguous"
         and _maca_knob("EXCHANGE") in {"direct", "direct_all"}
     )
-    ix_real_input_codelet = (
+    ix_real_ct_codelet = (
         ix_ct_batch_leaf and ix_fourstep_preset() == 11 and n == 1024
         and factors == (16, 8, 8) and plan.num_warps == 2 and io_mode == "contiguous_r2c"
     )
@@ -4609,7 +4601,7 @@ def _build_leaf_kernel_source_for_io(
                 ix_split_frequency=ix_split_frequency,
                 ix_split_c2r=ix_split_c2r,
                 ix_compact_tail=ix_compact_tail,
-                ix_real_input_codelet=ix_real_input_codelet,
+                ix_real_ct_codelet=ix_real_ct_codelet,
             )
         )
 
