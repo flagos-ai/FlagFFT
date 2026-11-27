@@ -781,6 +781,7 @@ def emit_jit_kernel(
         "maca_3d_prime_c2r64": (64, 4, 32),
         "maca_3d_prime_outer16": (16, 4, 64),
         "maca_3d_prime_outer16_wide": (16, 8, 128),
+        "maca_3d_prime_outer16_narrow": (16, 2, 32),
     }.get(perm_form) if kernel == "leaf" or maca_c2r210 else None
     maca_prime_dif = perm_form.startswith("maca_prime_dif_")
     maca_packed_column = perm_form in {
@@ -846,11 +847,12 @@ def emit_jit_kernel(
             from .kernels_maca_pfa import build_maca_fp32_fft210_pfa
 
             kernel_name, kernel_source = build_maca_fp32_fft210_pfa(direction, real_inverse=maca_c2r210)
-        elif perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide"}:
+        elif perm_form in {"maca_3d_prime_outer16", "maca_3d_prime_outer16_wide", "maca_3d_prime_outer16_narrow"}:
             from .kernels_maca_dif import build_maca_3d_prime_real_outer
 
             kernel_name, kernel_source = build_maca_3d_prime_real_outer(
-                direction, fp64=dtype == "complex128", wide=perm_form.endswith("_wide"),
+                direction, fp64=dtype == "complex128",
+                wide=perm_form.endswith("_wide"), narrow=perm_form.endswith("_narrow"),
             )
         elif maca_real48_forward or maca_real48_inverse:
             from .kernels_maca_dif import (

@@ -636,16 +636,19 @@ def build_maca_3d_real_boundary(
     return name, source
 
 
-def build_maca_3d_prime_real_outer(direction: str, *, fp64: bool, wide: bool = False) -> tuple[str, str]:
+def build_maca_3d_prime_real_outer(
+    direction: str, *, fp64: bool, wide: bool = False, narrow: bool = False,
+) -> tuple[str, str]:
     precision = "fp64" if fp64 else "fp32"
     inverse = direction == "inverse"
-    if wide and (inverse or fp64):
-        raise ValueError("the wide outer tile requires forward FP32")
-    half_tile, middle_tile = (4, 16) if inverse else (32 if wide else 16, 4)
+    if (wide or narrow) and (inverse or fp64):
+        raise ValueError("the tuned outer tiles require forward FP32")
+    forward_half_tile = 8 if narrow else 32 if wide else 16
+    half_tile, middle_tile = (4, 16) if inverse else (forward_half_tile, 4)
     tile = half_tile * middle_tile
     middle_tiles = (997 + middle_tile - 1) // middle_tile
     tiles_per_batch = ((33 + half_tile - 1) // half_tile) * middle_tiles
-    suffix = "_4x16" if inverse else ("_32x4" if wide else "")
+    suffix = f"_{half_tile}x{middle_tile}" if inverse or wide or narrow else ""
     name = f"maca_{precision}_3d_prime_outer16_{direction}{suffix}"
     source_layout, target_layout = ("middle_major", "half_major") if inverse else (
         "half_major", "middle_major"
