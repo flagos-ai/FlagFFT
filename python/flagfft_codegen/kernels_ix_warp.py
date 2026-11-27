@@ -338,7 +338,7 @@ def _build_ix_pfa210(mode, inverse, batch_pack=0, fold=False):
                       f"    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)"]
             if mode == "c2r":
                 lines += [f"    x{j}i=tl.where((k==0)|(k==105),0.0,tl.where(k>105,-x{j}i,x{j}i))"]
-    def fold(radix, frequency, source, result):
+    def emit_radix_dft(radix, frequency, source, result):
         lines.extend([f"    {result}r={source}0r", f"    {result}i={source}0i"])
         for j in range(1, (radix + 1)//2):
             other = radix - j
@@ -356,21 +356,21 @@ def _build_ix_pfa210(mode, inverse, batch_pack=0, fold=False):
                           f"    {result}r=tl.fma(edge,{source}{radix//2}r,{result}r)",
                           f"    {result}i=tl.fma(edge,{source}{radix//2}i,{result}i)"])
     axis = 1 if batch_pack else 0
-    fold(7, "band", "x", "a")
+    emit_radix_dft(7, "band", "x", "a")
     for j in range(5):
         index = f"{6*j}+q"
         if batch_pack:
             index = f"tl.broadcast_to({index},({batch_pack},32))"
         lines += [f"    v{j}r=tl.gather(ar,{index},{axis})",
                   f"    v{j}i=tl.gather(ai,{index},{axis})"]
-    fold(5, "p", "v", "b")
+    emit_radix_dft(5, "p", "v", "b")
     for j in range(6):
         index = f"6*p+{j}"
         if batch_pack:
             index = f"tl.broadcast_to({index},({batch_pack},32))"
         lines += [f"    w{j}r=tl.gather(br,{index},{axis})",
                   f"    w{j}i=tl.gather(bi,{index},{axis})"]
-    fold(6, "q", "w", "y")
+    emit_radix_dft(6, "q", "w", "y")
     lines += ["    k=(126*p+175*q+120*band)%210", "    valid=(lane<30)&active"]
     if mode == "c2r":
         lines += ["    tl.store(out_ptr+output_base+k,yr,valid)"]
