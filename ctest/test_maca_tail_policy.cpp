@@ -350,11 +350,11 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
             flagfft::PlanKey::from_node(plan).repr());
-  const auto fp64_forward_mode = flagfft::maca_tail_codegen_root(other);
-  EXPECT_EQ(fp64_forward_mode, "z2z340200-column-phase");
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_forward_mode, KernelKind::FourStepCol,
-                                          "complex128", 378, 900, 378), fp64_forward_mode);
-  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_forward_mode, KernelKind::FourStepCol,
+  const auto fp64_column_mode = flagfft::maca_tail_codegen_root(other);
+  EXPECT_EQ(fp64_column_mode, "z2z340200-column-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_column_mode, KernelKind::FourStepCol,
+                                          "complex128", 378, 900, 378), fp64_column_mode);
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_column_mode, KernelKind::FourStepCol,
                                           "complex128", 900, 378, 900), "off");
   setenv("FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT", "0", 1);
   EXPECT_FALSE(flagfft::maca_340200_single_split_enabled(other));
@@ -363,10 +363,10 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_TRUE(flagfft::maca_340200_single_split_enabled(other));
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
             flagfft::PlanKey::from_node(plan).repr());
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(other), fp64_column_mode);
+  setenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE", "0", 1);
   const auto fp64_mode = flagfft::maca_tail_codegen_root(other);
   EXPECT_EQ(fp64_mode, "z2z340200-single");
-  setenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE", "1", 1);
-  EXPECT_EQ(flagfft::maca_tail_codegen_root(other), fp64_forward_mode);
   unsetenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepRow, "complex128", 900, 900, 378),
             fp64_mode);

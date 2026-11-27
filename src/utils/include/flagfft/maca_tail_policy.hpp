@@ -248,12 +248,11 @@ inline bool maca_340200_fp32_batch_900x378_enabled() {
 
 inline bool maca_340200_fp64_column_phase_enabled(const FFTRequest& request) {
   if (request.input_dtype != "complex128") return false;
-  if (request.direction == "inverse") {
-    const char* setting = std::getenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE");
-    return setting && std::string_view(setting) == "1";
-  }
-  const char* setting = std::getenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE");
-  return request.direction == "forward" && (!setting || std::string_view(setting) == "1");
+  const bool inverse = request.direction == "inverse";
+  if (!inverse && request.direction != "forward") return false;
+  const char* setting = std::getenv(inverse ? "FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE"
+                                          : "FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE");
+  return !setting || std::string_view(setting) == "1";
 }
 
 inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
