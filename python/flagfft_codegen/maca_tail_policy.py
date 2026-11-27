@@ -35,7 +35,8 @@ def set_maca_tail_mode(mode):
                     "r2c663000", "batch-c2r663000", "batch-c2r663000-split", "c2c340200-split",
                     "c2c340200-single", "c2c340200-inverse-pack", "c2c340200-batch-900x378",
                     "c2c340200-single-row-phase", "c2c340200-inverse-pack-row-phase",
-                    "z2z340200-split", "z2z340200-single", "batch-real340200-split", "batch-real16384-split",
+                    "z2z340200-split", "z2z340200-single", "z2z340200-forward-column-phase",
+                    "batch-real340200-split", "batch-real16384-split",
                     "batch-real524288-row4", "batch-real524288-split",
                     "batch-real185640-p2", "batch-real185640-p4",
                     "c2c16384-row-twiddle", "c2c16384-tiled-row-phase",
@@ -76,6 +77,7 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
                 ("c2c340200-inverse-pack-row-phase", "complex64"),
                 ("c2c340200-batch-900x378", "complex64"),
                 ("z2z340200-single", "complex128"),
+                ("z2z340200-forward-column-phase", "complex128"),
             } and (n1, n2) == (900, 378)
             and (kernel, length) in {("four_step_row", n1), ("four_step_col", n2)}):
         return _root_mode.get()
@@ -160,6 +162,9 @@ def resource_default(name):
         return {"VEC_IO": "packed", "INNER_PACK": "2", "MAX_WARPS": "4"}.get(name)
     if _kernel_mode.get() in {"c2c340200-single", "z2z340200-single"}:
         return {"VEC_IO": "packed", "MAX_WARPS": "8"}.get(name)
+    if _kernel_mode.get() == "z2z340200-forward-column-phase":
+        return {"VEC_IO": "packed", "FOURSTEP_ROW_PACK": "2", "FOURSTEP_COL_PACK": "2",
+                "MAX_WARPS": "8", "COL_TWIDDLE_RECURRENCE": "1"}.get(name)
     if _kernel_mode.get() == "c2c340200-inverse-pack":
         return {"VEC_IO": "packed", "MAX_WARPS": "8", "FOURSTEP_ROW_PACK": "1",
                 "FOURSTEP_COL_PACK": "2"}.get(name)

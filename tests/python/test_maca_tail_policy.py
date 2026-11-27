@@ -478,6 +478,23 @@ def test_340200_single_row_phase_keeps_the_twiddle_abi(tmp_path, direction, mode
         assert ("tw_r9, tw_i9 = _cmul(tw_r8, tw_i8, step_r, step_i)" in source) == (axis == "row")
 
 
+def test_340200_fp64_forward_column_phase_uses_the_existing_table(tmp_path):
+    set_maca_tail_mode("z2z340200-forward-column-phase")
+    for axis, length, factors, lanes, warps in (
+        ("row", 900, (10, 9, 10), 10, 4),
+        ("col", 378, (7, 6, 9), 3, 2),
+    ):
+        metadata = emit_jit_kernel(kernel=f"four_step_{axis}", length=length, factors=factors,
+            lanes=lanes, num_warps=2, generic_radices=(), smem_size=1 << (length - 1).bit_length(),
+            direction="forward", dtype="complex128", prime_n=0, four_step_n1=900,
+            four_step_n2=378, out_dir=tmp_path)
+        assert (metadata["inner_pack"], metadata["num_warps"]) == (2, warps)
+        assert ("twiddle_ptr" in metadata["arg_names"]) == (axis == "col")
+        source = Path(metadata["module_path"]).read_text()
+        assert ("step_index = (four_step_inner + 48600) * 2" in source) == (axis == "col")
+        assert ("tw_r6, tw_i6 = _cmul(tw_r5, tw_i5, phase_step_r, phase_step_i)" in source) == (axis == "col")
+
+
 @pytest.mark.parametrize("axis,length,factors,lanes,pack,max_warps", [
     ("row", 900, (10, 10, 9), 10, 2, 4),
     ("col", 378, (9, 7, 6), 3, 4, 8),

@@ -1401,6 +1401,9 @@ def _emit_stage_block(
         and use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, dtype)
     )
     recurrent_row_twiddle = maca_row_twiddle and resource_default("ROW_TWIDDLE_RECURRENCE") == "1"
+    recurrent_col_twiddle = (
+        io_mode == "four_step_col" and resource_default("COL_TWIDDLE_RECURRENCE") == "1"
+    )
     scratch_tile = int(resource_default("FOURSTEP_SCRATCH_TILE") or 0)
 
     def tiled_scratch_offset(row: str, col: str) -> str:
@@ -2219,6 +2222,20 @@ def _emit_stage_block(
                                 dtype,
                             )
                         )
+                    else:
+                        lines.append(
+                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                        lines.append(
+                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                            f"mask=lane_mask, other={zero})"
+                        )
+                    if recurrent_col_twiddle and j:
+                        lines.append(
+                            f"{indent}tw_r{j}, tw_i{j} = _cmul(tw_r{j - 1}, tw_i{j - 1}, phase_step_r, phase_step_i)"
+                        )
+                    elif vectorized_complex_io and not recurrent_col_twiddle:
                         lines.extend(
                             _emit_vectorized_complex_load(
                                 indent,
@@ -2229,14 +2246,14 @@ def _emit_stage_block(
                             )
                         )
                     else:
-                        lines.append(
-                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
-                            f"mask=lane_mask, other={zero})"
-                        )
-                        lines.append(
-                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
-                            f"mask=lane_mask, other={zero})"
-                        )
+                        if recurrent_col_twiddle:
+                            # The radix inputs advance by the same frequency stride.
+                            phase_mask = "lane_mask" if inner_pack > 1 else f"four_step_inner < {four_step_n1}"
+                            lines.extend([
+                                f"{indent}step_index = (four_step_inner + {(n // radix) * four_step_n1}) * 2",
+                                f"{indent}phase_step_r = tl.load(twiddle_ptr + step_index, mask={phase_mask}, other=1.0)",
+                                f"{indent}phase_step_i = tl.load(twiddle_ptr + step_index + 1, mask={phase_mask}, other=0.0)",
+                            ])
                         lines.append(
                             f"{indent}tw_r{j} = tl.load(twiddle_ptr + src_idx{j} * 2, mask=lane_mask, other={zero})"
                         )
