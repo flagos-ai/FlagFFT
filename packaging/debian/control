@@ -22,17 +22,17 @@ X-Build-Environment: This package is designed to be built in a CUDA container
  .
  - Ubuntu 22.04 or 24.04 + CUDA 12.8 (nvidia/cuda:12.8.0-devel-ubuntu22.04 or
    nvidia/cuda:12.8.0-devel-ubuntu24.04)
- - Distro system Python 3 (3.10 on Ubuntu 22.04, 3.12 on Ubuntu 24.04) with
-   PyTorch 2.10.0+cu128, Triton 3.6.0 and pybind11 3.0.3 via pip (pinned in
+ - Distro system Python 3 with PyTorch 2.10.0+cu128, Triton 3.6.0 and
+   pybind11 3.0.3 via pip (pinned in
    packaging/debian/build-helpers/python-build-requirements.txt)
- - fmt (>= 8.1.1), SQLite3 via system packages; nlohmann-json >= 3.11.3
-   (distro package on Ubuntu 24.04; header-only backport on Ubuntu 22.04)
+ - fmt (>= 8.1.1), SQLite3, and nlohmann-json (>= 3.10.5) via native system
+   packages
  .
  The Build-Depends listed above are for the Debian packaging tools only.
  CUDA and Python deps are provided by the container environment.
 
 Package: libflagfft-nvidia
-Architecture: amd64
+Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, python3
 Recommends: python3-flagtree-nvidia
 Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
@@ -45,12 +45,11 @@ Description: FlagFFT — C++ FFT library for FlagOS (NVIDIA backend)
  invoked at plan creation time.
  .
  The JIT code generator uses the system Python 3 interpreter embedded by
- libflagfft (3.10 on Ubuntu 22.04, 3.12 on Ubuntu 24.04). It does not
- require the separately packaged libtriton-jit runtime.
+ libflagfft. It does not require the separately packaged libtriton-jit runtime.
 
 Package: libflagfft-nvidia-dev
 Section: libdevel
-Architecture: amd64
+Architecture: any
 Depends: libflagfft-nvidia (= ${binary:Version}), ${misc:Depends}
 Description: FlagFFT development files (NVIDIA backend)
  FlagFFT is a cuFFT-style FFT library with Triton/TLE code generation.

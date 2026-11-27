@@ -8,6 +8,11 @@ export DEB_BUILD_OPTIONS ?= parallel=$(shell nproc)
 	dh $@
 
 override_dh_auto_configure:
+	# Apply packaging patches when building in-place under 3.0 (native) format
+	# until the deps/libtriton_jit submodule pointer picks up the 3.10.5 floor.
+	if grep -q 'find_package(nlohmann_json 3\.11\.[0-9]* REQUIRED)' deps/libtriton_jit/CMakeLists.txt; then \
+		patch -p1 --forward < debian/patches/0001-triton-jit-relax-nlohmann-json-floor.patch; \
+	fi
 	# fmt, nlohmann-json, and SQLite come from distro development packages;
 	# Torch, Triton, and pybind11 come from the pinned Python build environment.
 	# Note: no -GNinja — dh-cmake defaults to "Unix Makefiles" and

@@ -1,0 +1,18 @@
+Description: Align bundled libtriton_jit nlohmann_json floor with upstream 3.10.5
+ Upstream flagos-ai/libtriton_jit (commit b13c112) and FlagFFT itself only
+ require nlohmann_json >= 3.10.5. Relax the floor in the pinned submodule until
+ the submodule pointer advances so every target distribution builds directly
+ against its native nlohmann-json3-dev / nlohmann-json-devel package.
+Forwarded: https://github.com/flagos-ai/libtriton_jit/commit/b13c112
+
+--- a/deps/libtriton_jit/CMakeLists.txt
++++ b/deps/libtriton_jit/CMakeLists.txt
+@@ -221,7 +221,7 @@
+ # ==============================================================================
+ # --- nlohmann_json ---
+ if(TRITON_JIT_USE_EXTERNAL_JSON)
+-    find_package(nlohmann_json 3.11.3 REQUIRED)
++    find_package(nlohmann_json 3.10.5 REQUIRED)
+ else()
+     github_url(JSON_URL "nlohmann/json/releases/download/v3.11.3/json.tar.xz")
+     FetchContent_Declare(json URL ${JSON_URL} DOWNLOAD_EXTRACT_TIMESTAMP ON)
