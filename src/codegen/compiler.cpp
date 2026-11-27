@@ -5241,7 +5241,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_r2c_node(const Plan
       const bool half_columns = four_step->n1 == 512 && four_step->n2 == 1024 &&
           request.device_type == "maca" && request.device_arch == "102" &&
           maca_1d_single_policy_ && batch == 1 && request.origin_rank <= 1 &&
-          request.requested_n == n && request.input_dtype == "complex64" &&
+          n == four_step->length && request.fft_length == n && request.input_dtype == "complex64" &&
           request.real_transform_kind == "r2c" && request.direction == "forward" &&
           !request.convolution_child && !request.packed_real_child &&
           (!plan || !*plan) && maca_tail_policy_enabled(request) &&
