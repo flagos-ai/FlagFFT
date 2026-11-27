@@ -1492,14 +1492,68 @@ def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
     return body
 
 
-def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int, bank_shift: int | None = None) -> list[str]:
+def _emit_ix_flat_r2c_finish(n: int, lanes: int) -> list[str]:
+    # One lane produces k and k+n/2. This gives the real finish two
+    # contiguous output bands and a single masked Nyquist store.
+    half = n // 2
+    body = [
+        "    lane_mask = batch_id < nbatch",
+        f"    k = tl.arange(0, {half})",
+        f"    q = (-k) & {half - 1}",
+        "    finish_out = out_ptr + 2 * batch_id * output_distance",
+    ]
+    for name, index in (("a", "k"), ("b", "q")):
+        for digit in (0, 1):
+            logical = f"{name}{digit}_index"
+            body.append(f"    {logical} = {index} + ({index} & {-lanes}) + {digit*lanes}")
+            for component in ("r", "i"):
+                body.append(f"    {name}{digit}_{component} = tl.load("
+                            f"tle.gpu.local_ptr(smem_b_{component}, ({logical},)), lane_mask, 0.0)")
+    body.extend([
+        "    wr = tl.load(packed_twiddle_ptr + 2 * k, lane_mask, 0.0)",
+        "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, lane_mask, 0.0)",
+    ])
+    # The radix-two rotation is the square of the reconstruction root.
+    body.extend(["    twr = wr * wr - wi * wi", "    twi = (wr + wr) * wi"])
+    body.extend([
+        "    a1_r, a1_i = _cmul(a1_r, a1_i, twr, twi)",
+        "    b1_r, b1_i = _cmul(b1_r, b1_i, -twr, twi)",
+        "    ar, ai = a0_r + a1_r, a0_i + a1_i",
+        "    br, bi = a0_r - a1_r, a0_i - a1_i",
+        "    cr, ci = b0_r + b1_r, b0_i + b1_i",
+        "    dr, di = b0_r - b1_r, b0_i - b1_i",
+    ])
+    for a, b, wr, wi, offset, edge_r, edge_i in (
+        ("a", "d", "wr", "wi", 0, "ar + ai", "0.0"),
+        ("b", "c", "wi", "-wr", half, "br", "-bi"),
+    ):
+        body.extend([
+            f"    diff_r = {a}r - {b}r",
+            f"    sum_i = {a}i + {b}i",
+            f"    out_r = 0.5 * ({a}r + {b}r + ({wi}) * diff_r + ({wr}) * sum_i)",
+            f"    out_i = 0.5 * ({a}i - {b}i - ({wr}) * diff_r + ({wi}) * sum_i)",
+            f"    out_r = tl.where(k == 0, {edge_r}, out_r)",
+            f"    out_i = tl.where(k == 0, {edge_i}, out_i)",
+        ])
+        pointer = f"finish_out + 2 * (k + {offset})"
+        if _packed_maca_fp32_complex_io("complex64"):
+            body.extend(_emit_vectorized_complex_store("    ", pointer, "out_r", "out_i", "lane_mask", "complex64"))
+        else:
+            body.extend([f"    tl.store({pointer}, out_r, lane_mask)",
+                         f"    tl.store({pointer} + 1, out_i, lane_mask)"])
+    body.extend([
+        f"    tl.store(finish_out + {2*n} + 2*k, ar - ai, lane_mask & (k == 0))",
+        f"    tl.store(finish_out + {2*n+1} + 2*k, 0.0, lane_mask & (k == 0))",
+    ])
+    return body
+
+
+def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
     # Both final butterflies for k and n/2-k feed the same packed real
     # reconstruction. Keep intermediate FFT values in the original tile.
     half = n // 2
     shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
     swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
-    if bank_shift is not None:
-        shift, swizzle = bank_shift, bank_shift > 0
     body = [
         "    finish_mask = batch_id < nbatch",
         "    finish_out = out_ptr + 2 * batch_id * output_distance",
@@ -1594,7 +1648,7 @@ def _emit_stage_block(
     ix_split_c2r: bool = False,
     ix_compact_tail: bool = False,
     ix_real_ct_codelet: bool = False,
-    ix_dif_packed_real: bool = False,
+    ix_short_packed_real: bool = False,
     ix_packed_bank_shifts: tuple[int, ...] = (),
 ) -> list[str]:
     radix = factors[stage]
@@ -2615,9 +2669,9 @@ def _emit_stage_block(
         if setting not in {'0','1'}:
             raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
         ix_register_prime=setting=='1'
-    if ix_compact_tail or ix_real_ct_codelet or ix_dif_packed_real:
+    if ix_compact_tail or ix_real_ct_codelet or ix_short_packed_real:
         lines.extend(_emit_ix_register_codelet(
-            indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_dif_packed_real
+            indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_short_packed_real
         ))
     elif ix_register_prime:
         from .ix_prime_codelets import emit_prime_codelet
@@ -4023,17 +4077,24 @@ def _build_leaf_kernel_source_for_io(
         raise ValueError("packed R2C leaf requires portable exchange or an enabled native packed boundary")
     factors = emitted_leaf_factors(plan, io_mode)
     n = plan.length
+    from .target import ix_ct_batch_default_enabled, ix_fourstep_preset
+
+    ix_short_packed_real = (
+        ix_packed_tle and io_mode == "packed_r2c"
+        and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
+        and n == 1024 and factors == (8, 8, 8, 2) and plan.num_warps == 4
+    )
     inner_perm_form = perm_form in {"inner", "inner_middle", "inner_middle_c2r_cube"}
     smem_n = plan.smem_size
     stage_lanes = (
         tuple(n // radix for radix in factors)
-        if portable_exchange
+        if portable_exchange or ix_short_packed_real
         else cooperative_stage_lanes_for(plan)
     )
     uses_cooperative_stage_lanes = portable_exchange or any(
         lanes != plan.lanes for lanes in stage_lanes
     )
-    active_lanes = max(stage_lanes, default=plan.lanes)
+    active_lanes = max(stage_lanes[:-1] if ix_short_packed_real else stage_lanes, default=plan.lanes)
     lane_block = lane_block_for(active_lanes)
     contiguous_modes = {
         "contiguous",
@@ -4140,15 +4201,11 @@ def _build_leaf_kernel_source_for_io(
     packed_smem_alias = (native_packed_cta and native_packed_r2c and single_smem_buffer
                          and len(factors) > 1 and n == stage_lanes[-1] * factors[-1])
     smem_pack = max(batch_pack, inner_pack)
-    from .target import ix_ct_batch_default_enabled, ix_fourstep_preset
-
-    ix_dif_packed_real = (
-        ix_packed_r2c_finish and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
-        and n == 1024 and factors == (8, 8, 8, 2) and plan.num_warps == 4
-    )
     # Each exchange uses its own permutation. The final radix two reads
     # contiguous frequency bands directly from the unpermuted tile.
-    ix_packed_bank_shifts = (6, 3, 0) if ix_dif_packed_real and _maca_knob("SMEM_SWIZZLE", "0") == "1" else ()
+    ix_packed_bank_shifts = (
+        (5, 3, 0) if ix_short_packed_real and _maca_knob("SMEM_SWIZZLE", "0") == "1" else ()
+    )
     ix_ct_batch_leaf = (
         _ix_backend_active() and current_profile().device_arch == "71"
         and ix_ct_batch_default_enabled() and plan.dtype == "complex64"
@@ -4593,8 +4650,10 @@ def _build_leaf_kernel_source_for_io(
             body.extend(_emit_ix_packed_c2r_radix2(n))
             continue
         if ix_packed_r2c_finish and stage == len(factors) - 1:
-            finish_shift = ix_packed_bank_shifts[-1] if ix_packed_bank_shifts else None
-            body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage, finish_shift))
+            if ix_short_packed_real:
+                body.extend(_emit_ix_flat_r2c_finish(n, stage_lanes[stage]))
+            else:
+                body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage))
             break
         body.extend(
             _emit_stage_block(
@@ -4630,7 +4689,7 @@ def _build_leaf_kernel_source_for_io(
                 ix_split_c2r=ix_split_c2r,
                 ix_compact_tail=ix_compact_tail,
                 ix_real_ct_codelet=ix_real_ct_codelet,
-                ix_dif_packed_real=ix_dif_packed_real,
+                ix_short_packed_real=ix_short_packed_real,
                 ix_packed_bank_shifts=ix_packed_bank_shifts,
             )
         )
