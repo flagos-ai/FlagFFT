@@ -1037,6 +1037,7 @@ namespace {
     int64_t pack = small_batch ? (request.real_transform_kind=="c2r" ? 1 : 4) :
                      request.ix_warp_fft_pack_default>0 ? request.ix_warp_fft_pack_default :
                      (small_leaf ? 1 : key.length <= 256 ? 16 : (key.length <= 1024 ? 8 : 4));
+    if (small_batch && request.real_transform_kind == "r2c") pack = 16;
     if (const char *value = performance_env(key.length == 256
                                          ? "FLAGFFT_IX_WARP256_PACK" : "FLAGFFT_IX_WARP_FFT_PACK")) {
       const std::string text(value);
