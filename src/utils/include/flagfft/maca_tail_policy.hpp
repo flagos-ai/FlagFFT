@@ -463,7 +463,7 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
     return request.input_dtype == "complex128" ? "batch-real185640-p4" : "batch-real185640-p2";
   }
   if (maca_16384_fp32_batch_row_twiddle_enabled(request)) {
-    if (maca_16384_fp32_batch_row_phase_enabled(request)) return "c2c16384-row-phase";
+    if (maca_16384_fp32_batch_row_phase_enabled(request)) return "c2c16384-tiled-row-phase";
     return "c2c16384-row-twiddle";
   }
   if (maca_16384_fp64_batch_split_enabled(request)) return "z2z16384-split";
@@ -559,7 +559,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
   if (root == "batch-prime-vecio" &&
       (kind == KernelKind::RaderPrepare || kind == KernelKind::RaderFinalize) &&
       (dtype == "complex64" || dtype == "complex128")) return "batch-prime-rader-vecio";
-  if ((root == "c2c16384-row-twiddle" || root == "c2c16384-row-phase") &&
+  if ((root == "c2c16384-row-twiddle" || root == "c2c16384-tiled-row-phase") &&
       dtype == "complex64" && n1 == 256 && n2 == 64 &&
       ((kind == KernelKind::FourStepRow && length == n1) ||
        (kind == KernelKind::FourStepCol && length == n2))) return root;

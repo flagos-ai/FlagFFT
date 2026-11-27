@@ -560,7 +560,7 @@ TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
                                          "complex64", 128, 128, 128), "off");
   setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE", "1", 1);
   const auto phase_mode = flagfft::maca_tail_codegen_root(r);
-  EXPECT_EQ(phase_mode, "c2c16384-row-phase");
+  EXPECT_EQ(phase_mode, "c2c16384-tiled-row-phase");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepCol,
                                          "complex64", 64, 256, 64), phase_mode);
   flagfft::PlanBuilder builder;

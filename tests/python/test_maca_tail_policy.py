@@ -364,10 +364,10 @@ def test_batch_split_resources_are_local_to_the_fourstep_axes(mode, dtype, n1, n
 
 
 @pytest.mark.parametrize("direction", ["forward", "inverse"])
-@pytest.mark.parametrize("padded", [False, True])
-def test_16384_fp32_row_twiddle_preserves_the_fourstep_launch_abi(tmp_path, direction, padded):
-    set_maca_tail_mode("c2c16384-row-phase" if padded else "c2c16384-row-twiddle")
-    col_factors = (8, 8) if padded else (4, 4, 4)
+@pytest.mark.parametrize("tiled", [False, True])
+def test_16384_fp32_row_twiddle_preserves_the_fourstep_launch_abi(tmp_path, direction, tiled):
+    set_maca_tail_mode("c2c16384-tiled-row-phase" if tiled else "c2c16384-row-twiddle")
+    col_factors = (8, 8) if tiled else (4, 4, 4)
     for axis, length, factors, pack, warps in (
         ("row", 256, (4, 4, 4, 4), 4, 4), ("col", 64, col_factors, 8, 2),
     ):
@@ -384,10 +384,10 @@ def test_16384_fp32_row_twiddle_preserves_the_fourstep_launch_abi(tmp_path, dire
         assert metadata["arg_names"][:len(expected)] == expected
         source = Path(metadata["module_path"]).read_text()
         assert ("tl.cos(outer_angle0)" in source) == (axis == "row")
-        assert ("step_angle = four_step_inner * 64" in source) == (padded and axis == "row")
-        scratch_offset = ("four_step_inner * 288 + out_idx0" if axis == "row"
-                          else "in0 * 288 + four_step_inner")
-        assert (f"four_step_batch * 18432 + {scratch_offset}" in source) == padded
+        assert ("step_angle = four_step_inner * 64" in source) == (tiled and axis == "row")
+        row, col = ("four_step_inner", "out_idx0") if axis == "row" else ("in0", "four_step_inner")
+        scratch_offset = f"(({col}) // 8 * 64 + {row}) * 8 + ({col}) % 8"
+        assert (f"four_step_batch * 16384 + {scratch_offset}" in source) == tiled
         assert "sin.approx.f32" not in source
     assert eligible_kernel_mode("four_step_row", 128, "complex64", 128, 128) == "off"
     assert eligible_kernel_mode("four_step_row", 256, "complex128", 256, 64) == "off"

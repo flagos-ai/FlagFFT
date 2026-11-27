@@ -4349,9 +4349,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
     const int64_t element_bytes = complex_element_bytes(request.input_dtype);
     if (row_leaf != nullptr && col_leaf != nullptr) {
       DeviceAllocation twiddle = build_raw_four_step_twiddle(request, four_step->n1, four_step->n2);
-      const int64_t scratch_span = maca_tail_policy_ == "c2c16384-row-phase" && n1 == 256 && n2 == 64
-          ? 288 * n2 : four_step->length;
-      const auto workspace_bytes = static_cast<std::size_t>(batch * scratch_span * element_bytes);
+      const auto workspace_bytes = static_cast<std::size_t>(batch * four_step->length * element_bytes);
       DeviceAllocation stage1 = adaptor::Memory(workspace_bytes);
       auto row_kernel = compile_four_step_row_kernel(*row_leaf, request, n1, n2);
       const bool split_fp32 = maca_663000_c2c_enabled(request) &&

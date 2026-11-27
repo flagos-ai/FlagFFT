@@ -323,7 +323,7 @@ def main() -> None:
                                  "batch-real340200-split", "batch-real16384-split",
                                  "batch-real524288-row4", "batch-real524288-split",
                                  "batch-real185640-p2", "batch-real185640-p4",
-                                 "c2c16384-row-twiddle", "c2c16384-row-phase",
+                                 "c2c16384-row-twiddle", "c2c16384-tiled-row-phase",
                                  "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"),
                         default="off")
     parser.add_argument(

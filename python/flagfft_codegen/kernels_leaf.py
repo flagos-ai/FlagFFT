@@ -1401,7 +1401,15 @@ def _emit_stage_block(
         and use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, dtype)
     )
     recurrent_row_twiddle = maca_row_twiddle and resource_default("ROW_TWIDDLE_RECURRENCE") == "1"
-    four_step_scratch_pitch = int(resource_default("FOURSTEP_SCRATCH_PITCH") or four_step_n1)
+    scratch_tile = int(resource_default("FOURSTEP_SCRATCH_TILE") or 0)
+
+    def tiled_scratch_offset(row: str, col: str) -> str:
+        # Both passes address scratch by column tile, row, then column within the tile.
+        return (
+            f"four_step_batch * {four_step_n1 * four_step_n2} + "
+            f"(({col}) // {scratch_tile} * {four_step_n2} + {row}) * {scratch_tile} + ({col}) % {scratch_tile}"
+        )
+
     smem_swizzle = (fuse_twiddle_into_row and not maca_row_twiddle) or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
@@ -2179,9 +2187,8 @@ def _emit_stage_block(
                 )
                 if fuse_twiddle_into_row or maca_rader_phase:
                     src_offset = f"four_step_batch_base + src_idx{j}"
-                    if four_step_scratch_pitch != four_step_n1:
-                        batch_span = four_step_scratch_pitch * four_step_n2
-                        src_offset = f"four_step_batch * {batch_span} + in{j} * {four_step_scratch_pitch} + four_step_inner"
+                    if scratch_tile:
+                        src_offset = tiled_scratch_offset(f"in{j}", "four_step_inner")
                     if vectorized_complex_io:
                         lines.extend(
                             _emit_vectorized_complex_load(
@@ -2819,11 +2826,8 @@ def _emit_stage_block(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
                 dst_offset = f"four_step_batch_base + dst_idx{j}"
-                if four_step_scratch_pitch != four_step_n1:
-                    batch_span = four_step_scratch_pitch * four_step_n2
-                    dst_offset = (
-                        f"four_step_batch * {batch_span} + four_step_inner * {four_step_scratch_pitch} + out_idx{j}"
-                    )
+                if scratch_tile:
+                    dst_offset = tiled_scratch_offset("four_step_inner", f"out_idx{j}")
                 if vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_store(
