@@ -7196,7 +7196,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
       request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
       request.input_strides == std::vector<int64_t>{n0 * n1 * n2, n1 * n2, n2, 1} &&
-      maca_flag_or_default("FLAGFFT_MACA_3D_FP64_CUBE_NATIVE_TRANSPOSE", false);
+      maca_flag_or_default("FLAGFFT_MACA_3D_FP64_CUBE_NATIVE_TRANSPOSE", true);
 #endif
   return compiled;
 }
