@@ -340,7 +340,7 @@ def _emit_radix16_codelet_call(
     return lines
 
 
-def _emit_ix_register_codelet(indent, radix, direction, *, split_radix):
+def _emit_ix_register_codelet(indent, radix, direction, *, split_radix, decimation_in_frequency=False):
     """Emit the register butterflies used by the dense IX CT leaves."""
     lines = []
     sign = _direction_sign(direction)
@@ -381,6 +381,16 @@ def _emit_ix_register_codelet(indent, radix, direction, *, split_radix):
         n = len(values)
         if n == 1:
             return values
+        if decimation_in_frequency:
+            half = n // 2
+            sums = [combine(f"{prefix}s{k}", values[k], values[k + half]) for k in range(half)]
+            differences = [
+                rotate(f"{prefix}t{k}", combine(f"{prefix}d{k}", values[k], values[k + half], subtract=True), k, n)
+                for k in range(half)
+            ]
+            even = fft(sums, prefix + "e")
+            odd = fft(differences, prefix + "o")
+            return [pair for group in zip(even, odd) for pair in group]
         even = fft(values[::2], prefix + "e")
         result = [None] * n
         if split_radix and n >= 8:
@@ -1482,12 +1492,14 @@ def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
     return body
 
 
-def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int) -> list[str]:
+def _emit_ix_packed_r2c_finish(n: int, lanes: int, stage: int, bank_shift: int | None = None) -> list[str]:
     # Both final butterflies for k and n/2-k feed the same packed real
     # reconstruction. Keep intermediate FFT values in the original tile.
     half = n // 2
     shift = int(_maca_knob("SMEM_SWIZZLE_SHIFT", "3"))
     swizzle = _maca_knob("SMEM_SWIZZLE", "0") == "1"
+    if bank_shift is not None:
+        shift, swizzle = bank_shift, bank_shift > 0
     body = [
         "    finish_mask = batch_id < nbatch",
         "    finish_out = out_ptr + 2 * batch_id * output_distance",
@@ -1582,6 +1594,8 @@ def _emit_stage_block(
     ix_split_c2r: bool = False,
     ix_compact_tail: bool = False,
     ix_real_ct_codelet: bool = False,
+    ix_dif_packed_real: bool = False,
+    ix_packed_bank_shifts: tuple[int, ...] = (),
 ) -> list[str]:
     radix = factors[stage]
     current_lanes = stage_lanes[stage] if stage_lanes is not None else lanes
@@ -1716,6 +1730,10 @@ def _emit_stage_block(
         if not 1 <= swizzle_shift <= 8:
             raise ValueError("FLAGFFT_HCU_3D_SMEM_SWIZZLE_SHIFT must be in [1, 8]")
     is_last = stage == len(factors) - 1
+    read_bank_shift = write_bank_shift = swizzle_shift if smem_swizzle else 0
+    if ix_packed_bank_shifts:
+        read_bank_shift = ix_packed_bank_shifts[stage - 1] if stage > 0 else 0
+        write_bank_shift = ix_packed_bank_shifts[stage] if not is_last else 0
     source_buffer = (
         None
         if stage == 0
@@ -1899,10 +1917,10 @@ def _emit_stage_block(
             lines.append(f"{indent}phys{j} = logical_phys{j} + smem_offset")
         else:
             lines.append(f"{indent}phys{j} = logical_phys{j}")
-        if smem_swizzle and stage > 0:
+        if read_bank_shift and stage > 0:
             lines.append(
                 f"{indent}smem_phys{j} = logical_phys{j} ^ "
-                f"(logical_phys{j} >> {swizzle_shift})"
+                f"(logical_phys{j} >> {read_bank_shift})"
             )
             if smem_interleave:
                 lines.append(f"{indent}smem_phys{j} = smem_phys{j} * {smem_pack} + {interleave_slot}")
@@ -2515,7 +2533,7 @@ def _emit_stage_block(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
         else:
-            load_index = f"smem_phys{j}" if smem_swizzle else f"phys{j}"
+            load_index = f"smem_phys{j}" if read_bank_shift else f"phys{j}"
             lines.extend(
                 _emit_exchange_load(
                     indent, source_buffer, load_index, j, portable_exchange,
@@ -2597,8 +2615,10 @@ def _emit_stage_block(
         if setting not in {'0','1'}:
             raise ValueError('FLAGFFT_IX_RADER_CODELET must be 0 or 1')
         ix_register_prime=setting=='1'
-    if ix_compact_tail or ix_real_ct_codelet:
-        lines.extend(_emit_ix_register_codelet(indent, radix, direction, split_radix=ix_compact_tail))
+    if ix_compact_tail or ix_real_ct_codelet or ix_dif_packed_real:
+        lines.extend(_emit_ix_register_codelet(
+            indent, radix, direction, split_radix=ix_compact_tail, decimation_in_frequency=ix_dif_packed_real
+        ))
     elif ix_register_prime:
         from .ix_prime_codelets import emit_prime_codelet
         lines.extend(emit_prime_codelet(indent,radix,direction))
@@ -3164,10 +3184,10 @@ def _emit_stage_block(
                 _emit_route_index(indent, f"dst{j}", stage, factors, next_lanes, j)
             )
             store_index = f"dst{j}"
-            if smem_swizzle:
+            if write_bank_shift:
                 lines.append(
                     f"{indent}smem_dst{j} = dst{j} ^ "
-                    f"(dst{j} >> {swizzle_shift})"
+                    f"(dst{j} >> {write_bank_shift})"
                 )
                 if smem_interleave:
                     lines.append(f"{indent}smem_dst{j} = smem_dst{j} * {smem_pack} + {interleave_slot}")
@@ -4122,6 +4142,13 @@ def _build_leaf_kernel_source_for_io(
     smem_pack = max(batch_pack, inner_pack)
     from .target import ix_ct_batch_default_enabled, ix_fourstep_preset
 
+    ix_dif_packed_real = (
+        ix_packed_r2c_finish and ix_ct_batch_default_enabled() and ix_fourstep_preset() == 9
+        and n == 1024 and factors == (8, 8, 8, 2) and plan.num_warps == 4
+    )
+    # Each exchange uses its own permutation. The final radix two reads
+    # contiguous frequency bands directly from the unpermuted tile.
+    ix_packed_bank_shifts = (6, 3, 0) if ix_dif_packed_real and _maca_knob("SMEM_SWIZZLE", "0") == "1" else ()
     ix_ct_batch_leaf = (
         _ix_backend_active() and current_profile().device_arch == "71"
         and ix_ct_batch_default_enabled() and plan.dtype == "complex64"
@@ -4566,7 +4593,8 @@ def _build_leaf_kernel_source_for_io(
             body.extend(_emit_ix_packed_c2r_radix2(n))
             continue
         if ix_packed_r2c_finish and stage == len(factors) - 1:
-            body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage))
+            finish_shift = ix_packed_bank_shifts[-1] if ix_packed_bank_shifts else None
+            body.extend(_emit_ix_packed_r2c_finish(n, stage_lanes[stage], stage, finish_shift))
             break
         body.extend(
             _emit_stage_block(
@@ -4602,6 +4630,8 @@ def _build_leaf_kernel_source_for_io(
                 ix_split_c2r=ix_split_c2r,
                 ix_compact_tail=ix_compact_tail,
                 ix_real_ct_codelet=ix_real_ct_codelet,
+                ix_dif_packed_real=ix_dif_packed_real,
+                ix_packed_bank_shifts=ix_packed_bank_shifts,
             )
         )
 
