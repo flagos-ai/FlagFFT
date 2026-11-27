@@ -7526,8 +7526,21 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
       (packed_real_setting == nullptr || std::string(packed_real_setting) != "0") &&
       maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_FUSED_AXES", true);
   if (maca_fused_prime_axes) {
-    auto real_axis = compile_raw_leaf(*n2_leaf, n2_request,
-        inverse ? MacaLeafLayout::RealPrimeInverse64 : MacaLeafLayout::RealPrimeForward64);
+    std::shared_ptr<CompiledRawNode> real_axis;
+#if defined(FLAGFFT_MACA_NATIVE_KERNELS)
+    if (!inverse && request.input_dtype == "complex64" &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_NATIVE_FIRST", false)) {
+      auto roots = make_maca_sdk_roots<float>(n2 / 2, false);
+      const auto phase = make_maca_sdk_roots<float>(n2, false);
+      roots.insert(roots.end(), phase.begin(), phase.end());
+      real_axis = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots),
+          CompiledRawMacaLongAxisNode::Stage::PrimeR2CFp32);
+    }
+#endif
+    if (!real_axis) {
+      real_axis = compile_raw_leaf(*n2_leaf, n2_request,
+          inverse ? MacaLeafLayout::RealPrimeInverse64 : MacaLeafLayout::RealPrimeForward64);
+    }
     const ScopedBool prime_dif_scope(maca_3d_prime_dif_,
         maca_flag_or_default("FLAGFFT_MACA_3D_REAL_PRIME_DIF", true));
     auto middle = compile_raw_node(node->n1_plan, n1_request, batch * n0 * half);

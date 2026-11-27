@@ -223,6 +223,65 @@ __device__ float2 load_complex(const float* input, std::size_t offset) {
   }
 }
 
+constexpr unsigned prime_real_tile_rows = 32;
+constexpr unsigned prime_real_warps = 4;
+
+template<bool Aligned>
+__global__ void prime_r2c64_fp32(const float* input, float* output, const float2* roots) {
+  constexpr unsigned packed_length = 32;
+  constexpr unsigned half = 33;
+  constexpr unsigned middle_length = 997;
+  constexpr unsigned tiles_per_plane = (middle_length + prime_real_tile_rows - 1) / prime_real_tile_rows;
+  constexpr unsigned rows_per_round = prime_real_warps * wave / packed_length;
+  __shared__ float2 tile[prime_real_tile_rows][half + 1];
+
+  const unsigned thread = threadIdx.x;
+  const unsigned lane = thread % packed_length;
+  const unsigned first_row = (blockIdx.x % tiles_per_plane) * prime_real_tile_rows;
+  const unsigned plane = blockIdx.x / tiles_per_plane;
+  const unsigned frequency = __brev(lane) >> 27;
+  const unsigned mirror_lane = (__brev((-frequency) & (packed_length - 1)) >> 27) +
+                               ((thread % wave) & packed_length);
+  const auto phase = roots[packed_length + frequency];
+  const unsigned first_phase = reverse_radix4_digit((lane >> 3) & 3) * (lane & 7);
+  const unsigned second_phase = reverse_radix4_digit((lane >> 1) & 3) * (lane & 1) * 4;
+
+  #pragma unroll
+  for (unsigned round = 0; round < prime_real_tile_rows / rows_per_round; ++round) {
+    const unsigned row = thread / packed_length + round * rows_per_round;
+    const unsigned middle = first_row + row;
+    const auto index = (static_cast<std::size_t>(plane) * middle_length + middle) * packed_length + lane;
+    auto value = middle < middle_length ? load_complex<Aligned>(input, index) : make_float2(0.0f, 0.0f);
+    value = multiply(first_axis_radix4<8, false, true>(value, lane), roots[first_phase]);
+    value = multiply(first_axis_radix4<2, false, true>(value, lane), roots[second_phase]);
+    const auto partner = exchange<1>(value);
+    value = (lane & 1) ? subtract(partner, value) : add(value, partner);
+    const auto mirror = make_float2(__shfl_sync(lanes, value.x, mirror_lane, wave),
+                                    __shfl_sync(lanes, value.y, mirror_lane, wave));
+    const float dr = value.x - mirror.x;
+    const float di = value.y + mirror.y;
+    tile[row][frequency] = make_float2(0.5f * (value.x + mirror.x + dr * phase.y + di * phase.x),
+                                        0.5f * (value.y - mirror.y - dr * phase.x + di * phase.y));
+    if (lane == 0) tile[row][packed_length] = make_float2(value.x - value.y, 0.0f);
+  }
+  __syncthreads();
+
+  for (unsigned flat = thread; flat < half * prime_real_tile_rows; flat += prime_real_warps * wave) {
+    const unsigned row = flat % prime_real_tile_rows;
+    const unsigned k = flat / prime_real_tile_rows;
+    if (first_row + row < middle_length) {
+      const auto offset = (static_cast<std::size_t>(plane) * half + k) * middle_length + first_row + row;
+      const auto value = tile[row][k];
+      if constexpr (Aligned) {
+        reinterpret_cast<float2*>(output)[offset] = value;
+      } else {
+        output[2 * offset] = value.x;
+        output[2 * offset + 1] = value.y;
+      }
+    }
+  }
+}
+
 template<bool Inverse, bool Aligned, bool TwoShuffle>
 __global__ void fft64_fp32_first(const float* input, float2* output, const float2* roots) {
   constexpr unsigned threads = first_warps<TwoShuffle> * wave;
@@ -343,4 +402,13 @@ extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_long_ax
   return mcLaunchKernel(reinterpret_cast<const void*>(transpose_fp32_middle),
                         dim3(batch * 64 * middle_tiles_per_plane), dim3(middle_warps * wave), args,
                         0, reinterpret_cast<mcStream_t>(stream));
+}
+
+extern "C" __attribute__((visibility("hidden"))) int flagfft_maca_launch_prime_r2c64_fp32(
+    const void* input, void* output, const void* roots, unsigned padded_rows, void* stream) {
+  const auto addresses = reinterpret_cast<std::uintptr_t>(input) | reinterpret_cast<std::uintptr_t>(output);
+  const auto kernel = addresses % alignof(float2) == 0 ? prime_r2c64_fp32<true> : prime_r2c64_fp32<false>;
+  void* args[] = {&input, &output, &roots};
+  return mcLaunchKernel(reinterpret_cast<const void*>(kernel), dim3(padded_rows / prime_real_tile_rows),
+                        dim3(prime_real_warps * wave), args, 0, reinterpret_cast<mcStream_t>(stream));
 }
