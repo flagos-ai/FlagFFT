@@ -32,6 +32,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_340200_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_PACKED_REAL_SPLIT",
                              "FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE",
+                             "FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE",
                              "FLAGFFT_MACA_16384_FP64_BATCH_SPLIT",
                              "FLAGFFT_MACA_524288_FP64_REGISTER_PACK",
                              "FLAGFFT_MACA_524288_FP64_SINGLE_Z2D",
@@ -557,11 +558,29 @@ TEST_F(TailPolicy, C550Fp32Batched16384RowTwiddleStaysWithTheMeasuredAxes) {
                                          "complex64", 64, 256, 64), mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(mode, KernelKind::FourStepRow,
                                          "complex64", 128, 128, 128), "off");
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_PHASE", "1", 1);
+  const auto phase_mode = flagfft::maca_tail_codegen_root(r);
+  EXPECT_EQ(phase_mode, "c2c16384-row-phase");
+  EXPECT_EQ(flagfft::maca_tail_kernel_mode(phase_mode, KernelKind::FourStepCol,
+                                         "complex64", 64, 256, 64), phase_mode);
+  flagfft::PlanBuilder builder;
+  const auto plan = std::dynamic_pointer_cast<flagfft::FourStepPlanNode>(builder.build(16384, r));
+  ASSERT_NE(plan, nullptr);
+  EXPECT_EQ(plan->n1, 256);
+  EXPECT_EQ(plan->n2, 64);
+  const auto col = std::dynamic_pointer_cast<flagfft::LeafPlanNode>(plan->col_plan);
+  ASSERT_NE(col, nullptr);
+  EXPECT_EQ(col->factors, (std::vector<int64_t>{8, 8}));
+  setenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE", "0", 1);
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
+  unsetenv("FLAGFFT_MACA_16384_FP32_BATCH_ROW_TWIDDLE");
   r.batch = 1;
   EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
   r.batch = 64;
   r.input_dtype = r.output_dtype = "complex128";
   EXPECT_NE(flagfft::maca_tail_codegen_root(r), mode);
+  EXPECT_NE(flagfft::maca_tail_codegen_root(r), phase_mode);
 }
 
 TEST_F(TailPolicy, C550BatchedFp64_16384UsesTheMeasuredSplit) {

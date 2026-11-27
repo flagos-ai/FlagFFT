@@ -585,6 +585,9 @@ PlanNodePtr PlanBuilder::build(int64_t n, const FFTRequest &request) {
     // The measured batch splits distribute the C550 column stage more evenly.
     const int64_t n1 = n == 16384 ? 256 : 884;
     const int64_t n2 = n / n1;
+    if (n == 16384 && maca_16384_fp32_batch_row_phase_enabled(request)) {
+      return std::make_shared<FourStepPlanNode>(n, n1, n2, build_auto_node(n1, false), make_leaf_plan(n2, {8, 8}));
+    }
     return std::make_shared<FourStepPlanNode>(n, n1, n2,
                                               build_auto_node(n1, false), build_auto_node(n2, false));
   }

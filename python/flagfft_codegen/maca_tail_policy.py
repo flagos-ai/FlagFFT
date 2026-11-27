@@ -38,7 +38,8 @@ def set_maca_tail_mode(mode):
                     "z2z340200-split", "z2z340200-single", "batch-real340200-split", "batch-real16384-split",
                     "batch-real524288-row4", "batch-real524288-split",
                     "batch-real185640-p2", "batch-real185640-p4",
-                    "c2c16384-row-twiddle", "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"}:
+                    "c2c16384-row-twiddle", "c2c16384-row-phase",
+                    "z2z16-pack16", "z2z16384-split", "z2z524288-pack4"}:
         raise ValueError(f"Invalid MACA tail mode: {mode!r}")
     return _root_mode.set(mode)
 
@@ -65,9 +66,10 @@ def eligible_kernel_mode(kernel, length, dtype, n1=0, n2=0):
     if (_root_mode.get() == "z2z16-pack16" and kernel == "leaf"
             and length == 16 and dtype == "complex128"):
         return "z2z16-pack16"
-    if (_root_mode.get() == "c2c16384-row-twiddle" and dtype == "complex64" and (n1, n2) == (256, 64)
+    if (_root_mode.get() in {"c2c16384-row-twiddle", "c2c16384-row-phase"}
+            and dtype == "complex64" and (n1, n2) == (256, 64)
             and (kernel, length) in {("four_step_row", n1), ("four_step_col", n2)}):
-        return "c2c16384-row-twiddle"
+        return _root_mode.get()
     if ((_root_mode.get(), dtype) in {
                 ("c2c340200-single", "complex64"), ("c2c340200-inverse-pack", "complex64"),
                 ("c2c340200-single-row-phase", "complex64"),
@@ -189,9 +191,12 @@ def resource_default(name):
     if _kernel_mode.get() == "z2z16384-split":
         return {"VEC_IO": "1", "EXCHANGE": "direct_all", "FOURSTEP_ROW_PACK": "4",
                 "FOURSTEP_COL_PACK": "8", "MAX_WARPS": "4"}.get(name)
-    if _kernel_mode.get() == "c2c16384-row-twiddle":
-        return {"VEC_IO": "packed", "EXCHANGE": "direct_all", "FOURSTEP_ROW_PACK": "4",
-                "FOURSTEP_COL_PACK": "8", "MAX_WARPS": "8", "ROW_TWIDDLE": "1"}.get(name)
+    if _kernel_mode.get() in {"c2c16384-row-twiddle", "c2c16384-row-phase"}:
+        resources = {"VEC_IO": "packed", "EXCHANGE": "direct_all", "FOURSTEP_ROW_PACK": "4",
+                     "FOURSTEP_COL_PACK": "8", "MAX_WARPS": "8", "ROW_TWIDDLE": "1"}
+        if _kernel_mode.get() == "c2c16384-row-phase":
+            resources.update(ROW_TWIDDLE_RECURRENCE="1", FOURSTEP_SCRATCH_PITCH="288")
+        return resources.get(name)
     if _kernel_mode.get() == "maca_packed_c2r_row":
         return {"VEC_IO": "packed", "EXCHANGE": "direct_all", "INNER_PACK": "4"}.get(name)
     if _kernel_mode.get() == "batch-c2r663000":

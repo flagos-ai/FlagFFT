@@ -1401,6 +1401,7 @@ def _emit_stage_block(
         and use_four_step_row_fused_twiddle(four_step_n1, four_step_n2, dtype)
     )
     recurrent_row_twiddle = maca_row_twiddle and resource_default("ROW_TWIDDLE_RECURRENCE") == "1"
+    four_step_scratch_pitch = int(resource_default("FOURSTEP_SCRATCH_PITCH") or four_step_n1)
     smem_swizzle = (fuse_twiddle_into_row and not maca_row_twiddle) or hcu_smem_swizzle or cuda_smem_swizzle or (
         _ix_backend_active() and not portable_exchange and n & (n - 1) == 0
         and _maca_knob("SMEM_SWIZZLE", "0") == "1"
@@ -2177,11 +2178,15 @@ def _emit_stage_block(
                     f"{indent}src_idx{j} = in{j} * {four_step_n1} + four_step_inner"
                 )
                 if fuse_twiddle_into_row or maca_rader_phase:
+                    src_offset = f"four_step_batch_base + src_idx{j}"
+                    if four_step_scratch_pitch != four_step_n1:
+                        batch_span = four_step_scratch_pitch * four_step_n2
+                        src_offset = f"four_step_batch * {batch_span} + in{j} * {four_step_scratch_pitch} + four_step_inner"
                     if vectorized_complex_io:
                         lines.extend(
                             _emit_vectorized_complex_load(
                                 indent,
-                                f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
+                                f"in_ptr + ({src_offset}) * 2",
                                 "lane_mask",
                                 f"r{j}, i{j}",
                                 dtype,
@@ -2189,11 +2194,11 @@ def _emit_stage_block(
                         )
                     else:
                         lines.append(
-                            f"{indent}r{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2, "
+                            f"{indent}r{j} = tl.load(in_ptr + ({src_offset}) * 2, "
                             f"mask=lane_mask, other={zero})"
                         )
                         lines.append(
-                            f"{indent}i{j} = tl.load(in_ptr + (four_step_batch_base + src_idx{j}) * 2 + 1, "
+                            f"{indent}i{j} = tl.load(in_ptr + ({src_offset}) * 2 + 1, "
                             f"mask=lane_mask, other={zero})"
                         )
                 else:
@@ -2813,11 +2818,17 @@ def _emit_stage_block(
                     lines.append(
                         f"{indent}r{j}, i{j} = _cmul(r{j}, i{j}, tw_r{j}, tw_i{j})"
                     )
+                dst_offset = f"four_step_batch_base + dst_idx{j}"
+                if four_step_scratch_pitch != four_step_n1:
+                    batch_span = four_step_scratch_pitch * four_step_n2
+                    dst_offset = (
+                        f"four_step_batch * {batch_span} + four_step_inner * {four_step_scratch_pitch} + out_idx{j}"
+                    )
                 if vectorized_complex_io:
                     lines.extend(
                         _emit_vectorized_complex_store(
                             indent,
-                            f"out_ptr + (four_step_batch_base + dst_idx{j}) * 2",
+                            f"out_ptr + ({dst_offset}) * 2",
                             f"r{j}",
                             f"i{j}",
                             "lane_mask",
@@ -2826,10 +2837,10 @@ def _emit_stage_block(
                     )
                 else:
                     lines.append(
-                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2, r{j}, mask=lane_mask)"
+                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2, r{j}, mask=lane_mask)"
                     )
                     lines.append(
-                        f"{indent}tl.store(out_ptr + (four_step_batch_base + dst_idx{j}) * 2 + 1, i{j}, mask=lane_mask)"
+                        f"{indent}tl.store(out_ptr + ({dst_offset}) * 2 + 1, i{j}, mask=lane_mask)"
                     )
             elif io_mode == "four_step_r2c_col":
                 lines.append(
