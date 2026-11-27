@@ -4530,8 +4530,10 @@ flagfftResult CompiledRaw3DPrimePlaneNode::execute(adaptor::DevicePtr input,
 CompiledRaw3DFusedCubeNode::CompiledRaw3DFusedCubeNode(
     std::shared_ptr<JitKernel> fft,
     DeviceAllocation tw_r,
-    DeviceAllocation tw_i)
-    : fft(std::move(fft)), tw_r(std::move(tw_r)), tw_i(std::move(tw_i)) {
+    DeviceAllocation tw_i,
+    std::shared_ptr<CompiledRawNode> overlap_fallback)
+    : fft(std::move(fft)), tw_r(std::move(tw_r)), tw_i(std::move(tw_i)),
+      overlap_fallback(std::move(overlap_fallback)) {
 }
 
 std::string CompiledRaw3DFusedCubeNode::describe() const {
@@ -4542,6 +4544,12 @@ flagfftResult CompiledRaw3DFusedCubeNode::execute(adaptor::DevicePtr input,
                                                    adaptor::DevicePtr output,
                                                    const RawExecutionContext &context) const {
   try {
+    if (overlap_fallback) {
+      const auto bytes = static_cast<adaptor::DevicePtr>(
+          context.batch * 16 * 16 * 16 * complex_element_bytes(context.request.input_dtype));
+      const auto distance = std::max(input, output) - std::min(input, output);
+      if (distance < bytes) return overlap_fallback->execute(input, output, context);
+    }
     std::vector<JitKernelArg> args = {
         JitKernelArg::device(input), JitKernelArg::device(output),
         JitKernelArg::device(tw_r.get()), JitKernelArg::device(tw_i.get()),

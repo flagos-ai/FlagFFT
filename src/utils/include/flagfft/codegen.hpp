@@ -1636,16 +1636,18 @@ struct CompiledRaw3DPrimePlaneNode final : CompiledRawNode {
 struct CompiledRaw3DFusedCubeNode final : CompiledRawNode {
   CompiledRaw3DFusedCubeNode(std::shared_ptr<JitKernel> fft,
                             DeviceAllocation tw_r,
-                            DeviceAllocation tw_i);
+                            DeviceAllocation tw_i,
+                            std::shared_ptr<CompiledRawNode> overlap_fallback = {});
   flagfftResult execute(adaptor::DevicePtr input,
                         adaptor::DevicePtr output,
                         const RawExecutionContext &context) const override;
   std::string describe() const override;
-  bool is_single_kernel() const override { return true; }
+  bool is_single_kernel() const override { return !overlap_fallback; }
 
   std::shared_ptr<JitKernel> fft;
   DeviceAllocation tw_r;
   DeviceAllocation tw_i;
+  std::shared_ptr<CompiledRawNode> overlap_fallback;
 };
 
 // Coalesced outer-axis FFT for the small 32-point IX plane route.

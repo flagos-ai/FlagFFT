@@ -6684,9 +6684,24 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
     auto outer_fft = compile_raw_strided_leaf(*n0_leaf, request, plane_size * plane_size);
     DeviceAllocation temp = adaptor::Memory(static_cast<std::size_t>(
         batch * plane_size * plane_size * plane_size * element_bytes));
-    return std::make_shared<CompiledRaw3DFusedPlaneNode>(
+    auto plane = std::make_shared<CompiledRaw3DFusedPlaneNode>(
         plane_size, std::move(plane_fft), std::move(outer_fft), std::move(temp),
         std::move(tw_r), std::move(tw_i));
+    const bool maca_fused_fp64_cube = fused16 && request.device_type == "maca" &&
+        request.device_arch == "102" && batch == 1 && request.batch == batch &&
+        request.raw_dim == 3 && (request.origin_rank == 0 || request.origin_rank == 3) &&
+        !request.real_transform && request.input_dtype == "complex128" && request.output_dtype == "complex128" &&
+        request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+        request.input_strides == std::vector<int64_t>{4096, 256, 16, 1} &&
+        maca_flag_or_default("FLAGFFT_MACA_3D_FP64_FUSED16_CUBE", false);
+    if (maca_fused_fp64_cube) {
+      auto roots = make_maca_dif_roots(16, true, request.direction == "inverse");
+      auto cube_key = KernelKey::fused_16_cube(
+          triton_target_for_request(request), request.direction, request.input_dtype);
+      return std::make_shared<CompiledRaw3DFusedCubeNode>(
+          compile_kernel(cube_key), std::move(roots[0]), std::move(roots[1]), std::move(plane));
+    }
+    return plane;
   }
 
   const char *prime_plane_override = performance_env("FLAGFFT_HCU_3D_PRIME_PLANE");
