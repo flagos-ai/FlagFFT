@@ -6843,7 +6843,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_node(
       const bool inverse = request.direction == "inverse";
       auto roots = make_maca_sdk_roots<float>(n2, inverse);
       using Stage = CompiledRawMacaLongAxisNode::Stage;
-      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_FIRST_TWO_SHUFFLE", false)
+      const auto stage = maca_flag_or_default("FLAGFFT_MACA_3D_LONG_FP32_FIRST_TWO_SHUFFLE", true)
           ? Stage::FirstFp32TwoShuffle : Stage::FirstFp32;
       n2_fft = std::make_shared<CompiledRawMacaLongAxisNode>(DeviceAllocation::from_floats(roots), stage, inverse);
     }
