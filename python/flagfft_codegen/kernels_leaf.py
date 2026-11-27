@@ -1358,18 +1358,34 @@ def _emit_ix_r2c_finish_pairs(n: int, lanes: int, stage: int,
                     f"    {prefix}{digit}_{component} = tl.load(tle.gpu.local_ptr("
                     f"smem_b_{component}, ({address},)), finish_mask, 0.0)"
                 )
+    square_rotation = n == 8192 and _maca_knob("R2C_FINISH_SQUARE_ROTATION", "0") == "1"
+    if square_rotation:
+        # The last radix-2 butterfly uses W_n^k. The real reconstruction
+        # already needs W_(2n)^k, so squaring it removes the stage-table reads.
+        body.extend([
+            "    wr = tl.load(packed_twiddle_ptr + 2 * k, finish_mask, 0.0)",
+            "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
+            "    twr = wr * wr - wi * wi",
+            "    twi = (wr + wr) * wi",
+        ])
+    else:
+        body.extend([
+            f"    twr = tl.load(tw{stage}_r_ptr + a1_index, finish_mask, 0.0)",
+            f"    twi = tl.load(tw{stage}_i_ptr + a1_index, finish_mask, 0.0)",
+        ])
     body.extend([
-        f"    twr = tl.load(tw{stage}_r_ptr + a1_index, finish_mask, 0.0)",
-        f"    twi = tl.load(tw{stage}_i_ptr + a1_index, finish_mask, 0.0)",
         "    a1_r, a1_i = _cmul(a1_r, a1_i, twr, twi)",
         "    b1_r, b1_i = _cmul(b1_r, b1_i, -twr, twi)",
         "    ar, ai = a0_r + a1_r, a0_i + a1_i",
         "    br, bi = a0_r - a1_r, a0_i - a1_i",
         "    cr, ci = b0_r + b1_r, b0_i + b1_i",
         "    dr, di = b0_r - b1_r, b0_i - b1_i",
-        "    wr = tl.load(packed_twiddle_ptr + 2 * k, finish_mask, 0.0)",
-        "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
     ])
+    if not square_rotation:
+        body.extend([
+            "    wr = tl.load(packed_twiddle_ptr + 2 * k, finish_mask, 0.0)",
+            "    wi = tl.load(packed_twiddle_ptr + 2 * k + 1, finish_mask, 0.0)",
+        ])
     for value, partner, frequency, wr, wi, mask in (
         ("a", "d", "k", "wr", "wi", "finish_store_mask"),
         ("b", "c", f"k + {half}", "wi", "-wr", "finish_store_mask"),

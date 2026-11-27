@@ -312,7 +312,18 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       cache_key += ";" + std::string(name) + "=" + (value ? value : default_value);
     }
   }
-  const char *ix_packed_smem_shift = key.perm_form == "ix_c2r_tle" && key.length == 1024 ? "4" : "5";
+  const bool ix_16k_packed_r2c = key.perm_form == "ix_r2c_tle" && key.length == 8192 &&
+                                 ix_fourstep_preset_ == 8;
+  const char *ix_square_rotation = ix_16k_packed_r2c
+      ? performance_env("FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION") : nullptr;
+  const bool square_rotation = ix_16k_packed_r2c &&
+      (!ix_square_rotation || std::string(ix_square_rotation) == "1");
+  if (ix_16k_packed_r2c) {
+    cache_key += ";FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION=" +
+        std::string(ix_square_rotation ? ix_square_rotation : "1");
+  }
+  const char *ix_packed_smem_shift =
+      square_rotation || (key.perm_form == "ix_c2r_tle" && key.length == 1024) ? "4" : "5";
   if (ix_bluestein_cta) {
     for (const auto &[name, default_value] : kIxBluesteinCtaDefaults) {
       const char *value = performance_env(name);
@@ -876,6 +887,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   if (ix_single_prime_cube && !ix_single_prime_warps)
     jit_command << "FLAGFFT_IX_WARPS=2 ";
   if (ix_packed_real_tle) {
+    if (square_rotation && !ix_square_rotation) jit_command << "FLAGFFT_IX_R2C_FINISH_SQUARE_ROTATION=1 ";
     for (const auto &[name, value] : kIxPackedRealTleDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
