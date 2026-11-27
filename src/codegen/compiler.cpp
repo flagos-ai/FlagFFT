@@ -5379,12 +5379,12 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
   const char* packed = std::getenv("FLAGFFT_PACKED_REAL");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
-  if (allow_packed && batch == 1 && maca_1d_2048_scope(request, batch, "complex64") &&
+  if (allow_packed && maca_1d_single_policy_ && batch == 1 && maca_1d_2048_scope(request, batch, "complex64") &&
       request.direction == "inverse" && request.real_transform_kind == "c2r" &&
       request.input_strides == std::vector<int64_t>{1025, 1} &&
       (!packed || std::string_view(packed) != "0") && (!plan || !*plan) &&
       maca_tail_policy_enabled(request) &&
-      maca_flag_or_default("FLAGFFT_MACA_2048_FP32_SINGLE_C2R_NATIVE", false)) {
+      maca_flag_or_default("FLAGFFT_MACA_2048_FP32_SINGLE_C2R_NATIVE", true)) {
     return std::make_shared<CompiledRawMacaFp32C2R2048Node>(
         DeviceAllocation::from_floats(make_maca_sdk_roots<float>(n, false)));
   }
@@ -5610,7 +5610,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
   if (leaf.length == 210 && request.input_dtype == "complex64" &&
       maca_batch_c2c_option_enabled(request, 210, "FLAGFFT_MACA_210_FP32_BATCH_PFA", true)) {
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
-    if (maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_NATIVE", false)) {
+    const bool native_default = std::getenv("FLAGFFT_MACA_210_FP32_BATCH_PFA") == nullptr;
+    if (maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_NATIVE", native_default)) {
       return std::make_shared<CompiledRawMacaFp32FFT210Node>(
           DeviceAllocation::from_floats(make_maca_sdk_roots<float>(210, request.direction == "inverse")));
     }
