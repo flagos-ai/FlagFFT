@@ -212,6 +212,7 @@ def main() -> None:
             "ix_band_r2c_folded",
             "ix_band_c2r",
             "ix_ct_packed_wave_c2r",
+            "ix_r2c_dense_fourstep",
             "inner",
             "inner_dif",
             "inner_dif_chunk1",

@@ -424,7 +424,8 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                          ragged_r2c: bool = False,
                          frequency_bands: int = 0,
                          input_padding: int = 0,
-                         output_padding: int = 0) -> tuple[str, str]:
+                         output_padding: int = 0,
+                         dense_real_io: bool = False) -> tuple[str, str]:
     """Screen register FFTs followed by a lane-local FFT64; no native dispatch."""
     if n not in {16,32,64,128,256,512,1024,2048}:
         raise ValueError("unsupported IX warp FFT length")
@@ -459,6 +460,13 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         raise ValueError("wide wave FFT requires supplied FP64 roots and ordinary math")
     if four_step and (four_step_other<1 or lane_width!=64 or manual_store):
         raise ValueError("invalid IX warp FourStep geometry")
+    if dense_real_io and (
+        n != 128 or four_step_other != 128 or pack != 16 or wide or table_roots or dif_store
+        or mode not in {"four_step_real_row", "four_step_r2c_col"}
+    ):
+        raise ValueError("dense real boundary requires one complete 128-by-128 FP32 matrix")
+    r2c_even_column = dense_real_io and mode == "four_step_r2c_col"
+    row_twiddle_recurrence = dense_real_io and mode == "four_step_real_row"
     if (mode in {"r2c","contiguous_r2c","packed_r2c","four_step_real_row","four_step_r2c_col"} and inverse) or (mode in {"c2r","packed_c2r","four_step_hermitian_row","four_step_c2r_col"} and not inverse):
         raise ValueError("real transform direction disagrees with the I/O mode")
     if dif_store:
@@ -497,6 +505,10 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if strided_output_major: name+='_outtile'
     if packed_output_transpose: name+='_transpose'
     if packed_c2r_input: name+='_packedin'
+    if r2c_even_column: name += "_evencol"
+    if dense_real_io: name += "_denseio"
+    if row_twiddle_recurrence: name += "_rowrec"
+    if dense_real_io: name += "_prerotate"
     if dif_store: name+='_dif'
     a=['import triton','import triton.language as tl','@triton.jit',
        f'def {name}(inp,out,span,nbatch,input_distance,output_distance):',
@@ -546,7 +558,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
               '    valid=valid_row[:,None]']
     if four_step:
         a += [f'    valid=row[:,None]<{four_step_other}',
-              f'    matrix_base=tl.program_id(1)*{n*four_step_other}']
+              '    matrix_base=0' if dense_real_io else f'    matrix_base=tl.program_id(1)*{n*four_step_other}']
     if mode=='outer' or ragged_r2c:
         a += [f'    valid=valid&(((pid%groups)*{pack}+slot[:,None])<span)']
     for j in range(radix):
@@ -555,10 +567,14 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             a += _emit_band_input(n, frequency_bands, mode, sign, j)
         elif four_step:
             # Read adjacent columns together before routing each FFT to a warp.
-            a += [f'    position=(tl.arange(0,64)[:,None]+{j*64})*{four_step_other}+row[None,:]']
+            time = f"2 * tl.arange(0,64)[:,None] + {j}" if r2c_even_column else f"tl.arange(0,64)[:,None] + {j*64}"
+            a += [f'    position=({time})*{four_step_other}+row[None,:]']
+            input_mask = "True" if dense_real_io else f"row[None,:]<{four_step_other}"
+            if dense_real_io:
+                a += [f"    position=tl.max_contiguous(tl.multiple_of(position,(1,{pack})),(1,{pack}))"]
             if mode=='four_step_real_row':
-                a += ['    offset=tl.program_id(1)*input_distance+position',
-                      f'    x{j}r=tl.trans(tl.load(inp+offset,row[None,:]<{four_step_other},0.0))',
+                a += ['    offset=position' if dense_real_io else '    offset=tl.program_id(1)*input_distance+position',
+                      f'    x{j}r=tl.trans(tl.load(inp+offset,{input_mask},0.0))',
                       f'    x{j}i=tl.full(({pack},64),0.0,tl.float64)' if wide else
                       f'    x{j}i=tl.full(({pack},64),0.0,tl.float32)']
                 continue
@@ -571,7 +587,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       f'    x{j}i=tl.trans(tl.load(inp+offset*2+1,row[None,:]<{four_step_other},0.0))']
             else:a += [
                   '    ip=tl.cast(inp,tl.pointer_type(tl.uint64))',
-                  f'    pair=tl.load(ip+offset,row[None,:]<{four_step_other},0)',
+                  f'    pair=tl.load(ip+offset,{input_mask},0)',
                   '    pair=tl.trans(pair)',
                   f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                   f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
@@ -665,7 +681,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                  '    pair=tl.load(ip+offset,valid,0)',
                  f'    x{j}r=tl.cast(tl.cast(pair,tl.uint32),tl.float32,bitcast=True)',
                  f'    x{j}i=tl.cast(tl.cast(pair>>32,tl.uint32),tl.float32,bitcast=True)']
-    if radix==4:
+    if r2c_even_column:
+        a += ["    r0, i0 = x0r, x0i", "    r1, i1 = x1r, x1i"]
+    elif radix==4:
         for c in 'ri': a += [f'    a{c}=x0{c}+x2{c}',f'    b{c}=x1{c}+x3{c}',f'    c{c}=x0{c}-x2{c}',f'    d{c}=x1{c}-x3{c}']
         a+= ['    r0=ar+br','    i0=ai+bi','    r2=ar-br','    i2=ai-bi',
              f'    r1=cr-({sign})*di',f'    i1=ci+({sign})*dr',
@@ -696,7 +714,7 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                               f'    ti=r{hi}*{wi:.17g}+i{hi}*{wr:.17g}']
                     a += [f'    ar=r{lo}',f'    ai=i{lo}',f'    r{lo}=ar+tr',f'    i{lo}=ai+ti',
                           f'    r{hi}=ar-tr',f'    i{hi}=ai-ti']
-    for j in range(1,radix):
+    for j in range(1, 1 if r2c_even_column else radix):
         if root_period and j > 1 and j % root_period:
             a += ['    next_wr=wr*base_wr-wi*base_wi',
                   '    wi=wr*base_wi+wi*base_wr', '    wr=next_wr']
@@ -716,7 +734,9 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
     if dif_store:
         a += _emit_wave_dif(pack, radix, sign, lane_width)
     else:
-        if lane_width==64:
+        if dense_real_io:
+            a.append(f"    rev={_reverse_lane_bits('lane', 6)}")
+        elif lane_width==64:
             a+=['    rev=((lane&1)<<5)|((lane&2)<<3)|((lane&4)<<1)|((lane&8)>>1)|((lane&16)>>3)|((lane&32)>>5)']
         else:
             bits=lane_width.bit_length()-1
@@ -733,6 +753,31 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
         for stage in range(lane_width.bit_length()-1):
             half=1<<stage
             a += [f'    idx=tl.broadcast_to(lane^{half},({pack},{lane_width}))',f'    high=(lane&{half})!=0']
+            if dense_real_io:
+                if half == 2:
+                    a.append("    quarter_turn = (lane & 3) == 3")
+                elif half > 2:
+                    a += [
+                        f"    angle = tl.where(high, (lane & {half - 1}) * {sign * math.pi / half:.17g}, 0.0)",
+                        "    wr = tl.cos(angle)",
+                        "    wi = tl.sin(angle)",
+                    ]
+                for j in range(radix):
+                    r, i = f"r{j}", f"i{j}"
+                    if half == 1:
+                        a += [f"    tr = {r}", f"    ti = {i}"]
+                    elif half == 2:
+                        a += [
+                            f"    tr = tl.where(quarter_turn, {-sign}.0 * {i}, {r})",
+                            f"    ti = tl.where(quarter_turn, {sign}.0 * {r}, {i})",
+                        ]
+                    else:
+                        a += [f"    tr = {r} * wr - {i} * wi", f"    ti = {r} * wi + {i} * wr"]
+                    a += [
+                        f"    {r} = tl.gather(tr, idx, axis=1) + tl.where(high, -tr, tr)",
+                        f"    {i} = tl.gather(ti, idx, axis=1) + tl.where(high, -ti, ti)",
+                    ]
+                continue
             if half==1: a += ['    wr=1.0','    wi=0.0']
             elif half==2: a += ['    wr=tl.where((lane&1)==0,1.0,0.0)',f'    wi=tl.where((lane&1)==0,0.0,{float(sign)})']
             elif wide or table_roots:
@@ -750,6 +795,26 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                       '    tr=br*wr-bi*wi','    ti=br*wi+bi*wr',
                       f'    ar=tl.where(high,pr,r{j})',f'    ai=tl.where(high,pi,i{j})',
                       f'    r{j}=tl.where(high,ar-tr,ar+tr)',f'    i{j}=tl.where(high,ai-ti,ai+ti)']
+    if r2c_even_column:
+        real_bits = "tl.cast(tl.cast(yr, tl.uint32, bitcast=True), tl.uint64)"
+        imag_bits = "tl.cast(tl.cast(yi, tl.uint32, bitcast=True), tl.uint64)"
+        a += [
+            "    k = lane",
+            f"    angle = k * {-2 * math.pi / n:.17g}",
+            "    wr = tl.cos(angle)",
+            "    wi = tl.sin(angle)",
+            "    yr = r0 + (r1 * wr - i1 * wi)",
+            "    yi = i0 + (r1 * wi + i1 * wr)",
+            f"    pair = {real_bits} | ({imag_bits} << 32)",
+            "    dst = tl.cast(out, tl.pointer_type(tl.uint64))",
+            f"    index = tl.trans(k) * {four_step_other} + row[None,:]",
+            f"    index=tl.max_contiguous(tl.multiple_of(index,(1,{pack})),(1,{pack}))",
+            "    tl.store(dst + index, tl.trans(pair))",
+            "    nyquist = tl.cast(tl.cast(r0 - r1, tl.uint32, bitcast=True), tl.uint64)",
+            f"    nyquist_index = {n * four_step_other // 2} + row[:,None] + k",
+            "    tl.store(dst + nyquist_index, nyquist, (k == 0) & (row[:,None] == 0))",
+        ]
+        return _finish_warp_source(name, a, fast_math, 0, False)
     if mode=='packed_r2c':
         a += ['    nyquist_r=r0-i0']
         for j in range(radix):
@@ -767,11 +832,16 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
                   f'    post_i{j}=0.5*(i{j}-bi-wr*dr+wi*di)']
         for j in range(radix):a += [f'    r{j}=post_r{j}',f'    i{j}=post_i{j}']
     if mode in row_modes:
+        if row_twiddle_recurrence:
+            a += [f"    step=row[:,None]*{sign*2*math.pi/(n*four_step_other):.17g}",
+                  "    wr_step=tl.cos(step)", "    wi_step=tl.sin(step)"]
         for j in range(radix):
             if wide or table_roots:
                 a += [f'    root_index=(row[:,None]*{n}+lane*{radix}+{j})*2',
                       '    wr=tl.load(twiddle_ptr+root_index,valid,0.0)',
                       '    wi=tl.load(twiddle_ptr+root_index+1,valid,0.0)']
+            elif row_twiddle_recurrence and j == 1:
+                a += ["    next_r=wr*wr_step-wi*wi_step", "    wi=wr*wi_step+wi*wr_step", "    wr=next_r"]
             else:a += [f'    angle=row[:,None]*(lane*{radix}+{j})*{sign*2*math.pi/(n*four_step_other):.17g}',
                        '    wr=tl.cos(angle)','    wi=tl.sin(angle)']
             a += [f'    tr=r{j}*wr-i{j}*wi',f'    i{j}=r{j}*wi+i{j}*wr',f'    r{j}=tr']
@@ -849,7 +919,10 @@ def build_ix_warp_source(n: int, pack: int = 8, mode: str = "outer", inverse: bo
             a += ['    ptr=out' if wide or mode=='four_step_c2r_col' else '    ptr=tl.cast(out,tl.pointer_type(tl.uint64))']
             if mode in row_modes:
                 a += [f'    address=matrix_base+row[:,None]*{n}+freq[None,:]']
-                if wide_complex:
+                if dense_real_io:
+                    a += [f"    address=tl.max_contiguous(tl.multiple_of(address,(1,{n})),(1,{n}))",
+                          "    tl.store(ptr+address,z)"]
+                elif wide_complex:
                     a += ['    z=tl.join(zr,zi)',
                           f'    tl.store(ptr+address[:,:,None]*2+tl.arange(0,2)[None,None,:],z,(row[:,None]<{four_step_other})[:,:,None])']
                 else:a += [f'    tl.store(ptr+address,z,row[:,None]<{four_step_other})']
@@ -982,11 +1055,13 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
     return leaf_name,source
 
 
-def build_ix_warp_four_step_source(plan, io_mode, n1, n2, params, pack):
+def build_ix_warp_four_step_source(plan, io_mode, n1, n2, params, pack, dense_io=False):
     row=io_mode in {'four_step_row','four_step_real_row','four_step_hermitian_row'}
     other=n2 if row else n1
-    name,source=build_ix_warp_source(plan.length,pack,io_mode,
-        plan.direction=='inverse',fast_math=True,four_step_other=other)
+    name,source=build_ix_warp_source(
+        plan.length, pack, io_mode, plan.direction == "inverse",
+        fast_math=True, four_step_other=other, dense_real_io=dense_io,
+    )
     leaf_name='ix_'+name+'_leaf'
     header=f'def {name}(inp,out,span,nbatch,input_distance,output_distance):'
     aliases='    inp=in_ptr\n    out=out_ptr'

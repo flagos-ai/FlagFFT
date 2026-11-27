@@ -1124,6 +1124,12 @@ namespace {
       pack=std::stoll(text);
     }
     key.ix_warp_fft_pack=pack;
+    if (pack == 16 && request.real_transform_kind == "r2c" &&
+        key.four_step_n1 == 128 && key.four_step_n2 == 128 &&
+        (key.kind == KernelKind::FourStepRealRow || key.kind == KernelKind::FourStepR2CCol) &&
+        qualified_ix_short_real_warp(request)) {
+      key.perm_form = "ix_r2c_dense_fourstep";
+    }
   }
 
   void mark_ix_mixed_fourstep(KernelKey &key, const FFTRequest &request) {

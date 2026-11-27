@@ -989,6 +989,7 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
     }
   }
   if (ix_split_frequency || ix_wave_bands || key.perm_form == "ix_ct_packed_wave_c2r" ||
+      key.perm_form == "ix_r2c_dense_fourstep" ||
       key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
