@@ -2844,6 +2844,16 @@ namespace {
     return rader && rader->prime == 1009 && std::dynamic_pointer_cast<LeafPlanNode>(rader->conv_plan);
   }
 
+  bool ix_ct_packed_c2r_wave_enabled(const FFTRequest &request, int64_t batch) {
+    const bool short_batch = (request.ix_fourstep_preset == 11 && request.requested_n == 1024) ||
+                             (request.ix_fourstep_preset == 9 && request.requested_n == 2048);
+    return short_batch && request.device_type == "ix" && request.device_arch == "71" && request.raw_dim == 1 &&
+           request.origin_rank <= 1 && batch == 64 && request.batch == batch &&
+           request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
+           !performance_env("FLAGFFT_IX_WARPS") &&
+           flag_or_default("FLAGFFT_IX_CT_PACKED_C2R_WAVE", true);
+  }
+
   bool ix_packed_c2r_tle_enabled(const FFTRequest &request, int64_t batch) {
     const int64_t n = request.requested_n;
     const bool qualified_shape = (n == 2048 && request.ix_fourstep_preset == 9) ||
@@ -2880,6 +2890,7 @@ namespace {
     }
     return setting ? std::string(setting) == "1" :
                      (cube_boundary || request.ix_fourstep_preset == 7 ||
+                      ix_ct_packed_c2r_wave_enabled(request, batch) ||
                       ix_packed_c2r_tle_enabled(request, batch));
   }
 
@@ -5217,7 +5228,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
       if (!leaf && std::dynamic_pointer_cast<FourStepPlanNode>(packed_child->plan))
         leaf=ix_fourstep_cta_leaf(packed_child->request,packed,batch);
       leaf = hcu_packed_cta_leaf(std::move(leaf), packed_child->request);
-      const bool ix_packed_tle = leaf && ix_packed_c2r_tle_enabled(request, batch);
+      const bool ix_packed_wave = leaf && ix_ct_packed_c2r_wave_enabled(request, batch);
+      const bool ix_packed_tle = leaf && !ix_packed_wave && ix_packed_c2r_tle_enabled(request, batch);
       if (ix_packed_tle) {
         const int64_t radix = n == 2048 ? 8 : 16;
         const int64_t warps = n == 2048 ? 4 : 8;
@@ -5237,6 +5249,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
             leaf->smem_size);
         key.kind = KernelKind::LeafPackedC2R;
         if (ix_packed_tle) key.perm_form = "ix_c2r_tle";
+        if (ix_packed_wave) key.perm_form = "ix_ct_packed_wave_c2r";
         mark_hcu_packed_grid(key, packed_child->request, batch, *leaf);
         mark_ix_warp_fft(key,request);
         return std::make_shared<CompiledRawPackedC2RFusedLeafNode>(

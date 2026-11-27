@@ -988,7 +988,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       jit_command << " --npu-portable-leaf";
     }
   }
-  if (ix_split_frequency || ix_wave_bands || key.kind == KernelKind::LeafPermutedStore ||
+  if (ix_split_frequency || ix_wave_bands || key.perm_form == "ix_ct_packed_wave_c2r" ||
+      key.kind == KernelKind::LeafPermutedStore ||
       key.kind == KernelKind::LeafStridedPermutedStore ||
       key.kind == KernelKind::LeafR2CPermutedStore ||
       (key.kind == KernelKind::LeafC2R && key.perm_form == "outer_c2r_chunk16") ||

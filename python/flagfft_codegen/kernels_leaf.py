@@ -3860,6 +3860,11 @@ def _build_leaf_kernel_source_for_io(
     from .target import ix_warp_fft_pack
     warp_pack = ix_warp_fft_pack()
     from .backend_profile import current_profile
+    if (_ix_backend_active() and perm_form == "ix_ct_packed_wave_c2r"
+            and plan.dtype == "complex64" and plan.length in {512, 1024}
+            and plan.direction == "inverse" and io_mode == "packed_c2r"):
+        from .kernels_ix_warp import build_ix_ct_packed_inverse_source
+        return build_ix_ct_packed_inverse_source(plan, _leaf_kernel_params_for_io(plan, io_mode=io_mode))
     if (warp_pack and _ix_backend_active() and current_profile().device_arch=='71'
             and current_profile().warp_size==64 and plan.dtype=='complex64'
             and io_mode in {'four_step_row','four_step_col','four_step_real_row',

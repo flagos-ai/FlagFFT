@@ -414,6 +414,10 @@ def _metadata(
             raise ValueError("IX strided columns require complete compact planes")
         strided_grid["grid_x_override"] = (
             (permutation_batch // permutation_span) * ((permutation_span + batch_per_block - 1) // batch_per_block))
+    if kernel_name.startswith("ix_ct_two_wave_") and kernel_name.endswith("_inverse_packed_c2r"):
+        num_warps = 4
+        profile.validate(num_warps)
+        batch_per_block = 1
     if kernel_name == "ix_prime_r2c_last":
         from .kernels_ix_warp import IX_PRIME_R2C_LAST_GRID, PRIME_R2C_LAST_TILE
         num_warps = 1

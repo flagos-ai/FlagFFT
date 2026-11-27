@@ -112,6 +112,117 @@ def _emit_wave_dif(pack, radix, sign, lane_width):
     return lines
 
 
+def _join_ct_columns(lines, values, prefix):
+    if len(values) == 1:
+        return values[0]
+    even = _join_ct_columns(lines, values[::2], prefix + "0")
+    odd = _join_ct_columns(lines, values[1::2], prefix + "1")
+    lines.append(f"    {prefix} = tl.join({even}, {odd})")
+    return prefix
+
+
+def build_ix_ct_packed_inverse_source(plan, params):
+    """Fuse the Hermitian boundary with two local inverse FFT stages."""
+    from .kernels_leaf import _emit_natural_order_codelet_call
+    from .metadata import _module_source
+
+    n = plan.length
+    inner = 256
+    groups = n // inner
+    radix = inner // 64
+    sign = 1
+    name = f"ix_ct_two_wave_{n}_{inner}_inverse_packed_c2r"
+    lines = [
+        "from triton.language.extra import libdevice as ld",
+        "@triton.jit",
+        f"def {name}({', '.join(params)}):",
+        "    row = tl.program_id(0)",
+        f"    sample = tl.arange(0, {inner})",
+    ]
+    lines += [
+        "    ip = tl.cast(in_ptr, tl.pointer_type(tl.uint64)) + row * input_distance",
+        f"    op = tl.cast(out_ptr, tl.pointer_type(tl.uint64)) + row * {n}",
+        "    roots = tl.cast(packed_twiddle_ptr, tl.pointer_type(tl.uint64))",
+    ]
+    for group in range(groups):
+        lines.extend([
+            f"    k = sample + {group * inner}",
+            "    pair = tl.load(ip + k, row < nbatch, 0)",
+            f"    r{group} = tl.cast(tl.cast(pair, tl.uint32), tl.float32, bitcast=True)",
+            f"    i{group} = tl.cast(tl.cast(pair >> 32, tl.uint32), tl.float32, bitcast=True)",
+        ])
+        lines.extend([
+            f"    peer = tl.load(ip + {n} - k, row < nbatch, 0)",
+            "    pr = tl.cast(tl.cast(peer, tl.uint32), tl.float32, bitcast=True)",
+            "    pi = tl.cast(tl.cast(peer >> 32, tl.uint32), tl.float32, bitcast=True)",
+            "    root = tl.load(roots + k, row < nbatch, 0)",
+            "    wr = tl.cast(tl.cast(root, tl.uint32), tl.float32, bitcast=True)",
+            "    wi = tl.cast(tl.cast(root >> 32, tl.uint32), tl.float32, bitcast=True)",
+            f"    xi = tl.where(k == 0, 0.0, i{group})",
+            "    pi = tl.where(k == 0, 0.0, pi)",
+            f"    dr = r{group} - pr",
+            "    di = xi + pi",
+            f"    r{group} = r{group} + pr - (di * wr - dr * wi)",
+            f"    i{group} = xi - pi + (dr * wr + di * wi)",
+        ])
+    lines += _emit_natural_order_codelet_call("    ", groups, plan.direction)
+    lines += [
+        f"    angle = sample * {sign * 2 * math.pi / n:.17g}",
+        "    base_r = ld.fast_cosf(angle)",
+        "    base_i = ld.fast_sinf(angle)",
+        "    wr = base_r",
+        "    wi = base_i",
+    ]
+    for group in range(1, groups):
+        if group > 1:
+            lines += ["    next_r = wr * base_r - wi * base_i",
+                      "    wi = wr * base_i + wi * base_r", "    wr = next_r"]
+        lines += [f"    tr = r{group} * wr - i{group} * wi",
+                  f"    i{group} = r{group} * wi + i{group} * wr", f"    r{group} = tr"]
+
+    # The shape change gives each wave adjacent samples from a single tail FFT.
+    for component in ("r", "i"):
+        values = [f"{component}{group}" for group in range(groups)]
+        joined = _join_ct_columns(lines, values, component + "_first")
+        lines.append(f"    tile = tl.trans(tl.reshape({joined}, ({inner}, {groups})))")
+        lines += [
+            f"    tile = tl.permute(tl.reshape(tile, ({groups}, {radix}, 64)), (0, 2, 1))",
+            f"    even, odd = tl.split(tl.reshape(tile, ({groups}, 64, 2, 2)))",
+            f"    {component}0, {component}2 = tl.split(even)",
+            f"    {component}1, {component}3 = tl.split(odd)",
+        ]
+    lines += _emit_natural_order_codelet_call("    ", radix, plan.direction)
+    lines.append("    lane = tl.arange(0, 64)[None, :]")
+    for digit in range(1, radix):
+        lines += [
+            f"    angle = lane * {digit * sign * 2 * math.pi / inner:.17g}",
+            "    wr = ld.fast_cosf(angle)",
+            "    wi = ld.fast_sinf(angle)",
+            f"    tr = r{digit} * wr - i{digit} * wi",
+            f"    i{digit} = r{digit} * wi + i{digit} * wr",
+            f"    r{digit} = tr",
+        ]
+    lines += _emit_wave_dif(groups, radix, sign, 64)
+    for digit in range(radix):
+        lines += [
+            f"    low = tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64)",
+            f"    high = tl.cast(tl.cast(i{digit}, tl.uint32, bitcast=True), tl.uint64)",
+            f"    pair{digit} = low | (high << 32)",
+        ]
+    combined = _join_ct_columns(lines, [f"pair{digit}" for digit in range(radix)], "tail")
+    lines += [
+        f"    values = tl.trans(tl.reshape({combined}, ({groups}, {inner})))",
+        f"    freq = tl.arange(0, {inner})",
+        f"    tail_lane = freq // {radix}",
+        f"    freq = ({_reverse_lane_bits('tail_lane', 6)}) * {radix} + freq % {radix}",
+        f"    offset = freq[:, None] * {groups} + tl.arange(0, {groups})[None, :]",
+    ]
+    lines.append("    tl.store(op + offset, values, row < nbatch)")
+    source = "\n".join(lines).replace("tl.cos(", "ld.fast_cosf(").replace("tl.sin(", "ld.fast_sinf(")
+    codelets = tuple(sorted({groups, radix}))
+    return name, _module_source(source, codelets)
+
+
 def build_ix_warp256_source(pack: int = 8, mode: str = "outer", inverse: bool = False) -> tuple[str, str]:
     return build_ix_warp_source(256, pack, mode, inverse)
 
