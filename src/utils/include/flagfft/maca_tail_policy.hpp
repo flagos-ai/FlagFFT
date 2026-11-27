@@ -246,10 +246,14 @@ inline bool maca_340200_fp32_batch_900x378_enabled() {
   return std::getenv("FLAGFFT_MACA_340200_FP32_RADIX_ORDER") == nullptr;
 }
 
-inline bool maca_340200_fp64_forward_column_phase_enabled(const FFTRequest& request) {
+inline bool maca_340200_fp64_column_phase_enabled(const FFTRequest& request) {
+  if (request.input_dtype != "complex128") return false;
+  if (request.direction == "inverse") {
+    const char* setting = std::getenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE");
+    return setting && std::string_view(setting) == "1";
+  }
   const char* setting = std::getenv("FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE");
-  return request.input_dtype == "complex128" && request.direction == "forward" &&
-      (!setting || std::string_view(setting) == "1");
+  return request.direction == "forward" && (!setting || std::string_view(setting) == "1");
 }
 
 inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
@@ -264,7 +268,7 @@ inline bool maca_340200_single_split_enabled(const FFTRequest& request) {
                                          : "FLAGFFT_MACA_340200_FP32_SINGLE_SPLIT");
   const char* plan = std::getenv("FLAGFFT_MACA_TAIL_PLAN");
   const bool default_enabled = !fp64 || request.direction == "inverse" ||
-      maca_340200_fp64_forward_column_phase_enabled(request);
+      maca_340200_fp64_column_phase_enabled(request);
   return (setting ? std::string_view(setting) == "1" : default_enabled) && (!plan || !*plan) &&
       maca_tail_policy_enabled(request);
 }
@@ -450,8 +454,8 @@ inline std::string maca_tail_codegen_root(const FFTRequest& request) {
   if (maca_tail_real_direct_dft(request)) return "real-direct";
   if (maca_340200_single_split_enabled(request)) {
     if (request.input_dtype == "complex128") {
-      return maca_340200_fp64_forward_column_phase_enabled(request)
-          ? "z2z340200-forward-column-phase" : "z2z340200-single";
+      return maca_340200_fp64_column_phase_enabled(request)
+          ? "z2z340200-column-phase" : "z2z340200-single";
     }
     const char* inverse_pack = std::getenv("FLAGFFT_MACA_340200_FP32_SINGLE_INVERSE_PACK");
     const bool use_inverse_pack = request.direction == "inverse" &&
@@ -577,7 +581,7 @@ inline std::string maca_tail_kernel_mode(const std::string& root, KernelKind kin
                                root == "c2c340200-single-row-phase" || root == "c2c340200-inverse-pack-row-phase" ||
                                root == "c2c340200-batch-900x378")) ||
        (dtype == "complex128" && (root == "z2z340200-single" ||
-                                 root == "z2z340200-forward-column-phase"))) && n1 == 900 && n2 == 378 &&
+                                 root == "z2z340200-column-phase"))) && n1 == 900 && n2 == 378 &&
       ((kind == KernelKind::FourStepRow && length == n1) ||
        (kind == KernelKind::FourStepCol && length == n2))) return root;
   if ((kind == KernelKind::FourStepRow || kind == KernelKind::FourStepCol) &&

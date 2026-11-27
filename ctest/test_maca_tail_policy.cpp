@@ -27,6 +27,7 @@ class TailPolicy : public ::testing::Test {
                              "FLAGFFT_MACA_340200_FP32_SINGLE_ROW_PHASE",
                              "FLAGFFT_MACA_340200_FP64_SINGLE_SPLIT",
                              "FLAGFFT_MACA_340200_FP64_FORWARD_COLUMN_PHASE",
+                             "FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE",
                              "FLAGFFT_MACA_340200_BATCH_SPLIT",
                              "FLAGFFT_MACA_340200_FP32_BATCH_900X378",
                              "FLAGFFT_MACA_340200_FP32_RADIX_ORDER",
@@ -350,7 +351,7 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
   EXPECT_EQ(flagfft::PlanKey::from_node(builder.build(340200, other)).repr(),
             flagfft::PlanKey::from_node(plan).repr());
   const auto fp64_forward_mode = flagfft::maca_tail_codegen_root(other);
-  EXPECT_EQ(fp64_forward_mode, "z2z340200-forward-column-phase");
+  EXPECT_EQ(fp64_forward_mode, "z2z340200-column-phase");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_forward_mode, KernelKind::FourStepCol,
                                           "complex128", 378, 900, 378), fp64_forward_mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_forward_mode, KernelKind::FourStepCol,
@@ -364,6 +365,9 @@ TEST_F(TailPolicy, C550SingleFp32_340200SplitUsesTheMeasuredLeafFactors) {
             flagfft::PlanKey::from_node(plan).repr());
   const auto fp64_mode = flagfft::maca_tail_codegen_root(other);
   EXPECT_EQ(fp64_mode, "z2z340200-single");
+  setenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE", "1", 1);
+  EXPECT_EQ(flagfft::maca_tail_codegen_root(other), fp64_forward_mode);
+  unsetenv("FLAGFFT_MACA_340200_FP64_INVERSE_COLUMN_PHASE");
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepRow, "complex128", 900, 900, 378),
             fp64_mode);
   EXPECT_EQ(flagfft::maca_tail_kernel_mode(fp64_mode, KernelKind::FourStepCol, "complex64", 378, 900, 378), "off");
