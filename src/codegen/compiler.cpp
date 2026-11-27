@@ -4843,12 +4843,13 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_maca_rader_four_ste
   const bool narrow_indices = prime == 8191 && !request.real_transform &&
       flag_or_default("FLAGFFT_MACA_8191_RADER_INDEX16", false);
   const bool complex_boundary = boundary == Boundary::Complex && !request.real_transform;
-  const bool pfa_scatter = (prime == 8191 || prime == 16381) && complex_boundary &&
-      flag_or_default("FLAGFFT_MACA_BATCH_PRIME_RADER_PFA_SCATTER", false);
-  const bool sorted_scatter = prime == 16381 && complex_boundary && !pfa_scatter &&
+  const bool sorted_requested = prime == 16381 && complex_boundary &&
       flag_or_default("FLAGFFT_MACA_16381_RADER_SORTED_SCATTER", false);
+  const bool pfa_scatter = (prime == 8191 || prime == 16381) && complex_boundary &&
+      flag_or_default("FLAGFFT_MACA_BATCH_PRIME_RADER_PFA_SCATTER", !sorted_requested);
+  const bool sorted_scatter = sorted_requested && !pfa_scatter;
   const bool fused_spectrum = prime == 16381 && complex_boundary &&
-      flag_or_default("FLAGFFT_MACA_16381_RADER_FUSED_SPECTRUM", false);
+      flag_or_default("FLAGFFT_MACA_16381_RADER_FUSED_SPECTRUM", pfa_scatter);
   const std::string real_suffix = boundary == Boundary::RealForward ? "_r2c" :
       (boundary == Boundary::RealInverse ? "_c2r" : "");
   const std::string boundary_suffix = narrow_indices ? "_i16" : real_suffix;
