@@ -1959,6 +1959,9 @@ def _emit_stage_block(
         }
         and _maca_knob("FOURSTEP_COL_TWIDDLE_RECURRENCE", "0") == "1"
     )
+    ix_524_column = ((four_step_n1, four_step_n2) == (1024, 512)
+                     and ix_fourstep_preset() == 14 and factors == (32, 16))
+    col_twiddle_period = 16 if ix_524_column else 4
     hcu_u64_load = (
         _hcu_backend_active() and dtype == "complex64" and io_mode == "permuted_store"
         and os.getenv("FLAGFFT_HCU_3D_U64_LOAD", "1") == "1"
@@ -2556,9 +2559,8 @@ def _emit_stage_block(
                     lines.extend(_emit_complex_boundary_load(
                         indent, f"in_ptr + (four_step_batch_base + src_idx{j}) * 2",
                         "lane_mask", f"r{j}", f"i{j}", dtype, vectorized_complex_io))
-                    # Reload the exact table value every four digits to keep
-                    # the complex multiplication chain short.
-                    if j % 4 == 0:
+                    # Restart the recurrence from an exact table value.
+                    if j % col_twiddle_period == 0:
                         lines.extend(_emit_complex_boundary_load(
                             indent, f"twiddle_ptr + src_idx{j} * 2",
                             "lane_mask", "col_tw_r", "col_tw_i", dtype, vectorized_complex_io))

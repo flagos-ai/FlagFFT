@@ -130,6 +130,7 @@ def build_ix_ct_packed_inverse_source(plan, params):
     inner = 256
     groups = n // inner
     reuse_inverse_root = n == 1024
+    reorder_wave_output = n == 1024
     radix = inner // 64
     sign = 1
     name = f"ix_ct_two_wave_{n}_{inner}_inverse_packed_c2r"
@@ -223,6 +224,13 @@ def build_ix_ct_packed_inverse_source(plan, params):
             f"    r{digit} = tr",
         ]
     lines += _emit_wave_dif(groups, radix, sign, 64)
+    if reorder_wave_output:
+        # Reorder within each wave so adjacent lanes write in frequency order.
+        lines.append(f"    reversed_lane = tl.broadcast_to(({_reverse_lane_bits('lane', 6)}), ({groups}, 64))")
+        for digit in range(radix):
+            for component in ("r", "i"):
+                value = f"{component}{digit}"
+                lines.append(f"    {value} = tl.gather({value}, reversed_lane, axis=1)")
     for digit in range(radix):
         lines += [
             f"    low = tl.cast(tl.cast(r{digit}, tl.uint32, bitcast=True), tl.uint64)",
@@ -233,10 +241,11 @@ def build_ix_ct_packed_inverse_source(plan, params):
     lines += [
         f"    values = tl.trans(tl.reshape({combined}, ({groups}, {inner})))",
         f"    freq = tl.arange(0, {inner})",
-        f"    tail_lane = freq // {radix}",
-        f"    freq = ({_reverse_lane_bits('tail_lane', 6)}) * {radix} + freq % {radix}",
-        f"    offset = freq[:, None] * {groups} + tl.arange(0, {groups})[None, :]",
     ]
+    if not reorder_wave_output:
+        lines += [f"    tail_lane = freq // {radix}",
+                  f"    freq = ({_reverse_lane_bits('tail_lane', 6)}) * {radix} + freq % {radix}"]
+    lines.append(f"    offset = freq[:, None] * {groups} + tl.arange(0, {groups})[None, :]")
     lines.append("    tl.store(op + offset, values, row < nbatch)")
     source = "\n".join(lines).replace("tl.cos(", "ld.fast_cosf(").replace("tl.sin(", "ld.fast_sinf(")
     codelets = tuple(sorted({groups, radix}))
