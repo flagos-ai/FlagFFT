@@ -291,8 +291,13 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
   const bool ix_bluestein_recurrence =
       ix_bluestein_packed_r2c || key.perm_form == "ix_bluestein_recurrence";
   const bool ix_rader_packed_c2r = key.perm_form == "ix_rader_packed_c2r";
+  const bool ix_single_prime_cube = key.perm_form == "ix_bluestein_997_single_r2c";
   const bool ix_packed_recurrence = ix_bluestein_recurrence || ix_rader_packed_c2r ||
-      key.perm_form == "ix_rader_packed";
+      key.perm_form == "ix_rader_packed" || ix_single_prime_cube;
+  const char *ix_single_prime_warps = ix_single_prime_cube ? performance_env("FLAGFFT_IX_WARPS") : nullptr;
+  if (ix_single_prime_cube) {
+    cache_key += ";FLAGFFT_IX_WARPS=" + std::string(ix_single_prime_warps ? ix_single_prime_warps : "2");
+  }
   const char *ix_bluestein_vector_io = ix_bluestein_packed_r2c
       ? performance_env("FLAGFFT_IX_BLUESTEIN_LEAF_VEC_IO") : nullptr;
   if (ix_bluestein_packed_r2c)
@@ -868,6 +873,8 @@ std::shared_ptr<JitKernel> TritonCompiler::compile_kernel(const KernelKey &key) 
       if (!performance_env(name)) jit_command << name << "=" << value << " ";
     }
   }
+  if (ix_single_prime_cube && !ix_single_prime_warps)
+    jit_command << "FLAGFFT_IX_WARPS=2 ";
   if (ix_packed_real_tle) {
     for (const auto &[name, value] : kIxPackedRealTleDefaults) {
       if (!performance_env(name)) jit_command << name << "=" << value << " ";

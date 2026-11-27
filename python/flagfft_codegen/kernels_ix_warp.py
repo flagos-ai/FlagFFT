@@ -809,10 +809,12 @@ def build_ix_warp256_leaf_source(plan, io_mode: str, perm_form: str, params: lis
         chunk = 16
     if mode in {'packed_r2c','packed_c2r'}:chunk=1
     ragged_r2c = mode == "r2c" and permutation_span % pack != 0
+    packed_output_transpose = mode == "packed_r2c" and perm_form == "outer_packed"
     name,source=build_ix_warp_source(n,pack,mode,plan.direction=='inverse',fast_math=True,
                                     output_radix_chunk=chunk, dif_store=dif_store, ragged_r2c=ragged_r2c,
                                     strided_input=strided_columns,
                                     packed_c2r_input=packed_c2r_input,
+                                    packed_output_transpose=packed_output_transpose,
                                     input_padding=input_padding, output_padding=output_padding)
     leaf_name='ix_'+name+'_leaf'
     aliases=['    inp=in_ptr','    out=out_ptr']

@@ -1026,7 +1026,10 @@ namespace {
     const bool wide = (key.length == 64 || key.length == 128 || key.length == 256 || key.length == 512 ||
                        key.length == 1024 || key.length == 2048) &&
                       family && key.length!=256;
-    if (!narrow && !wide && !small_leaf) return;
+    const bool packed_prime_rows = family && key.length == 32 &&
+        key.kind == KernelKind::LeafPackedR2C && key.perm_form == "outer_packed" &&
+        request.ix_prime_3d_default;
+    if (!narrow && !wide && !small_leaf && !packed_prime_rows) return;
     const bool strided_columns = key.kind == KernelKind::LeafStridedPermutedStore &&
         (key.perm_form == "outer_strided" || key.perm_form == "outer_strided_chunk16");
     const bool permuted = key.kind == KernelKind::LeafPermutedStore ||
@@ -1073,6 +1076,12 @@ namespace {
   bool qualified_ix_short_real_warp(const FFTRequest &request) {
     return ix_short_real_warp_default_enabled(request) &&
            adaptor::max_dynamic_smem_bytes(request.device_index)>=128*1024;
+  }
+
+  bool ix_single_prime_cube_middle(const FFTRequest &request) {
+    return request.ix_prime_3d_default && request.origin_real_transform_kind == "r2c" &&
+        request.batch == 16 * (64 / 2 + 1) &&
+        flag_or_default("FLAGFFT_IX_3D_PRIME_PACKED_FIRST", true);
   }
 
   int64_t ix_short_frequency_bands(const FFTRequest &request, int64_t n) {
@@ -4476,7 +4485,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_node(const PlanNode
           : leaf;
       const bool ix_packed_recurrence = use_ix_3d_boundary_leaf && request.ix_prime_3d_default &&
           request.real_transform_kind == "r2c" && batch == 4 * 16 * (64 / 2 + 1);
+      const bool ix_single_prime = use_ix_3d_boundary_leaf && ix_single_prime_cube_middle(request);
       const char *boundary_form = use_ix_batch_boundary_leaf ? "ix_bluestein_cta" :
+                                  ix_single_prime ? "ix_bluestein_997_single_r2c" :
                                   ix_packed_recurrence ? "ix_bluestein_recurrence" : "outer";
       DeviceAllocation work_buf =
           adaptor::Memory(static_cast<std::size_t>(batch * bluestein->conv_length * element_bytes));
@@ -5328,6 +5339,8 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_leaf(const LeafPlan
                                   leaf.generic_radices,
                                   leaf.smem_size);
   mark_ix_warp_fft(key, request);
+  if (leaf.length == 2048 && request.convolution_child && ix_single_prime_cube_middle(request))
+    key.perm_form = "ix_bluestein_997_single_r2c";
   mark_npu_portable_leaf(key, request);
   key.hcu_3d_middle_batch_pack = request.hcu_3d_middle_batch_pack;
   std::shared_ptr<JitKernel> kernel = compile_kernel(key);
@@ -7618,6 +7631,9 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
       !inverse && n0 == 16 && n1 == 997 && n2 == 64 && fused_first && fused_n0 &&
       (batch == 1 || (batch == 4 && flag_or_default("FLAGFFT_IX_3D_PRIME_R2C_BATCH", true))) &&
       flag_or_default("FLAGFFT_IX_3D_PRIME_R2C", true);
+  const bool ix_packed_prime_rows = ix_prime_r2c && batch == 1 &&
+      flag_or_default("FLAGFFT_IX_WARP_FFT", true) &&
+      flag_or_default("FLAGFFT_IX_3D_PRIME_PACKED_FIRST", true);
   // On the dense 256-cube R2C path, each fused store can apply the lane
   // bit reversal directly in its output coordinates.
   const bool dif_store = ix_nd_pack == 16 && request.real_transform_kind == "r2c" &&
@@ -7664,21 +7680,42 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_rtrt_node(
 #else
   if (fused_first) {
 #endif
-    KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
-                                         n2_request.direction, n2_request.input_dtype,
-                                         n2_leaf->length, n2_leaf->factors,
-                                         n2_leaf->lanes, n2_leaf->num_warps,
-                                         n2_leaf->generic_radices, n2_leaf->smem_size);
-    // The first-axis fusion replaces the 021 transpose, so the R2C leaf must
-    // write its compact rows directly in that transposed layout.
-    key.kind = KernelKind::LeafR2CPermutedStore;
-    key.perm_form = "outer";
-    if (ix_prime_r2c) n2_request.ix_warp_fft_pack_default = 8;
-    mark_static_permutation_span(key, n2_request, n1);
-    mark_ix_warp_fft(key, n2_request, n1);
-    n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
-        n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
-        DeviceAllocation{}, n1);
+    if (ix_packed_prime_rows) {
+      FFTRequest packed_request = n2_request;
+      packed_request.n = packed_request.requested_n = packed_request.fft_length = 32;
+      packed_request.real_transform_kind.clear();
+      packed_request.input_shape = {n2_request.batch, 32};
+      packed_request.input_strides = {32, 1};
+      PlanBuilder builder;
+      builder.build(32, packed_request);
+      const std::vector<int64_t> factors{4, 8};
+      const auto lanes = builder.choose_lanes(32, factors);
+      const LeafPlanNode leaf(32, factors, 1, lanes, builder.choose_num_warps(lanes), {}, 32);
+      auto key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
+          n2_request.direction, n2_request.input_dtype, leaf.length, leaf.factors,
+          leaf.lanes, leaf.num_warps, leaf.generic_radices, leaf.smem_size);
+      key.kind = KernelKind::LeafPackedR2C;
+      key.perm_form = "outer_packed";
+      key.permutation_span = n1;
+      n2_request.ix_warp_fft_pack_default = 2;
+      mark_ix_warp_fft(key, n2_request);
+      n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
+          n2, compile_kernel(key), build_raw_leaf_tables(leaf, packed_request),
+          build_raw_packed_real_twiddle(n2_request, n2), n1);
+    } else {
+      KernelKey key = KernelKey::leaf_r2c(triton_target_for_request(n2_request),
+          n2_request.direction, n2_request.input_dtype, n2_leaf->length, n2_leaf->factors,
+          n2_leaf->lanes, n2_leaf->num_warps, n2_leaf->generic_radices, n2_leaf->smem_size);
+      // Write compact rows in the layout of the first transpose.
+      key.kind = KernelKind::LeafR2CPermutedStore;
+      key.perm_form = "outer";
+      if (ix_prime_r2c) n2_request.ix_warp_fft_pack_default = 8;
+      mark_static_permutation_span(key, n2_request, n1);
+      mark_ix_warp_fft(key, n2_request, n1);
+      n2_real_fft = std::make_shared<CompiledRawR2CLeafNode>(
+          n2, compile_kernel(key), build_raw_leaf_tables(*n2_leaf, n2_request),
+          DeviceAllocation{}, n1);
+    }
   } else {
     const int64_t real_rows = batch * n0 * n1;
     const bool packed_inverse = inverse && ix_fused_c2r_leaf_enabled(n2_request, real_rows);

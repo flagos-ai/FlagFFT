@@ -3784,12 +3784,22 @@ def _build_leaf_kernel_source_for_io(
         if io_mode not in {"permuted_store", "strided_permuted_store"} or not perm_form.startswith("inner"):
             raise ValueError("batched permutation requires an inner permuted store")
     kernel_io_mode = io_mode
+    ix_prime_packed_rows = (
+        _ix_backend_active() and io_mode == "packed_r2c" and perm_form == "outer_packed"
+        and plan.length == 32 and plan.dtype == "complex64" and permutation_span == 997
+    )
     if permutation_span < 0 or (permutation_span and io_mode not in {
         "permuted_store", "strided_permuted_store", "permuted_r2c", "permuted_store_r2c"
-    }):
+    } and not ix_prime_packed_rows):
         raise ValueError("a static permutation span requires a permuted-store leaf")
     if permutation_batch < 0 or (permutation_batch and not permutation_span):
         raise ValueError("a static permutation batch requires a positive span")
+    if ix_prime_packed_rows:
+        from .target import ix_warp_fft_pack
+        from .kernels_ix_warp import build_ix_warp256_leaf_source
+        return build_ix_warp256_leaf_source(
+            plan, io_mode, perm_form, _leaf_kernel_params_for_io(plan, io_mode=io_mode),
+            ix_warp_fft_pack(), permutation_span)
     from .kernels_hcu_small import small_wave_pack, build_small_wave
     short_pack = small_wave_pack(plan, io_mode)
     if short_pack:
