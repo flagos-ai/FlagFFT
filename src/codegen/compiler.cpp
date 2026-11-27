@@ -5517,7 +5517,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_c2r_node(const Plan
         request.input_layout == "contiguous" && !request.requires_contiguous_copy &&
         request.input_strides == std::vector<int64_t>{106, 1} &&
         maca_flag_or_default("FLAGFFT_MACA_1D_BATCH", true) &&
-        maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_C2R_PFA", false)) {
+        maca_flag_or_default("FLAGFFT_MACA_210_FP32_BATCH_C2R_PFA", true)) {
       auto key = KernelKey::leaf_c2r(triton_target_for_request(request), request.direction, request.input_dtype,
           n, leaf->factors, leaf->lanes, leaf->num_warps, leaf->generic_radices, leaf->smem_size);
       key.perm_form = "maca_fp32_c2r210_pfa";
