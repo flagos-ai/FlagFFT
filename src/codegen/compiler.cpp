@@ -7529,7 +7529,7 @@ std::shared_ptr<CompiledRawNode> TritonCompiler::compile_raw_3d_real_leaf_node(
     std::shared_ptr<CompiledRawNode> real_axis;
 #if defined(FLAGFFT_MACA_NATIVE_KERNELS)
     if (!inverse && request.input_dtype == "complex64" &&
-        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_NATIVE_FIRST", false)) {
+        maca_flag_or_default("FLAGFFT_MACA_3D_PRIME_R2C_NATIVE_FIRST", true)) {
       auto roots = make_maca_sdk_roots<float>(n2 / 2, false);
       const auto phase = make_maca_sdk_roots<float>(n2, false);
       roots.insert(roots.end(), phase.begin(), phase.end());
